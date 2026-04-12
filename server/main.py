@@ -1,0 +1,793 @@
+import json
+from datetime import datetime
+from typing import List
+
+from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Header
+from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.orm import Session
+
+from bootstrap import seed_sample_data
+from database import SessionLocal, engine
+from models import Base, User, Company, Submission, CollectionCycle, ActionPlan, ReviewAction, ValidationFlag
+from schemas import (
+    ActionPlanCreateRequest,
+    ActionPlanInfo,
+    CompanyCreateRequest,
+    CompanyCreateResponse,
+    CompanyDetail,
+    CycleCreateRequest,
+    CycleInfo,
+    ForgotPasswordRequest,
+    ForgotPasswordResponse,
+    GHGCalculatorRequest,
+    GHGCalculatorResponse,
+    ReviewSubmissionRequest,
+    InvestorSummary,
+    InvestorDashboardResponse,
+    LoginRequest,
+    SSOLoginRequest,
+    SubmissionCreateRequest,
+    SubmissionInfo,
+    SubmissionStatusUpdateRequest,
+    UserResponse,
+)
+from new_esg_module import router as new_esg_router
+
+app = FastAPI(title='ESG Data App')
+app.include_router(new_esg_router, prefix="/api/v2")
+
+
+def normalize_role(role: str) -> str:
+    return role.value if hasattr(role, 'value') else str(role)
+
+
+def serialize_user(user: User):
+    return {
+        'id': user.id,
+        'name': user.name,
+        'email': user.email,
+        'role': normalize_role(user.role),
+    }
+
+
+def serialize_cycle(cycle: CollectionCycle):
+    template_config = json.loads(cycle.template_config)
+    prefill_summary = json.loads(cycle.prefill_summary)
+    return CycleInfo(
+        id=cycle.id,
+        cycle_year=cycle.cycle_year,
+        submission_open_date=cycle.submission_open_date,
+        submission_deadline=cycle.submission_deadline,
+        extension_date=cycle.extension_date,
+        reminder_days_before_deadline=json.loads(cycle.reminder_schedule),
+        private_equity_template=template_config['private_equity'],
+        real_estate_template=template_config['real_estate'],
+        debt_template=template_config['debt'],
+        status=cycle.status,
+        carry_forward_prefill=prefill_summary['carry_forward_prefill'],
+        prefill_company_count=prefill_summary['prefill_company_count'],
+    )
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=['http://localhost:5173', 'http://127.0.0.1:5173'],
+    allow_credentials=True,
+    allow_methods=['*'],
+    allow_headers=['*'],
+)
+
+# Create database tables automatically when the app starts.
+Base.metadata.create_all(bind=engine)
+
+# A helper to get a database session inside path operations.
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# ==========================================
+# RBAC Dependencies
+# ==========================================
+def get_user_role(x_user_role: str = Header(None)):
+    return x_user_role
+
+def require_manager(role: str = Depends(get_user_role)):
+    if role and role != 'manager':
+        raise HTTPException(status_code=403, detail='Access restricted to ESG Managers')
+
+def block_investors(role: str = Depends(get_user_role)):
+    if role == 'investor':
+        raise HTTPException(status_code=403, detail='Investors are blocked from individual company-level data')
+
+@app.on_event('startup')
+def startup_event():
+    db = SessionLocal()
+    try:
+        seed_sample_data(db)
+    finally:
+        db.close()
+
+@app.post('/login', response_model=UserResponse)
+def login(request: LoginRequest, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.email == request.email).first()
+    if not user or user.password != request.password:
+        raise HTTPException(status_code=401, detail='Invalid email or password')
+    return serialize_user(user)
+
+
+@app.post('/auth/forgot-password', response_model=ForgotPasswordResponse)
+def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db)):
+    # Deliberately return a generic message to avoid revealing account existence.
+    _ = db.query(User).filter(User.email == request.email).first()
+    return ForgotPasswordResponse(
+        message='If an account with that email exists, password reset instructions have been sent.'
+    )
+
+
+@app.post('/auth/sso/{provider}', response_model=UserResponse)
+def sso_login(provider: str, payload: SSOLoginRequest | None = None, db: Session = Depends(get_db)):
+    normalized_provider = provider.strip().lower()
+    allowed_providers = {'google', 'microsoft'}
+    if normalized_provider not in allowed_providers:
+        raise HTTPException(status_code=400, detail='Unsupported SSO provider')
+
+    email_hint = (payload.email_hint if payload else None) or ''
+    provider_default_email = 'manager@example.com' if normalized_provider == 'google' else 'investor@example.com'
+    target_email = email_hint.strip().lower() or provider_default_email
+
+    user = db.query(User).filter(User.email == target_email).first()
+    if not user:
+        # Fallback to the provider default user if hint email does not exist.
+        user = db.query(User).filter(User.email == provider_default_email).first()
+
+    if not user:
+        # Create a bootstrap user if seed data is unavailable.
+        role = 'manager' if normalized_provider == 'google' else 'investor'
+        user = User(
+            name='SSO User',
+            email=provider_default_email,
+            password='password123',
+            role=role,
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+    return serialize_user(user)
+
+
+@app.post('/companies', response_model=CompanyCreateResponse)
+def create_company(payload: CompanyCreateRequest, db: Session = Depends(get_db)):
+    existing_user = db.query(User).filter(User.email == payload.contact_email).first()
+    if existing_user:
+        raise HTTPException(status_code=400, detail='A user with this contact email already exists')
+
+    portfolio_user = User(
+        name=payload.contact_name,
+        email=payload.contact_email,
+        password=payload.temporary_password,
+        role='company',
+    )
+    db.add(portfolio_user)
+    db.commit()
+    db.refresh(portfolio_user)
+
+    company = Company(
+        name=payload.name,
+        sector=payload.sector,
+        user_id=portfolio_user.id,
+        current_status=payload.current_status,
+    )
+    db.add(company)
+    db.commit()
+    db.refresh(company)
+
+    return CompanyCreateResponse(
+        id=company.id,
+        name=company.name,
+        sector=company.sector,
+        portfolio_user_email=portfolio_user.email,
+        portfolio_user_password=payload.temporary_password,
+    )
+
+
+@app.post('/cycles', response_model=CycleInfo)
+def create_cycle(payload: CycleCreateRequest, db: Session = Depends(get_db)):
+    existing_cycle = db.query(CollectionCycle).filter(CollectionCycle.cycle_year == payload.cycle_year).first()
+    if existing_cycle:
+        raise HTTPException(status_code=400, detail='A cycle for this year already exists')
+
+    latest_submissions = 0
+    if payload.carry_forward_prefill:
+        for company in db.query(Company).all():
+            if company.submissions:
+                latest_submissions += 1
+
+    cycle = CollectionCycle(
+        cycle_year=payload.cycle_year,
+        submission_open_date=payload.submission_open_date,
+        submission_deadline=payload.submission_deadline,
+        extension_date=payload.extension_date,
+        reminder_schedule=json.dumps(payload.reminder_days_before_deadline),
+        template_config=json.dumps({
+            'private_equity': payload.private_equity_template,
+            'real_estate': payload.real_estate_template,
+            'debt': payload.debt_template,
+        }),
+        prefill_summary=json.dumps({
+            'carry_forward_prefill': payload.carry_forward_prefill,
+            'prefill_company_count': latest_submissions,
+        }),
+        status='active' if payload.activate_on_create else 'draft',
+    )
+    db.add(cycle)
+    db.commit()
+    db.refresh(cycle)
+    return serialize_cycle(cycle)
+
+
+@app.get('/cycles', response_model=List[CycleInfo])
+def list_cycles(db: Session = Depends(get_db)):
+    cycles = db.query(CollectionCycle).order_by(CollectionCycle.cycle_year.desc()).all()
+    return [serialize_cycle(cycle) for cycle in cycles]
+
+@app.post('/company/{company_id}/onboarding/complete')
+def complete_onboarding(company_id: int, db: Session = Depends(get_db)):
+    company = db.query(Company).filter(Company.id == company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail='Company not found')
+    company.current_status = 'active'
+    db.commit()
+    return {"message": "Onboarding complete. Company is now active in the portfolio."}
+
+@app.post('/company/{company_id}/submissions', response_model=SubmissionInfo)
+def add_submission(company_id: int, submission: SubmissionCreateRequest, db: Session = Depends(get_db)):
+    company = db.query(Company).filter(Company.id == company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail='Company not found')
+
+    submission_record = Submission(
+        company_id=company_id,
+        esg_data=json.dumps(submission.model_dump()),
+        status='submitted'
+    )
+    db.add(submission_record)
+    db.commit()
+    db.refresh(submission_record)
+    return submission_record
+
+@app.get('/dashboard/company/{user_id}', response_model=List[CompanyDetail], dependencies=[Depends(block_investors)])
+def company_dashboard(user_id: int, db: Session = Depends(get_db)):
+    companies = db.query(Company).filter(Company.user_id == user_id).all()
+    return companies
+
+@app.patch('/submissions/{submission_id}/status', response_model=SubmissionInfo)
+def update_submission_status(
+    submission_id: int,
+    payload: SubmissionStatusUpdateRequest,
+    db: Session = Depends(get_db)
+):
+    allowed_statuses = {'submitted', 'under review', 'approved', 'rejected', 'resubmission requested'}
+    if payload.status not in allowed_statuses:
+        raise HTTPException(status_code=400, detail='Invalid submission status')
+
+    submission = db.query(Submission).filter(Submission.id == submission_id).first()
+    if not submission:
+        raise HTTPException(status_code=404, detail='Submission not found')
+
+    submission.status = payload.status
+    db.commit()
+    db.refresh(submission)
+    return submission
+
+@app.post('/company/{company_id}/action-plans', response_model=ActionPlanInfo)
+def create_action_plan(company_id: int, payload: ActionPlanCreateRequest, db: Session = Depends(get_db)):
+    company = db.query(Company).filter(Company.id == company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail='Company not found')
+    plan = ActionPlan(
+        company_id=company.id,
+        initiative_name=payload.initiative_name,
+        target_completion_date=payload.target_completion_date,
+        assigned_owner=payload.assigned_owner,
+        status='planned'
+    )
+    db.add(plan)
+    db.commit()
+    db.refresh(plan)
+    return plan
+
+@app.post('/calculator/ghg', response_model=GHGCalculatorResponse)
+def calculate_ghg(payload: GHGCalculatorRequest):
+    scope_1 = payload.fuel_liters * 0.00268
+    scope_2 = payload.electricity_kwh * 0.0005
+    return GHGCalculatorResponse(
+        scope_1_tco2e=round(scope_1, 4),
+        scope_2_tco2e=round(scope_2, 4),
+        total_tco2e=round(scope_1 + scope_2, 4)
+    )
+
+@app.post('/company/{company_id}/upload-evidence')
+def upload_evidence(company_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    company = db.query(Company).filter(Company.id == company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail='Company not found')
+    return {"filename": file.filename, "message": "Evidence uploaded successfully"}
+
+@app.post('/submissions/{submission_id}/review')
+def review_submission(submission_id: int, payload: ReviewSubmissionRequest, db: Session = Depends(get_db)):
+    submission = db.query(Submission).filter(Submission.id == submission_id).first()
+    if not submission:
+        raise HTTPException(status_code=404, detail='Submission not found')
+    
+    submission.status = payload.review_status
+    review_action = ReviewAction(
+        company_id=submission.company_id,
+        reporting_year=2026,
+        review_status=payload.review_status,
+        reviewer_role=payload.reviewer_role,
+        review_comment=payload.review_comment
+    )
+    db.add(review_action)
+    db.commit()
+    db.refresh(submission)
+    return {"message": "Review logged successfully", "status": submission.status}
+
+@app.post('/submissions/{submission_id}/validate')
+def validate_submission(submission_id: int, db: Session = Depends(get_db)):
+    submission = db.query(Submission).filter(Submission.id == submission_id).first()
+    if not submission:
+        raise HTTPException(status_code=404, detail='Submission not found')
+    
+    data = json.loads(submission.esg_data)
+    flags_created = 0
+    
+    # Define required fields for validation
+    required_fields = [
+        'scope_1_emissions', 'scope_2_location_based', 'scope_3_emissions',
+        'total_ghg_emissions', 'total_energy_consumption', 'renewable_energy_consumption',
+        'total_water_withdrawal', 'total_waste_generated', 'total_employees_fte',
+        'employee_turnover_rate', 'female_representation_percent'
+    ]
+    
+    # Check for missing required fields
+    for field in required_fields:
+        if field not in data or data[field] is None:
+            db.add(ValidationFlag(
+                company_id=submission.company_id, reporting_year=2026,
+                flag_type='Missing Data', field_name=field,
+                issue_description=f'Required field "{field}" is missing or null.',
+                severity='High'
+            ))
+            flags_created += 1
+    
+    # Data quality checks - only if fields exist
+    if all(field in data and data[field] is not None for field in ['scope_1_emissions', 'scope_2_location_based', 'scope_2_market_based', 'scope_3_emissions', 'total_ghg_emissions']):
+        scope_1 = float(data['scope_1_emissions'])
+        scope_2_loc = float(data['scope_2_location_based'])
+        scope_2_mkt = float(data['scope_2_market_based'])
+        scope_3 = float(data['scope_3_emissions'])
+        total_ghg = float(data['total_ghg_emissions'])
+        
+        # Check for negative emissions
+        if scope_1 < 0 or scope_2_loc < 0 or scope_3 < 0:
+            db.add(ValidationFlag(
+                company_id=submission.company_id, reporting_year=2026,
+                flag_type='Data Quality', field_name='emissions',
+                issue_description='Negative emissions detected. Scopes 1, 2, and 3 should be non-negative.',
+                severity='High'
+            ))
+            flags_created += 1
+        
+        # Check GHG total consistency (allow 5% tolerance for rounding)
+        calculated_total = scope_1 + scope_2_loc + scope_3
+        if calculated_total > 0 and abs(total_ghg - calculated_total) / calculated_total > 0.05:
+            db.add(ValidationFlag(
+                company_id=submission.company_id, reporting_year=2026,
+                flag_type='Data Quality', field_name='total_ghg_emissions',
+                issue_description=f'Total GHG emissions ({total_ghg}) does not match sum of scopes ({calculated_total:.1f}). Variance: {abs(total_ghg - calculated_total) / calculated_total:.1%}',
+                severity='Medium'
+            ))
+            flags_created += 1
+    
+    # Check energy consumption consistency
+    if 'total_energy_consumption' in data and 'renewable_energy_consumption' in data:
+        total_energy = data['total_energy_consumption']
+        renewable_energy = data['renewable_energy_consumption']
+        if total_energy is not None and renewable_energy is not None:
+            if renewable_energy > total_energy:
+                db.add(ValidationFlag(
+                    company_id=submission.company_id, reporting_year=2026,
+                    flag_type='Data Quality', field_name='renewable_energy_consumption',
+                    issue_description='Renewable energy consumption exceeds total energy consumption.',
+                    severity='High'
+                ))
+                flags_created += 1
+    
+    # Check water recycling consistency
+    if 'total_water_withdrawal' in data and 'water_recycled_reused' in data:
+        total_water = data['total_water_withdrawal']
+        recycled_water = data['water_recycled_reused']
+        if total_water is not None and recycled_water is not None:
+            if recycled_water > total_water:
+                db.add(ValidationFlag(
+                    company_id=submission.company_id, reporting_year=2026,
+                    flag_type='Data Quality', field_name='water_recycled_reused',
+                    issue_description='Water recycled/reused exceeds total water withdrawal.',
+                    severity='High'
+                ))
+                flags_created += 1
+    
+    # Check waste diversion consistency
+    if 'total_waste_generated' in data and 'waste_diverted_from_landfill' in data:
+        total_waste = data['total_waste_generated']
+        diverted_waste = data['waste_diverted_from_landfill']
+        if total_waste is not None and diverted_waste is not None:
+            if diverted_waste > total_waste:
+                db.add(ValidationFlag(
+                    company_id=submission.company_id, reporting_year=2026,
+                    flag_type='Data Quality', field_name='waste_diverted_from_landfill',
+                    issue_description='Waste diverted from landfill exceeds total waste generated.',
+                    severity='High'
+                ))
+                flags_created += 1
+    
+    # Check percentage fields are in valid range (0-100)
+    percentage_fields = [
+        'employee_turnover_rate', 'female_representation_percent',
+        'female_leadership_representation_percent', 'independent_board_members_percent',
+        'female_board_members_percent'
+    ]
+    for field in percentage_fields:
+        if field in data and data[field] is not None:
+            value = float(data[field])
+            if value < 0 or value > 100:
+                db.add(ValidationFlag(
+                    company_id=submission.company_id, reporting_year=2026,
+                    flag_type='Data Quality', field_name=field,
+                    issue_description=f'Percentage field "{field}" must be between 0-100. Current value: {value}',
+                    severity='High'
+                ))
+                flags_created += 1
+    
+    # Check female leadership vs overall female representation (proportionality)
+    if 'female_representation_percent' in data and 'female_leadership_representation_percent' in data:
+        female_overall = data['female_representation_percent']
+        female_leadership = data['female_leadership_representation_percent']
+        if female_overall is not None and female_leadership is not None:
+            if female_leadership > female_overall + 5:  # Allow 5% tolerance
+                db.add(ValidationFlag(
+                    company_id=submission.company_id, reporting_year=2026,
+                    flag_type='Data Quality', field_name='female_leadership_representation_percent',
+                    issue_description=f'Female leadership representation ({female_leadership}%) exceeds overall female representation ({female_overall}%) by more than 5%.',
+                    severity='Medium'
+                ))
+                flags_created += 1
+    
+    # Year-over-year variance check
+    prev_submission = db.query(Submission).filter(
+        Submission.company_id == submission.company_id,
+        Submission.id != submission.id
+    ).order_by(Submission.id.desc()).first()
+    
+    if prev_submission:
+        prev_data = json.loads(prev_submission.esg_data)
+        for field in ['total_ghg_emissions', 'total_energy_consumption', 'total_water_withdrawal']:
+            curr_val, prev_val = data.get(field), prev_data.get(field)
+            if curr_val is not None and prev_val is not None and prev_val > 0:
+                variance = (curr_val - prev_val) / prev_val
+                if abs(variance) > 0.30:
+                    db.add(ValidationFlag(
+                        company_id=submission.company_id, reporting_year=2026,
+                        flag_type='Variance Alert', field_name=field,
+                        issue_description=f'YoY variance for {field} is {variance:.1%}, exceeding +/-30% threshold.',
+                        severity='High'
+                    ))
+                    flags_created += 1
+
+    db.commit()
+    return {"message": f"Validation complete. {flags_created} anomalies flagged.", "flagged": flags_created > 0}
+
+@app.get('/reports/{report_type}')
+def generate_report(report_type: str):
+    if report_type.lower() not in ['edci', 'sfdr']:
+        raise HTTPException(status_code=400, detail='Invalid report type')
+    return {
+        "report_type": report_type.upper(),
+        "download_url": f"https://example.com/downloads/{report_type.lower()}_report_2026.pdf",
+        "generated_at": "2026-05-01T12:00:00Z"
+    }
+
+@app.get('/dashboard/manager', response_model=List[CompanyDetail], dependencies=[Depends(require_manager)])
+def manager_dashboard(db: Session = Depends(get_db)):
+    # Manager sees all detailed data to review submissions and oversee collection cycle.
+    companies = db.query(Company).all()
+    return companies
+
+def safe_number(value, default: float = 0.0) -> float:
+    try:
+        if value is None or value == '':
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def clamp(value: float, minimum: float = 0, maximum: float = 100) -> float:
+    return max(minimum, min(maximum, value))
+
+
+def normalize_status_label(status: str | None) -> str:
+    normalized = str(status or '').strip().lower()
+    mapping = {
+        'not started': 'Not Started',
+        'in progress': 'In Progress',
+        'submitted': 'Submitted',
+        'under review': 'Submitted',
+        'approved': 'Approved',
+        'rejected': 'Rejected',
+        'resubmission requested': 'In Progress',
+        'pre-acquisition': 'Not Started',
+        'active': 'In Progress',
+    }
+    return mapping.get(normalized, 'Not Started')
+
+
+def parse_submission(submission: Submission | None) -> dict:
+    if not submission:
+        return {}
+    try:
+        payload = json.loads(submission.esg_data)
+        return payload if isinstance(payload, dict) else {}
+    except (TypeError, ValueError):
+        return {}
+
+
+def build_emissions_trend(total_emissions: float) -> list[dict]:
+    now = datetime.utcnow()
+    periods = []
+    for offset in range(5, -1, -1):
+        month_value = datetime(now.year, max(1, now.month - offset), 1)
+        periods.append(month_value.strftime('%b'))
+
+    trend = []
+    for index, period in enumerate(periods):
+        factor = 1 + ((len(periods) - index - 1) * 0.04)
+        trend.append({
+            'period': period,
+            'total_emissions': round(total_emissions * factor, 2),
+        })
+    return trend
+
+
+def build_investor_analytics(db: Session) -> dict:
+    companies = db.query(Company).all()
+
+    status_counts = {
+        'Not Started': 0,
+        'In Progress': 0,
+        'Submitted': 0,
+        'Approved': 0,
+        'Rejected': 0,
+    }
+
+    required_fields = [
+        'scope_1_emissions',
+        'scope_2_location_based',
+        'scope_3_emissions',
+        'total_ghg_emissions',
+        'total_energy_consumption',
+        'total_water_withdrawal',
+        'total_waste_generated',
+        'female_representation_percent',
+        'trifr',
+        'independent_board_members_percent',
+    ]
+
+    company_scores = []
+    sector_scores = {}
+    total_submissions = 0
+    reporting_companies = 0
+    total_scope_1 = 0.0
+    total_scope_2 = 0.0
+    total_scope_3 = 0.0
+    total_energy = 0.0
+    total_water = 0.0
+    total_waste = 0.0
+    total_female_rep = 0.0
+    total_trifr = 0.0
+    governance_yes = 0.0
+    governance_checks = 0.0
+    score_e_total = 0.0
+    score_s_total = 0.0
+    score_g_total = 0.0
+    score_total = 0.0
+    completeness_total = 0.0
+    confidence_total = 0.0
+    accuracy_total = 0.0
+    high_variance_count = 0
+
+    for company in companies:
+        submissions = company.submissions or []
+        total_submissions += len(submissions)
+        latest = submissions[-1] if submissions else None
+        previous = submissions[-2] if len(submissions) > 1 else None
+
+        status = normalize_status_label((latest.status if latest else company.current_status))
+        status_counts[status] = status_counts.get(status, 0) + 1
+        payload = parse_submission(latest)
+        previous_payload = parse_submission(previous)
+        if not payload:
+            continue
+
+        reporting_companies += 1
+
+        scope_1 = safe_number(payload.get('scope_1_emissions'))
+        scope_2 = safe_number(payload.get('scope_2_location_based'))
+        scope_3 = safe_number(payload.get('scope_3_emissions'))
+        total_ghg = safe_number(payload.get('total_ghg_emissions'))
+        energy = safe_number(payload.get('total_energy_consumption'))
+        renewable = safe_number(payload.get('renewable_energy_consumption'))
+        water = safe_number(payload.get('total_water_withdrawal'))
+        waste = safe_number(payload.get('total_waste_generated'))
+        female_rep = safe_number(payload.get('female_representation_percent'))
+        trifr = safe_number(payload.get('trifr'))
+        independent_board = safe_number(payload.get('independent_board_members_percent'))
+        turnover = safe_number(payload.get('employee_turnover_rate'))
+        corruption_cases = safe_number(payload.get('confirmed_cases_of_corruption'))
+
+        total_scope_1 += scope_1
+        total_scope_2 += scope_2
+        total_scope_3 += scope_3
+        total_energy += energy
+        total_water += water
+        total_waste += waste
+        total_female_rep += female_rep
+        total_trifr += trifr
+
+        renewable_ratio = (renewable / energy) if energy > 0 else 0
+        scope_total = scope_1 + scope_2 + scope_3
+
+        e_score = clamp(
+            30
+            + max(0, 35 - (scope_total / 60))
+            + min(20, safe_number(payload.get('reduction_target_percent')) * 0.25)
+            + min(15, renewable_ratio * 100 * 0.2)
+        )
+        s_score = clamp(
+            25
+            + min(25, female_rep * 0.35)
+            + max(0, 20 - trifr * 2.5)
+            + max(0, 15 - turnover * 0.3)
+            + (15 if str(payload.get('whs_policy_in_place', '')).strip().lower() == 'yes' else 0)
+        )
+        g_score = clamp(
+            (20 if str(payload.get('esg_policy_in_place', '')).strip().lower() == 'yes' else 0)
+            + (20 if str(payload.get('board_level_esg_oversight', '')).strip().lower() == 'yes' else 0)
+            + (20 if str(payload.get('cybersecurity_policy_in_place', '')).strip().lower() == 'yes' else 0)
+            + (20 if str(payload.get('anti_bribery_corruption_policy', '')).strip().lower() == 'yes' else 0)
+            + min(20, independent_board * 0.4)
+            - min(10, corruption_cases * 2)
+        )
+        esg_score = round((0.45 * e_score) + (0.30 * s_score) + (0.25 * g_score), 2)
+
+        score_e_total += e_score
+        score_s_total += s_score
+        score_g_total += g_score
+        score_total += esg_score
+
+        company_scores.append({
+            'company_name': company.name,
+            'sector': company.sector,
+            'esg_score': esg_score,
+        })
+        sector_scores.setdefault(company.sector, []).append(esg_score)
+
+        governance_checks += 4
+        governance_yes += 1 if str(payload.get('esg_policy_in_place', '')).strip().lower() == 'yes' else 0
+        governance_yes += 1 if str(payload.get('board_level_esg_oversight', '')).strip().lower() == 'yes' else 0
+        governance_yes += 1 if str(payload.get('cybersecurity_policy_in_place', '')).strip().lower() == 'yes' else 0
+        governance_yes += 1 if str(payload.get('anti_bribery_corruption_policy', '')).strip().lower() == 'yes' else 0
+
+        filled_fields = sum(1 for field in required_fields if payload.get(field) is not None)
+        completeness_total += (filled_fields / len(required_fields)) * 100
+
+        confidence_values = [str(value).strip().lower() for key, value in payload.items() if key.endswith('_confidence')]
+        if confidence_values:
+            measured_count = sum(1 for value in confidence_values if value == 'measured')
+            confidence_total += (measured_count / len(confidence_values)) * 100
+        else:
+            confidence_total += 0
+
+        accuracy = 100.0
+        if total_ghg > 0:
+            delta = abs(total_ghg - scope_total) / max(total_ghg, 1)
+            if delta > 0.05:
+                accuracy -= min(30, delta * 100)
+        if renewable > energy and energy > 0:
+            accuracy -= 10
+        accuracy_total += clamp(accuracy)
+
+        prev_total_ghg = safe_number(previous_payload.get('total_ghg_emissions'))
+        if prev_total_ghg > 0:
+            variance = abs(total_ghg - prev_total_ghg) / prev_total_ghg
+            if variance > 0.30:
+                high_variance_count += 1
+
+    reporting_count = max(reporting_companies, 1)
+    portfolio_total_emissions = total_scope_1 + total_scope_2 + total_scope_3
+    sector_underperforming = sorted(
+        (
+            (sector, sum(values) / len(values))
+            for sector, values in sector_scores.items()
+            if values
+        ),
+        key=lambda item: item[1]
+    )
+
+    top_performers = sorted(company_scores, key=lambda item: item['esg_score'], reverse=True)[:5]
+    bottom_performers = sorted(company_scores, key=lambda item: item['esg_score'])[:5]
+
+    return {
+        'total_companies': len(companies),
+        'reporting_companies': reporting_companies,
+        'total_submissions': total_submissions,
+        'status_counts': status_counts,
+        'submission_funnel': status_counts,
+        'portfolio_esg_score': round(score_total / reporting_count, 2),
+        'score_breakdown': {
+            'E': round(score_e_total / reporting_count, 2),
+            'S': round(score_s_total / reporting_count, 2),
+            'G': round(score_g_total / reporting_count, 2),
+        },
+        'average_ghg_emissions': round(portfolio_total_emissions / reporting_count, 2),
+        'average_female_representation': round(total_female_rep / reporting_count, 2),
+        'underperforming_sectors': [sector for sector, _ in sector_underperforming[:3]],
+        'emissions_totals': {
+            'scope_1': round(total_scope_1, 2),
+            'scope_2': round(total_scope_2, 2),
+            'scope_3': round(total_scope_3, 2),
+            'total': round(portfolio_total_emissions, 2),
+        },
+        'emissions_trend': build_emissions_trend(portfolio_total_emissions),
+        'resource_totals': {
+            'energy': round(total_energy, 2),
+            'water': round(total_water, 2),
+            'waste': round(total_waste, 2),
+        },
+        'diversity_safety': {
+            'female_representation_percent': round(total_female_rep / reporting_count, 2),
+            'trifr': round(total_trifr / reporting_count, 2),
+            'high_variance_flags': float(high_variance_count),
+        },
+        'governance_adoption_percent': round((governance_yes / governance_checks) * 100, 2) if governance_checks else 0.0,
+        'top_performers': top_performers,
+        'bottom_performers': bottom_performers,
+        'data_quality': {
+            'completeness': round(completeness_total / reporting_count, 2),
+            'accuracy': round(accuracy_total / reporting_count, 2),
+            'confidence': round(confidence_total / reporting_count, 2),
+        },
+    }
+
+
+@app.get('/analytics/portfolio', response_model=InvestorSummary)
+def analytics_portfolio(db: Session = Depends(get_db)):
+    analytics = build_investor_analytics(db)
+    return InvestorSummary(
+        total_companies=analytics['total_companies'],
+        total_submissions=analytics['total_submissions'],
+        status_counts=analytics['status_counts'],
+        portfolio_esg_score=analytics['portfolio_esg_score'],
+        average_ghg_emissions=analytics['average_ghg_emissions'],
+        average_female_representation=analytics['average_female_representation'],
+        underperforming_sectors=analytics['underperforming_sectors'],
+    )
+
+
+@app.get('/dashboard/investor', response_model=InvestorDashboardResponse)
+def investor_dashboard(db: Session = Depends(get_db)):
+    # Investor receives portfolio-level analytics only (no raw company submissions).
+    return InvestorDashboardResponse(**build_investor_analytics(db))

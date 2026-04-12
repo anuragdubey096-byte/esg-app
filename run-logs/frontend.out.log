@@ -1,0 +1,18 @@
+
+> esg-app-client@0.0.1 dev
+> vite --host 127.0.0.1 --port 5173
+
+Re-optimizing dependencies because lockfile has changed
+
+  [32m[1mVITE[22m v5.4.21[39m  [2mready in [0m[1m844[22m[2m[0m ms[22m
+
+  [32m➜[39m  [1mLocal[22m:   [36mhttp://127.0.0.1:[1m5173[22m/[39m
+[2m4:08:49 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/SubmissionsPage.jsx, /src/style.css[22m
+[2m4:22:53 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/SubmissionsPage.jsx, /src/style.css[22m
+[2m4:33:17 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/SubmissionsPage.jsx, /src/style.css[22m
+[2m4:39:25 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/SubmissionsPage.jsx, /src/style.css[22m
+[2m4:39:26 pm[22m [36m[1m[vite][22m[39m [32mvite.config.js changed, restarting server...[39m
+[2m4:39:27 pm[22m [36m[1m[vite][22m[39m server restarted.
+[2m5:06:25 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/SubmissionsPage.jsx, /src/style.css[22m
+[2m5:06:25 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/SubmissionsPage.jsx, /src/style.css[22m
+[2m5:13:08 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/SubmissionsPage.jsx, /src/style.css[22m
