@@ -1,0 +1,117 @@
+import { useMemo } from 'react'
+import { useOutletContext } from 'react-router-dom'
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Legend,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts'
+import SectionCard from '../components/SectionCard'
+import useDashboardData from '../hooks/useDashboardData'
+
+export default function InvestorAnalyticsPage() {
+  const { user } = useOutletContext()
+  const { summary, loading, error } = useDashboardData(user)
+
+  const analytics = summary || {}
+
+  const resourceData = useMemo(() => {
+    const totals = analytics.resource_totals || {}
+    return [
+      { metric: 'Energy', value: Number(totals.energy || 0) },
+      { metric: 'Water', value: Number(totals.water || 0) },
+      { metric: 'Waste', value: Number(totals.waste || 0) },
+    ]
+  }, [analytics.resource_totals])
+
+  const emissionsTrend = useMemo(() => {
+    return (analytics.emissions_trend || []).map((point) => ({
+      period: point.period,
+      total_emissions: Number(point.total_emissions || 0),
+    }))
+  }, [analytics.emissions_trend])
+
+  const socialData = useMemo(() => {
+    const values = analytics.diversity_safety || {}
+    return [
+      { metric: 'Female Representation %', value: Number(values.female_representation_percent || 0) },
+      { metric: 'TRIFR', value: Number(values.trifr || 0) },
+      { metric: 'High Variance Flags', value: Number(values.high_variance_flags || 0) },
+    ]
+  }, [analytics.diversity_safety])
+
+  if (loading) {
+    return (
+      <div className="page-grid">
+        <SectionCard title="Investor Analytics" subtitle="Loading portfolio analytics...">
+          <p>Loading data from backend.</p>
+        </SectionCard>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="page-grid">
+        <SectionCard title="Investor Analytics" subtitle="Live data unavailable">
+          <p>{error}</p>
+        </SectionCard>
+      </div>
+    )
+  }
+
+  return (
+    <div className="page-grid">
+      <section className="two-col-grid">
+        <SectionCard title="Emissions Trend" subtitle="Portfolio total emissions over recent periods">
+          <div className="chart-wrap">
+            <ResponsiveContainer width="100%" height={300}>
+              <LineChart data={emissionsTrend}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="period" />
+                <YAxis />
+                <Tooltip />
+                <Line type="monotone" dataKey="total_emissions" stroke="#0f766e" strokeWidth={3} dot={{ r: 3 }} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </SectionCard>
+
+        <SectionCard title="Resource Analytics" subtitle="Water, waste, and energy totals">
+          <div className="chart-wrap">
+            <ResponsiveContainer width="100%" height={300}>
+              <BarChart data={resourceData}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="metric" />
+                <YAxis />
+                <Tooltip />
+                <Legend />
+                <Bar dataKey="value" fill="#2563eb" radius={[8, 8, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </SectionCard>
+      </section>
+
+      <SectionCard title="Social & Safety Metrics" subtitle="Portfolio-level diversity and safety indicators">
+        <div className="chart-wrap">
+          <ResponsiveContainer width="100%" height={300}>
+            <BarChart data={socialData}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} />
+              <XAxis dataKey="metric" />
+              <YAxis />
+              <Tooltip />
+              <Bar dataKey="value" fill="#7c3aed" radius={[8, 8, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </SectionCard>
+    </div>
+  )
+}

@@ -20,7 +20,7 @@ function toTitleCase(value) {
 }
 
 function getDashboardPath(user) {
-  if (!user) return '/dashboard/admin'
+  if (!user) return '/dashboard/manager'
   if (user.role === 'company') return `/dashboard/company/${user.id}`
   return `/dashboard/${user.role}`
 }
@@ -161,6 +161,9 @@ export default function useDashboardData(user) {
         setSummary(null)
       } else if (dashboardData && Array.isArray(dashboardData.companies)) {
         setCompanies(dashboardData.companies)
+        setSummary(dashboardData)
+      } else if (dashboardData && typeof dashboardData === 'object') {
+        setCompanies([])
         setSummary(dashboardData)
       } else {
         setCompanies([])

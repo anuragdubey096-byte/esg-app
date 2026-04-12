@@ -7,18 +7,18 @@ const NAV_ITEMS = [
     roles: ['manager', 'investor', 'company'],
   },
   {
-    to: '/submissions',
-    label: 'Submissions',
-    icon: 'S',
-    title: 'Submission Tracking',
-    roles: ['manager', 'investor', 'company'],
-  },
-  {
     to: '/review-hub',
     label: 'Review Hub',
     icon: 'R',
     title: 'Review Hub',
     roles: ['manager'],
+  },
+  {
+    to: '/submissions',
+    label: 'Submissions',
+    icon: 'S',
+    title: 'Submission Tracking',
+    roles: ['manager', 'company'],
   },
   {
     to: '/analytics',
@@ -32,7 +32,7 @@ const NAV_ITEMS = [
     label: 'Alerts & Risks',
     icon: '!',
     title: 'Alerts & Risks',
-    roles: ['manager', 'investor'],
+    roles: ['manager'],
   },
   {
     to: '/action-plans',
@@ -50,16 +50,15 @@ const NAV_ITEMS = [
   },
   {
     to: '/admin-settings',
-    label: 'Admin Settings',
+    label: 'Cycle Config',
     icon: 'T',
-    title: 'Admin Settings',
+    title: 'Reporting Cycle Configuration',
     roles: ['manager'],
   },
 ]
 
 export function normalizeDashboardRole(role) {
   const value = String(role || '').toLowerCase()
-  if (value === 'admin') return 'manager'
   if (value === 'manager' || value === 'investor' || value === 'company') return value
   return 'manager'
 }
