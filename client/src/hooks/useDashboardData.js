@@ -6,10 +6,10 @@ const STATUS_TO_UI = {
   'not started': 'Not Started',
   'in progress': 'In Progress',
   submitted: 'Submitted',
-  'under review': 'Submitted',
+  'under review': 'Under Review',
   approved: 'Approved',
-  rejected: 'Rejected',
-  'resubmission requested': 'In Progress',
+  rejected: 'Resubmission Requested',
+  'resubmission requested': 'Resubmission Requested',
 }
 
 function toTitleCase(value) {
@@ -48,8 +48,9 @@ export function parseSubmissionPayload(submission) {
 
 export function getProgressFromStatus(status) {
   if (status === 'Approved') return 100
+  if (status === 'Under Review') return 84
   if (status === 'Submitted') return 85
-  if (status === 'Rejected') return 72
+  if (status === 'Resubmission Requested') return 58
   if (status === 'In Progress') return 46
   return 8
 }
@@ -59,8 +60,9 @@ export function calculateESGScore(status, payload) {
     'Not Started': 34,
     'In Progress': 52,
     Submitted: 68,
+    'Under Review': 75,
     Approved: 82,
-    Rejected: 48,
+    'Resubmission Requested': 48,
   }[status] || 50
 
   if (!payload) return baseline
@@ -118,7 +120,7 @@ export function buildRecentMonthLabels(count = 6) {
 
 export function getRiskLevel({ status, esgScore, deadline }) {
   if (status === 'Approved') return 'Low'
-  if (status === 'Rejected') return 'High'
+  if (status === 'Resubmission Requested') return 'High'
 
   const deadlineDate = parseDateString(deadline)
   if (deadlineDate) {
@@ -149,7 +151,10 @@ export default function useDashboardData(user) {
 
     try {
       const dashboardResponse = await fetch(`${BACKEND_URL}${dashboardPath}`, {
-        headers: { 'x-user-role': user?.role || '' }
+        headers: {
+          'x-user-role': user?.role || '',
+          'x-user-email': user?.email || '',
+        }
       })
       if (!dashboardResponse.ok) {
         throw new Error('Failed to load dashboard data from backend.')
@@ -172,7 +177,10 @@ export default function useDashboardData(user) {
 
       try {
         const cycleResponse = await fetch(`${BACKEND_URL}/cycles`, {
-          headers: { 'x-user-role': user?.role || '' }
+          headers: {
+            'x-user-role': user?.role || '',
+            'x-user-email': user?.email || '',
+          }
         })
         if (cycleResponse.ok) {
           const cycleData = await cycleResponse.json()

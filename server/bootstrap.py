@@ -116,6 +116,7 @@ def seed_sample_data(db):
     sample_users = [
         ('Portfolio Contact', 'company@example.com', 'password123', UserRole.COMPANY),
         ('Manager Alice', 'manager@example.com', 'password123', UserRole.MANAGER),
+        ('Admin Alias', 'admin@example.com', 'password123', UserRole.MANAGER),
         ('Investor Bob', 'investor@example.com', 'password123', UserRole.INVESTOR),
         ('Healthy Foods Contact', 'healthyfoods@example.com', 'password123', UserRole.COMPANY),
         ('Acme Target Contact', 'target@example.com', 'password123', UserRole.COMPANY),

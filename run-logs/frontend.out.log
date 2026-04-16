@@ -2,45 +2,8 @@
 > esg-app-client@0.0.1 dev
 > vite --host 127.0.0.1 --port 5173
 
-Re-optimizing dependencies because lockfile has changed
+Re-optimizing dependencies because vite config has changed
 
-  [32m[1mVITE[22m v5.4.21[39m  [2mready in [0m[1m844[22m[2m[0m ms[22m
+  [32m[1mVITE[22m v5.4.21[39m  [2mready in [0m[1m1299[22m[2m[0m ms[22m
 
   [32m➜[39m  [1mLocal[22m:   [36mhttp://127.0.0.1:[1m5173[22m/[39m
-[2m4:08:49 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/SubmissionsPage.jsx, /src/style.css[22m
-[2m4:22:53 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/SubmissionsPage.jsx, /src/style.css[22m
-[2m4:33:17 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/SubmissionsPage.jsx, /src/style.css[22m
-[2m4:39:25 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/SubmissionsPage.jsx, /src/style.css[22m
-[2m4:39:26 pm[22m [36m[1m[vite][22m[39m [32mvite.config.js changed, restarting server...[39m
-[2m4:39:27 pm[22m [36m[1m[vite][22m[39m server restarted.
-[2m5:06:25 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/SubmissionsPage.jsx, /src/style.css[22m
-[2m5:06:25 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/SubmissionsPage.jsx, /src/style.css[22m
-[2m5:13:08 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/SubmissionsPage.jsx, /src/style.css[22m
-[2m5:43:18 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/SubmissionsPage.jsx, /src/style.css[22m
-[2m5:45:41 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/ActionPlansPage.jsx, /src/style.css[22m
-[2m5:45:43 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/ReportsPage.jsx, /src/style.css[22m
-[2m5:45:43 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/ReportsPage.jsx, /src/style.css[22m
-[2m5:45:44 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/AlertsRisksPage.jsx, /src/style.css[22m
-[2m5:45:44 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/AdminSettingsPage.jsx, /src/style.css[22m
-[2m5:45:48 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/ReviewHubPage.jsx, /src/style.css[22m
-[2m5:45:50 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/ReviewHubPage.jsx, /src/style.css[22m
-[2m5:45:51 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/AnalyticsPage.jsx, /src/style.css[22m
-[2m5:46:04 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/ReviewHubPage.jsx, /src/style.css[22m
-[2m5:47:56 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/AnalyticsPage.jsx, /src/style.css[22m
-[2m5:49:51 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/LoginPage.jsx, /src/style.css[22m
-[2m5:51:21 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/style.css, /src/pages/OverviewPage.jsx, /src/pages/SubmissionsPage.jsx, /src/pages/ActionPlansPage.jsx, /src/pages/ReportsPage.jsx, /src/pages/AlertsRisksPage.jsx, /src/pages/AdminSettingsPage.jsx, /src/pages/ReviewHubPage.jsx, /src/pages/AnalyticsPage.jsx[22m
-[2m5:51:23 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/SubmissionsPage.jsx, /src/style.css[22m
-[2m6:01:03 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/style.css, /src/pages/OverviewPage.jsx, /src/pages/SubmissionsPage.jsx, /src/pages/ActionPlansPage.jsx, /src/pages/ReportsPage.jsx, /src/pages/AlertsRisksPage.jsx, /src/pages/AdminSettingsPage.jsx, /src/pages/ReviewHubPage.jsx, /src/pages/AnalyticsPage.jsx[22m
-[2m6:01:09 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/style.css, /src/pages/OverviewPage.jsx, /src/pages/SubmissionsPage.jsx, /src/pages/ActionPlansPage.jsx, /src/pages/ReportsPage.jsx, /src/pages/AlertsRisksPage.jsx, /src/pages/AdminSettingsPage.jsx, /src/pages/ReviewHubPage.jsx, /src/pages/AnalyticsPage.jsx[22m
-[2m6:21:23 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/style.css, /src/pages/OverviewPage.jsx, /src/pages/SubmissionsPage.jsx, /src/pages/ActionPlansPage.jsx, /src/pages/ReportsPage.jsx, /src/pages/AlertsRisksPage.jsx, /src/pages/AdminSettingsPage.jsx, /src/pages/ReviewHubPage.jsx, /src/pages/AnalyticsPage.jsx[22m
-[2m6:28:40 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/LoginPage.jsx, /src/style.css[22m
-[2m6:28:48 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/OverviewPage.jsx, /src/style.css[22m
-[2m6:28:53 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/SubmissionsPage.jsx, /src/style.css[22m
-[2m6:49:53 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/Dashboard.jsx, /src/style.css[22m
-[2m6:50:32 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/layouts/AdminLayout.jsx, /src/style.css[22m
-[2m6:51:03 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/components/Sidebar.jsx, /src/style.css[22m
-[2m6:51:25 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/components/TopNavbar.jsx, /src/style.css[22m
-[2m6:53:29 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/style.css[22m
-[2m6:54:15 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/SubmissionsPage.jsx, /src/style.css[22m
-[2m6:55:50 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/layouts/AdminLayout.jsx, /src/style.css[22m
-[2m6:55:58 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/style.css[22m

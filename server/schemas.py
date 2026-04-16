@@ -1,4 +1,4 @@
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -168,6 +168,7 @@ class SubmissionInfo(BaseModel):
     id: int
     esg_data: str
     status: str
+    cycle_id: Optional[int] = None
 
     class Config:
         from_attributes = True
@@ -331,3 +332,97 @@ class CycleInfo(BaseModel):
     status: str
     carry_forward_prefill: bool
     prefill_company_count: int
+
+
+class CycleStatusUpdateRequest(BaseModel):
+    status: Literal['draft', 'active', 'closed']
+
+
+class SubmissionUnlockRequest(BaseModel):
+    reason: str
+    expiry_hours: int = Field(default=24, ge=1, le=720)
+
+
+class SubmissionUnlockInfo(BaseModel):
+    id: int
+    submission_id: int
+    company_id: int
+    cycle_id: int
+    unlocked_by_user_id: Optional[int] = None
+    reason: str
+    expires_at: str
+    created_at: str
+    active: bool
+
+
+class ReminderRequest(BaseModel):
+    message: str
+    channel: str = 'email'
+    cycle_id: Optional[int] = None
+
+
+class ReminderInfo(BaseModel):
+    id: int
+    company_id: int
+    cycle_id: int
+    sent_by_user_id: Optional[int] = None
+    channel: str
+    message: str
+    created_at: str
+    delivery_status: str
+
+
+class ReportExportResponse(BaseModel):
+    report_type: str
+    format: Literal['csv', 'pdf']
+    period: str
+    portfolio: str
+    generated_at: str
+    file_name: str
+    file_path: str
+    download_url: str
+    content_type: str
+    rows_exported: int
+
+
+class ManagerCycleBanner(BaseModel):
+    active_cycle_year: Optional[int] = None
+    submission_open_date: Optional[str] = None
+    submission_deadline: Optional[str] = None
+    days_remaining: Optional[int] = None
+    cycle_status: str = 'closed'
+
+
+class ManagerDeadlineRow(BaseModel):
+    company_id: int
+    company_name: str
+    asset_class: Optional[str] = None
+    sector: str
+    status: str
+    completion_percent: int
+    deadline: Optional[str] = None
+    days_remaining: Optional[int] = None
+
+
+class ManagerProgressRow(BaseModel):
+    company_id: int
+    company_name: str
+    asset_class: Optional[str] = None
+    sector: str
+    status: str
+    completion_percent: int
+    last_activity: str
+    deadline: Optional[str] = None
+    actions: List[str]
+
+
+class ManagerDashboardSummary(BaseModel):
+    status_breakdown: Dict[str, int]
+    cycle_banner: ManagerCycleBanner
+    upcoming_deadlines: List[ManagerDeadlineRow]
+    progress_rows: List[ManagerProgressRow]
+
+
+class ManagerDashboardResponse(BaseModel):
+    companies: List[CompanyDetail]
+    summary: ManagerDashboardSummary
