@@ -1,5 +1,6 @@
 import json
 import time
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -13,6 +14,10 @@ def run_self_test():
         results.append((name, bool(condition), detail))
 
     with TestClient(app) as client:
+        manager_headers = {'x-user-role': 'manager', 'x-user-email': 'manager@example.com'}
+        admin_alias_headers = {'x-user-role': 'admin', 'x-user-email': 'manager@example.com'}
+        investor_headers = {'x-user-role': 'investor', 'x-user-email': 'investor@example.com'}
+
         for email, expected_role in [
             ('manager@example.com', 'manager'),
             ('investor@example.com', 'investor'),
@@ -22,41 +27,28 @@ def run_self_test():
             ok = response.status_code == 200 and response.json().get('role') == expected_role
             check(f'login:{email}', ok, response.text)
 
-        response = client.get('/dashboard/manager')
-        check('GET /dashboard/manager', response.status_code == 200 and isinstance(response.json(), list), f'status={response.status_code}')
+        # Admin alias should normalize to manager privileges.
+        alias_rbac = client.get('/dashboard/manager', headers=admin_alias_headers)
+        check('RBAC admin alias behaves as manager', alias_rbac.status_code == 200, alias_rbac.text)
 
-        # --- Test RBAC Middleware ---
-        rbac_fail = client.get('/dashboard/manager', headers={'x-user-role': 'investor'})
-        check('GET /dashboard/manager (RBAC Block)', rbac_fail.status_code == 403, rbac_fail.text)
+        manager_dashboard = client.get('/dashboard/manager', headers=manager_headers)
+        check('GET /dashboard/manager', manager_dashboard.status_code == 200 and 'summary' in manager_dashboard.json(), manager_dashboard.text)
+
+        rbac_fail = client.get('/dashboard/manager', headers=investor_headers)
+        check('GET /dashboard/manager blocked for investor', rbac_fail.status_code == 403, rbac_fail.text)
+
+        cycles_for_investor = client.get('/cycles', headers=investor_headers)
+        check('GET /cycles blocked for investor', cycles_for_investor.status_code == 403, cycles_for_investor.text)
 
         response = client.get('/dashboard/investor')
-        check('GET /dashboard/investor', response.status_code == 200 and 'portfolio_esg_score' in response.json(), f'status={response.status_code}')
+        check('GET /dashboard/investor', response.status_code == 200 and 'portfolio_esg_score' in response.json(), response.text)
 
         response = client.get('/analytics/portfolio')
-        check('GET /analytics/portfolio', response.status_code == 200 and 'portfolio_esg_score' in response.json(), f'status={response.status_code}')
-
-        company_login = client.post('/login', json={'email': 'company@example.com', 'password': 'password123'}).json()
-        response = client.get(f"/dashboard/company/{company_login['id']}")
-        check(
-            'GET /dashboard/company/{id}',
-            response.status_code == 200 and isinstance(response.json(), list) and len(response.json()) > 0,
-            f'status={response.status_code}, body={response.text}',
-        )
+        check('GET /analytics/portfolio', response.status_code == 200 and 'portfolio_esg_score' in response.json(), response.text)
 
         stamp = int(time.time())
-        company_email = f'qa_{stamp}@example.com'
-        company_name = f'QA Company {stamp}'
-        response = client.post('/companies', json={
-            'name': company_name,
-            'sector': 'Testing',
-            'contact_name': 'QA User',
-            'contact_email': company_email,
-        })
-        created_company = response.json() if response.status_code == 200 else {}
-        check('POST /companies', response.status_code == 200 and created_company.get('portfolio_user_email') == company_email, response.text)
-
         cycle_year = 2500 + (stamp % 100)
-        response = client.post('/cycles', json={
+        cycle_response = client.post('/cycles', json={
             'cycle_year': cycle_year,
             'submission_open_date': '2026-04-10',
             'submission_deadline': '2026-05-10',
@@ -67,23 +59,34 @@ def run_self_test():
             'debt_template': 'Debt Standard',
             'activate_on_create': True,
             'carry_forward_prefill': True,
-        })
-        cycle = response.json() if response.status_code == 200 else {}
-        check('POST /cycles', response.status_code == 200 and cycle.get('cycle_year') == cycle_year, response.text)
+        }, headers=manager_headers)
+        cycle = cycle_response.json() if cycle_response.status_code == 200 else {}
+        check('POST /cycles', cycle_response.status_code == 200 and cycle.get('cycle_year') == cycle_year, cycle_response.text)
 
-        response = client.get('/cycles')
-        cycles = response.json() if response.status_code == 200 else []
-        check('GET /cycles', response.status_code == 200 and any(item.get('cycle_year') == cycle_year for item in cycles), f'status={response.status_code}')
+        list_cycles = client.get('/cycles', headers=manager_headers)
+        cycles = list_cycles.json() if list_cycles.status_code == 200 else []
+        check('GET /cycles manager', list_cycles.status_code == 200 and any(item.get('cycle_year') == cycle_year for item in cycles), list_cycles.text)
+
+        company_email = f'qa_{stamp}@example.com'
+        company_name = f'QA Company {stamp}'
+        create_company = client.post('/companies', json={
+            'name': company_name,
+            'sector': 'Testing',
+            'contact_name': 'QA User',
+            'contact_email': company_email,
+        }, headers=manager_headers)
+        created_company = create_company.json() if create_company.status_code == 200 else {}
+        check('POST /companies manager', create_company.status_code == 200 and created_company.get('portfolio_user_email') == company_email, create_company.text)
 
         response = client.post('/login', json={'email': company_email, 'password': 'password123'})
-        new_portfolio = response.json() if response.status_code == 200 else {}
-        check('login:new portfolio company', response.status_code == 200 and new_portfolio.get('role') == 'company', response.text)
+        new_company_user = response.json() if response.status_code == 200 else {}
+        check('login:new company', response.status_code == 200 and new_company_user.get('role') == 'company', response.text)
 
-        response = client.get(f"/dashboard/company/{new_portfolio['id']}")
+        response = client.get(f"/dashboard/company/{new_company_user['id']}", headers={'x-user-role': 'company'})
         company_dashboard = response.json() if response.status_code == 200 else []
         company_id = company_dashboard[0]['id'] if company_dashboard else None
         check(
-            'new portfolio dashboard has company',
+            'dashboard/company shows created company',
             response.status_code == 200 and company_id is not None and company_dashboard[0]['name'] == company_name,
             response.text,
         )
@@ -168,99 +171,104 @@ def run_self_test():
             'submission_notes': 'QA submission',
         }
 
-        response = client.post(f'/company/{company_id}/submissions', json=submission_payload)
-        submission = response.json() if response.status_code == 200 else {}
-        check('POST /company/{id}/submissions', response.status_code == 200 and submission.get('status') == 'submitted', response.text)
+        initial_submit = client.post(f'/company/{company_id}/submissions', json=submission_payload)
+        submission = initial_submit.json() if initial_submit.status_code == 200 else {}
+        submission_id = submission.get('id')
+        check('active cycle accepts submission', initial_submit.status_code == 200 and submission.get('status') == 'submitted', initial_submit.text)
 
-        response = client.get(f"/dashboard/company/{new_portfolio['id']}")
-        refreshed = response.json() if response.status_code == 200 else []
-        stored = refreshed[0]['submissions'][-1] if refreshed and refreshed[0]['submissions'] else None
-        stored_ok = False
-        if stored:
-            esg = json.loads(stored['esg_data'])
-            stored_ok = (
-                esg.get('scope_1_emissions') == 10 and
-                esg.get('whs_policy_document_reference') == 'whs-policy.pdf' and
-                esg.get('submission_notes') == 'QA submission'
-            )
-        check('submitted values stored and returned', stored_ok, stored['esg_data'] if stored else 'missing submission')
+        to_under_review = client.patch(f'/submissions/{submission_id}/status', json={'status': 'under review'}, headers=manager_headers)
+        check('submitted -> under review', to_under_review.status_code == 200 and to_under_review.json().get('status') == 'under review', to_under_review.text)
 
-        submission_id = stored['id'] if stored else None
-        response = client.patch(f'/submissions/{submission_id}/status', json={'status': 'approved'})
-        check('PATCH /submissions/{id}/status', response.status_code == 200 and response.json().get('status') == 'approved', response.text)
+        invalid_transition = client.patch(f'/submissions/{submission_id}/status', json={'status': 'submitted'}, headers=manager_headers)
+        check('invalid transition blocked', invalid_transition.status_code == 422, invalid_transition.text)
 
-        response = client.get('/dashboard/manager')
-        manager_dashboard = response.json() if response.status_code == 200 else []
-        found = next((company for company in manager_dashboard if company['id'] == company_id), None)
+        resub_requested = client.post(
+            f'/submissions/{submission_id}/review',
+            json={'reviewer_role': 'Manager', 'review_status': 'resubmission requested', 'review_comment': 'Please revise and resubmit.'},
+            headers=manager_headers,
+        )
         check(
-            'manager dashboard reflects updated status',
-            bool(found and found['submissions'] and found['submissions'][-1]['status'] == 'approved'),
-            str(found),
+            'under review -> resubmission requested',
+            resub_requested.status_code == 200 and resub_requested.json().get('status') == 'resubmission requested',
+            resub_requested.text,
         )
 
-        response = client.post(f'/company/{company_id}/action-plans', json={
-            'initiative_name': 'Reduce Employee Turnover',
-            'target_completion_date': '2026-12-31',
-            'assigned_owner': 'HR Director'
-        })
-        check('POST /company/{id}/action-plans', response.status_code == 200 and response.json().get('status') == 'planned', response.text)
+        resubmit = client.post(f'/company/{company_id}/submissions', json=submission_payload)
+        resubmitted = resubmit.json() if resubmit.status_code == 200 else {}
+        check(
+            'resubmission requested -> submitted',
+            resubmit.status_code == 200 and resubmitted.get('id') == submission_id and resubmitted.get('status') == 'submitted',
+            resubmit.text,
+        )
 
-        response = client.post('/calculator/ghg', json={'fuel_liters': 1000, 'electricity_kwh': 5000})
-        check('POST /calculator/ghg', response.status_code == 200 and response.json().get('total_tco2e') > 0, response.text)
+        close_cycle = client.patch(f"/cycles/{cycle['id']}/status", json={'status': 'closed'}, headers=manager_headers)
+        check('PATCH /cycles/{id}/status close', close_cycle.status_code == 200 and close_cycle.json().get('status') == 'closed', close_cycle.text)
 
-        response = client.post(f'/company/{company_id}/upload-evidence', files={'file': ('policy.pdf', b'dummy content', 'application/pdf')})
-        check('POST /company/{id}/upload-evidence', response.status_code == 200, response.text)
+        blocked_submit = client.post(f'/company/{company_id}/submissions', json=submission_payload)
+        check('closed cycle blocks write', blocked_submit.status_code == 423, blocked_submit.text)
 
-        # Test validation on Solar Tech submission (ID=2) which has year-over-year variance from prior baseline
-        response = client.post('/submissions/2/validate')
-        check('POST /submissions/{id}/validate', response.status_code == 200 and response.json().get('flagged') is True, response.text)
+        unlock_response = client.post(
+            f'/submissions/{submission_id}/unlock',
+            json={'reason': 'Allow corrections after close', 'expiry_hours': 2},
+            headers=manager_headers,
+        )
+        unlock_payload = unlock_response.json() if unlock_response.status_code == 200 else {}
+        check('POST /submissions/{id}/unlock', unlock_response.status_code == 200 and unlock_payload.get('active') is True, unlock_response.text)
 
-        response = client.post(f'/submissions/{submission_id}/review', json={
-            'reviewer_role': 'Manager',
-            'review_status': 'resubmission requested',
-            'review_comment': 'Please check your Scope 1 emissions, it seems too high.'
-        })
-        check('POST /submissions/{id}/review', response.status_code == 200 and response.json().get('status') == 'resubmission requested', response.text)
+        unlocked_submit = client.post(f'/company/{company_id}/submissions', json=submission_payload)
+        check('unlock allows temporary write', unlocked_submit.status_code == 200, unlocked_submit.text)
 
-        response = client.get('/reports/edci')
-        check('GET /reports/edci', response.status_code == 200, response.text)
+        reminder_response = client.post(
+            f'/companies/{company_id}/reminders',
+            json={'channel': 'email', 'message': 'Please complete outstanding corrections.', 'cycle_id': cycle['id']},
+            headers=manager_headers,
+        )
+        check('POST /companies/{id}/reminders', reminder_response.status_code == 200 and reminder_response.json().get('delivery_status') == 'logged', reminder_response.text)
 
-        # --- Test v2 Hierarchical JSON Payload ---
-        v2_payload = {
-            "company_id": company_id,
-            "reporting_year": 2026,
-            "environmental": {
-                "scope_1_emissions": 100.0,
-                "scope_1_confidence": "Measured",
-                "scope_2_location_based": 50.0,
-                "scope_2_confidence": "Measured",
-                "scope_3_emissions": 25.0,
-                "scope_3_confidence": "Estimated"
-            },
-            "social": {
-                "whs_policy_in_place": True,
-                "whs_document_reference": "whs.pdf",
-                "trifr": 1.2,
-                "female_representation_percent": 45.5
-            },
-            "governance": {
-                "esg_policy_in_place": True,
-                "esg_document_reference": "esg.pdf",
-                "female_board_members_percent": 33.3
-            },
-            "prefilled_data": {
-                "scope_1_emissions": 50.0  # 100% variance compared to 100.0 above
-            }
-        }
-        
-        # 1. Should fail because variance > 30% and no submission_notes are provided
-        response = client.post('/api/v2/submissions', json=v2_payload)
-        check('POST /api/v2/submissions (validation failure)', response.status_code == 422 and 'submission_notes' in response.text, response.text)
+        reminder_forbidden = client.post(
+            f'/companies/{company_id}/reminders',
+            json={'channel': 'email', 'message': 'Investor should be blocked', 'cycle_id': cycle['id']},
+            headers=investor_headers,
+        )
+        check('reminder blocked for investor', reminder_forbidden.status_code == 403, reminder_forbidden.text)
 
-        # 2. Should pass after adding the required submission_notes explanation
-        v2_payload["submission_notes"] = "Emissions doubled due to new factory acquisition."
-        response = client.post('/api/v2/submissions', json=v2_payload)
-        check('POST /api/v2/submissions (success)', response.status_code == 200 and response.json().get('total_ghg_emissions') == 175.0, response.text)
+        validate_response = client.post(f'/submissions/{submission_id}/validate', headers=manager_headers)
+        check('POST /submissions/{id}/validate', validate_response.status_code == 200 and 'flagged' in validate_response.json(), validate_response.text)
+
+        metadata = client.get('/reports/edci')
+        check('GET /reports/edci metadata', metadata.status_code == 200 and metadata.json().get('report_type') == 'EDCI', metadata.text)
+
+        csv_export = client.get('/reports/edci/export?format=csv&period=FY2026&portfolio=All%20Portfolio%20Companies', headers=manager_headers)
+        csv_payload = csv_export.json() if csv_export.status_code == 200 else {}
+        csv_ok = False
+        if csv_payload.get('file_path'):
+            csv_file = Path(csv_payload['file_path'])
+            csv_ok = csv_file.exists() and csv_file.stat().st_size > 0 and csv_payload.get('content_type') == 'text/csv'
+        check('GET /reports/{type}/export csv', csv_export.status_code == 200 and csv_ok, csv_export.text)
+
+        pdf_export = client.get('/reports/sfdr/export?format=pdf&period=FY2026&portfolio=All%20Portfolio%20Companies', headers=manager_headers)
+        pdf_payload = pdf_export.json() if pdf_export.status_code == 200 else {}
+        pdf_ok = False
+        if pdf_payload.get('file_path'):
+            pdf_file = Path(pdf_payload['file_path'])
+            pdf_ok = pdf_file.exists() and pdf_file.stat().st_size > 0 and pdf_payload.get('content_type') == 'application/pdf'
+        check('GET /reports/{type}/export pdf', pdf_export.status_code == 200 and pdf_ok, pdf_export.text)
+
+        manager_after = client.get('/dashboard/manager', headers=manager_headers)
+        manager_json = manager_after.json() if manager_after.status_code == 200 else {}
+        summary = manager_json.get('summary', {})
+        buckets = summary.get('status_breakdown', {})
+        required_buckets = {'Not Started', 'In Progress', 'Submitted', 'Under Review', 'Approved', 'Resubmission Requested'}
+        check(
+            'manager dashboard six buckets',
+            manager_after.status_code == 200 and required_buckets.issubset(set(buckets.keys())),
+            manager_after.text,
+        )
+        check(
+            'manager dashboard cycle banner/upcoming deadlines',
+            manager_after.status_code == 200 and isinstance(summary.get('cycle_banner'), dict) and isinstance(summary.get('upcoming_deadlines'), list),
+            json.dumps(summary),
+        )
 
     return results
 

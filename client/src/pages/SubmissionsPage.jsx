@@ -118,26 +118,82 @@ export default function SubmissionsPage() {
     }).filter(d => d.scope1 > 0 || d.femaleLeadership > 0);
   }, [companies, user?.role]);
 
+  const managerHeaders = useMemo(() => ({
+    'Content-Type': 'application/json',
+    'x-user-role': user?.role || '',
+    'x-user-email': user?.email || '',
+  }), [user?.email, user?.role])
+
+  const managerPost = async (path, method = 'POST', body = null) => {
+    const response = await fetch(`${BACKEND_URL}${path}`, {
+      method,
+      headers: body ? managerHeaders : {
+        'x-user-role': user?.role || '',
+        'x-user-email': user?.email || '',
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    })
+    if (!response.ok) {
+      const errorPayload = await response.json().catch(() => ({}))
+      throw new Error(errorPayload.detail || `Request failed (${response.status})`)
+    }
+    return response.json().catch(() => ({}))
+  }
+
   const handleValidate = async (submissionId) => {
     try {
-      const res = await fetch(`${BACKEND_URL}/submissions/${submissionId}/validate`, { method: 'POST' })
-      if (!res.ok) throw new Error('Validation failed')
+      await managerPost(`/submissions/${submissionId}/validate`, 'POST')
       alert('Validation complete. Anomalies flagged.')
       refresh()
     } catch(e) { alert(e.message) }
   }
 
-  const handleReview = async (submissionId, status) => {
+  const handleReview = async (submissionId, status, currentStatus) => {
     try {
-      const res = await fetch(`${BACKEND_URL}/submissions/${submissionId}/review`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reviewer_role: 'Manager', review_status: status, review_comment: 'Reviewed via dashboard' })
+      if (
+        ['approved', 'rejected', 'resubmission requested'].includes(status)
+        && currentStatus === 'Submitted'
+      ) {
+        await managerPost(`/submissions/${submissionId}/status`, 'PATCH', { status: 'under review' })
+      }
+      await managerPost(`/submissions/${submissionId}/review`, 'POST', {
+        reviewer_role: 'Manager',
+        review_status: status,
+        review_comment: 'Reviewed via dashboard',
       })
-      if (!res.ok) throw new Error('Review failed')
       alert(`Submission marked as ${status}`)
       refresh()
     } catch(e) { alert(e.message) }
+  }
+
+  const handleUnlock = async (submissionId) => {
+    const reason = window.prompt('Enter unlock reason', 'Allow targeted correction after cycle close')
+    if (!reason) return
+    try {
+      await managerPost(`/submissions/${submissionId}/unlock`, 'POST', {
+        reason,
+        expiry_hours: 24,
+      })
+      alert('Submission unlocked for 24 hours.')
+      refresh()
+    } catch (e) {
+      alert(e.message)
+    }
+  }
+
+  const handleReminder = async (companyId) => {
+    const message = window.prompt('Reminder message', 'Please submit updated ESG data before the deadline.')
+    if (!message) return
+    try {
+      await managerPost(`/companies/${companyId}/reminders`, 'POST', {
+        channel: 'email',
+        message,
+      })
+      alert('Reminder logged successfully.')
+      refresh()
+    } catch (e) {
+      alert(e.message)
+    }
   }
 
   const handleDownloadReport = async (type) => {
@@ -214,7 +270,13 @@ export default function SubmissionsPage() {
           {row.currentStatus === 'pre-acquisition' && (
             <button className="text-xs text-indigo-600 font-bold uppercase tracking-wide hover:underline" onClick={async () => {
               try {
-                const res = await fetch(`${BACKEND_URL}/company/${row.id}/onboarding/complete`, { method: 'POST' });
+                const res = await fetch(`${BACKEND_URL}/company/${row.id}/onboarding/complete`, {
+                  method: 'POST',
+                  headers: {
+                    'x-user-role': user?.role || '',
+                    'x-user-email': user?.email || '',
+                  }
+                });
                 if (!res.ok) throw new Error('Failed to complete onboarding');
                 alert('Company onboarded successfully!');
                 refresh();
@@ -224,12 +286,15 @@ export default function SubmissionsPage() {
           {row.submissionId ? (
             <>
               <button className="text-xs text-blue-600 font-bold uppercase tracking-wide hover:underline" onClick={() => handleValidate(row.submissionId)}>Validate</button>
-              <button className="text-xs text-green-600 font-bold uppercase tracking-wide hover:underline" onClick={() => handleReview(row.submissionId, 'approved')}>Approve</button>
-              <button className="text-xs text-orange-600 font-bold uppercase tracking-wide hover:underline" onClick={() => handleReview(row.submissionId, 'resubmission requested')}>Resubmit</button>
-              <button className="text-xs text-red-600 font-bold uppercase tracking-wide hover:underline" onClick={() => handleReview(row.submissionId, 'rejected')}>Reject</button>
+              <button className="text-xs text-sky-700 font-bold uppercase tracking-wide hover:underline" onClick={() => handleReview(row.submissionId, 'under review', row.status)}>Under Review</button>
+              <button className="text-xs text-green-600 font-bold uppercase tracking-wide hover:underline" onClick={() => handleReview(row.submissionId, 'approved', row.status)}>Approve</button>
+              <button className="text-xs text-orange-600 font-bold uppercase tracking-wide hover:underline" onClick={() => handleReview(row.submissionId, 'resubmission requested', row.status)}>Resubmit</button>
+              <button className="text-xs text-red-600 font-bold uppercase tracking-wide hover:underline" onClick={() => handleReview(row.submissionId, 'rejected', row.status)}>Reject</button>
+              <button className="text-xs text-amber-700 font-bold uppercase tracking-wide hover:underline" onClick={() => handleUnlock(row.submissionId)}>Unlock</button>
+              <button className="text-xs text-violet-700 font-bold uppercase tracking-wide hover:underline" onClick={() => handleReminder(row.id)}>Reminder</button>
             </>
           ) : (
-            <span className="text-xs text-slate-400">No Submission</span>
+            <button className="text-xs text-violet-700 font-bold uppercase tracking-wide hover:underline" onClick={() => handleReminder(row.id)}>Send Reminder</button>
           )}
         </div>
       )

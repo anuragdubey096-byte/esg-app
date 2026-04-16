@@ -6,11 +6,36 @@ import StatusBadge from '../components/StatusBadge'
 import useDashboardData from '../hooks/useDashboardData'
 
 const adminSettingsTabs = ['Data Collection Cycles', 'Users']
+const BACKEND_URL = 'http://127.0.0.1:8000'
 
 export default function AdminSettingsPage() {
   const { user } = useOutletContext()
-  const { cycles } = useDashboardData(user)
+  const { cycles, refresh } = useDashboardData(user)
   const [activeTab, setActiveTab] = useState(adminSettingsTabs[0])
+  const [message, setMessage] = useState('')
+
+  const updateCycleStatus = async (cycleId, status) => {
+    setMessage('Updating cycle status...')
+    try {
+      const response = await fetch(`${BACKEND_URL}/cycles/${cycleId}/status`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-user-role': user?.role || '',
+          'x-user-email': user?.email || '',
+        },
+        body: JSON.stringify({ status }),
+      })
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}))
+        throw new Error(payload.detail || 'Failed to update cycle status')
+      }
+      setMessage(`Cycle updated to ${status}.`)
+      refresh()
+    } catch (error) {
+      setMessage(error.message)
+    }
+  }
 
   const current = useMemo(() => {
     if (activeTab === 'Users') {
@@ -24,20 +49,50 @@ export default function AdminSettingsPage() {
         ]
       }
     }
+
     return {
-      rows: cycles.map(c => ({
-        id: c.id,
-        cycle: `FY${c.cycle_year}`,
-        openDate: c.submission_open_date,
-        deadline: c.submission_deadline,
-        status: c.status
+      rows: cycles.map((cycle) => ({
+        id: cycle.id,
+        cycle: `FY${cycle.cycle_year}`,
+        openDate: cycle.submission_open_date,
+        deadline: cycle.submission_deadline,
+        status: cycle.status,
       })),
       columns: [
         { key: 'cycle', label: 'Cycle', sortable: true },
         { key: 'openDate', label: 'Open Date', sortable: true },
         { key: 'deadline', label: 'Deadline', sortable: true },
         { key: 'status', label: 'Status', sortable: true, render: (row) => <StatusBadge value={row.status} /> },
-      ]
+        {
+          key: 'actions',
+          label: 'Actions',
+          render: (row) => (
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                className="text-xs text-green-700 font-bold uppercase tracking-wide hover:underline"
+                onClick={() => updateCycleStatus(row.id, 'active')}
+              >
+                Activate
+              </button>
+              <button
+                type="button"
+                className="text-xs text-red-700 font-bold uppercase tracking-wide hover:underline"
+                onClick={() => updateCycleStatus(row.id, 'closed')}
+              >
+                Close
+              </button>
+              <button
+                type="button"
+                className="text-xs text-slate-700 font-bold uppercase tracking-wide hover:underline"
+                onClick={() => updateCycleStatus(row.id, 'draft')}
+              >
+                Draft
+              </button>
+            </div>
+          ),
+        },
+      ],
     }
   }, [activeTab, cycles, user])
 
@@ -62,6 +117,7 @@ export default function AdminSettingsPage() {
         }
       >
         <DataTable columns={current.columns} rows={current.rows} pageSize={8} />
+        {message ? <p className="action-message">{message}</p> : null}
       </SectionCard>
     </div>
   )

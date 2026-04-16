@@ -1,5 +1,7 @@
 import enum
-from sqlalchemy import Column, ForeignKey, Integer, String, Enum
+from datetime import datetime
+
+from sqlalchemy import Boolean, Column, DateTime, Enum, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import declarative_base, relationship
 
 Base = declarative_base()
@@ -22,6 +24,8 @@ class User(Base):
 
     companies = relationship('Company', back_populates='owner')
     cycles = relationship('CollectionCycle', back_populates='created_by_user')
+    submission_unlocks = relationship('SubmissionUnlock', back_populates='unlocked_by_user')
+    reminder_logs = relationship('ReminderLog', back_populates='sent_by_user')
 
 
 # companies — stores each company and connects it to a user account.
@@ -44,6 +48,8 @@ class Company(Base):
     action_plans = relationship('ActionPlan', back_populates='company')
     review_actions = relationship('ReviewAction', back_populates='company')
     validation_flags = relationship('ValidationFlag', back_populates='company')
+    submission_unlocks = relationship('SubmissionUnlock', back_populates='company')
+    reminder_logs = relationship('ReminderLog', back_populates='company')
 
 
 # submissions — stores ESG reports for each company with a status.
@@ -53,10 +59,13 @@ class Submission(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     company_id = Column(Integer, ForeignKey('companies.id'), nullable=False)
+    cycle_id = Column(Integer, ForeignKey('collection_cycles.id'), nullable=True, index=True)
     esg_data = Column(String, nullable=False)
     status = Column(String, nullable=False, default='not started')
 
     company = relationship('Company', back_populates='submissions')
+    cycle = relationship('CollectionCycle', back_populates='submissions')
+    unlocks = relationship('SubmissionUnlock', back_populates='submission')
 
 
 class ReviewAction(Base):
@@ -101,6 +110,45 @@ class CollectionCycle(Base):
     created_by_user_id = Column(Integer, ForeignKey('users.id'), nullable=True)
 
     created_by_user = relationship('User', back_populates='cycles')
+    submissions = relationship('Submission', back_populates='cycle')
+    submission_unlocks = relationship('SubmissionUnlock', back_populates='cycle')
+    reminder_logs = relationship('ReminderLog', back_populates='cycle')
+
+
+class SubmissionUnlock(Base):
+    __tablename__ = 'submission_unlocks'
+
+    id = Column(Integer, primary_key=True, index=True)
+    submission_id = Column(Integer, ForeignKey('submissions.id'), nullable=False, index=True)
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=False, index=True)
+    cycle_id = Column(Integer, ForeignKey('collection_cycles.id'), nullable=False, index=True)
+    unlocked_by_user_id = Column(Integer, ForeignKey('users.id'), nullable=True)
+    reason = Column(Text, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    active = Column(Boolean, nullable=False, default=True)
+
+    submission = relationship('Submission', back_populates='unlocks')
+    company = relationship('Company', back_populates='submission_unlocks')
+    cycle = relationship('CollectionCycle', back_populates='submission_unlocks')
+    unlocked_by_user = relationship('User', back_populates='submission_unlocks')
+
+
+class ReminderLog(Base):
+    __tablename__ = 'reminder_logs'
+
+    id = Column(Integer, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=False, index=True)
+    cycle_id = Column(Integer, ForeignKey('collection_cycles.id'), nullable=False, index=True)
+    sent_by_user_id = Column(Integer, ForeignKey('users.id'), nullable=True)
+    channel = Column(String, nullable=False, default='email')
+    message = Column(Text, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    delivery_status = Column(String, nullable=False, default='logged')
+
+    company = relationship('Company', back_populates='reminder_logs')
+    cycle = relationship('CollectionCycle', back_populates='reminder_logs')
+    sent_by_user = relationship('User', back_populates='reminder_logs')
 
 
 class ActionPlan(Base):
