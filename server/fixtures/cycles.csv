@@ -1,0 +1,2 @@
+cycle_year,submission_open_date,submission_deadline,extension_date,reminder_days_before_deadline,private_equity_template,real_estate_template,debt_template,activate_on_create,carry_forward_prefill,status
+2024,2025-01-15,2025-03-31,2025-04-30,14,ESG_PE_Template_v3.xlsx,ESG_RE_Template_v3.xlsx,ESG_Debt_Template_v2.xlsx,TRUE,TRUE,active

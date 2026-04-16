@@ -1,23 +1,46 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import DataTable from '../components/DataTable'
 import SectionCard from '../components/SectionCard'
 import StatusBadge from '../components/StatusBadge'
 import useDashboardData from '../hooks/useDashboardData'
+import { API_BASE_URL } from '../lib/api'
+import { Button } from '../components/ui'
 
 const adminSettingsTabs = ['Data Collection Cycles', 'Users']
-const BACKEND_URL = 'http://127.0.0.1:8000'
-
 export default function AdminSettingsPage() {
   const { user } = useOutletContext()
   const { cycles, refresh } = useDashboardData(user)
   const [activeTab, setActiveTab] = useState(adminSettingsTabs[0])
   const [message, setMessage] = useState('')
+  const [users, setUsers] = useState([])
+
+  useEffect(() => {
+    if (activeTab !== 'Users') return
+    if (user?.role !== 'manager') return
+    const run = async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/users`, {
+          headers: {
+            'x-user-role': user?.role || '',
+            'x-user-email': user?.email || '',
+          },
+        })
+        if (!response.ok) throw new Error('Failed to load users')
+        const payload = await response.json()
+        setUsers(Array.isArray(payload) ? payload : [])
+      } catch (error) {
+        setUsers([])
+        setMessage(error.message)
+      }
+    }
+    run()
+  }, [activeTab, user?.email, user?.role])
 
   const updateCycleStatus = async (cycleId, status) => {
     setMessage('Updating cycle status...')
     try {
-      const response = await fetch(`${BACKEND_URL}/cycles/${cycleId}/status`, {
+      const response = await fetch(`${API_BASE_URL}/cycles/${cycleId}/status`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -40,13 +63,19 @@ export default function AdminSettingsPage() {
   const current = useMemo(() => {
     if (activeTab === 'Users') {
       return {
-        rows: user ? [{ id: user.id, name: user.name, role: user.role, email: user.email, status: 'Active' }] : [],
+        rows: users.map((item) => ({
+          id: item.id,
+          name: item.name,
+          role: item.role,
+          email: item.email,
+          status: 'Active',
+        })),
         columns: [
           { key: 'name', label: 'Name', sortable: true },
           { key: 'role', label: 'Role', sortable: true },
           { key: 'email', label: 'Email', sortable: true },
           { key: 'status', label: 'Status', sortable: true, render: (row) => <StatusBadge value={row.status} /> },
-        ]
+        ],
       }
     }
 
@@ -68,33 +97,21 @@ export default function AdminSettingsPage() {
           label: 'Actions',
           render: (row) => (
             <div className="flex items-center gap-3">
-              <button
-                type="button"
-                className="text-xs text-green-700 font-bold uppercase tracking-wide hover:underline"
-                onClick={() => updateCycleStatus(row.id, 'active')}
-              >
+              <Button type="button" className="text-xs text-green-700 ui-text-strong uppercase tracking-wide hover:underline" onClick={() => updateCycleStatus(row.id, 'active')}>
                 Activate
-              </button>
-              <button
-                type="button"
-                className="text-xs text-red-700 font-bold uppercase tracking-wide hover:underline"
-                onClick={() => updateCycleStatus(row.id, 'closed')}
-              >
+              </Button>
+              <Button type="button" className="text-xs text-red-700 ui-text-strong uppercase tracking-wide hover:underline" onClick={() => updateCycleStatus(row.id, 'closed')}>
                 Close
-              </button>
-              <button
-                type="button"
-                className="text-xs text-slate-700 font-bold uppercase tracking-wide hover:underline"
-                onClick={() => updateCycleStatus(row.id, 'draft')}
-              >
+              </Button>
+              <Button type="button" className="text-xs text-slate-700 ui-text-strong uppercase tracking-wide hover:underline" onClick={() => updateCycleStatus(row.id, 'draft')}>
                 Draft
-              </button>
+              </Button>
             </div>
           ),
         },
       ],
     }
-  }, [activeTab, cycles, user])
+  }, [activeTab, cycles, users])
 
   return (
     <div className="page-grid">
@@ -104,14 +121,9 @@ export default function AdminSettingsPage() {
         actions={
           <div className="tab-row">
             {adminSettingsTabs.map((tab) => (
-              <button
-                key={tab}
-                type="button"
-                className={`tab-button ${tab === activeTab ? 'active' : ''}`}
-                onClick={() => setActiveTab(tab)}
-              >
+              <Button key={tab} type="button" className={`tab-button ${tab === activeTab ? 'active' : ''}`} onClick={() => setActiveTab(tab)}>
                 {tab}
-              </button>
+              </Button>
             ))}
           </div>
         }
@@ -122,3 +134,4 @@ export default function AdminSettingsPage() {
     </div>
   )
 }
+

@@ -11,8 +11,14 @@ class UserRole(str, enum.Enum):
     MANAGER = 'manager'
     INVESTOR = 'investor'
 
+class LPType(str, enum.Enum):
+    STANDARD = 'standard'
+    AUTHORISED = 'authorised'
+
 # users — stores email, password, and role for every account.
 # Role is one of: company, manager, investor.
+# For investor role, lp_type distinguishes: standard (portfolio-only) or authorised (portfolio + specific companies)
+# company_permissions JSON stores list of company_ids that authorised LPs can access
 class User(Base):
     __tablename__ = 'users'
 
@@ -21,6 +27,9 @@ class User(Base):
     email = Column(String, unique=True, index=True, nullable=False)
     password = Column(String, nullable=False)
     role = Column(Enum(UserRole, native_enum=False), nullable=False)
+    lp_type = Column(Enum(LPType, native_enum=False), nullable=True, default=LPType.STANDARD)  # For investor role
+    company_permissions = Column(String, nullable=True, default='[]')  # JSON: ["1", "5", "12"] for authorised LPs
+    portfolio_id = Column(Integer, nullable=True)  # Link to portfolio (future use)
 
     companies = relationship('Company', back_populates='owner')
     cycles = relationship('CollectionCycle', back_populates='created_by_user')
@@ -66,6 +75,41 @@ class Submission(Base):
     company = relationship('Company', back_populates='submissions')
     cycle = relationship('CollectionCycle', back_populates='submissions')
     unlocks = relationship('SubmissionUnlock', back_populates='submission')
+
+
+class NarrativeSummary(Base):
+    __tablename__ = 'narrative_summaries'
+
+    id = Column(Integer, primary_key=True, index=True)
+    audience = Column(String, nullable=False)
+    scope = Column(String, nullable=False)
+    tone = Column(String, nullable=False, default='board-ready')
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=True, index=True)
+    source_hash = Column(String, nullable=False, index=True)
+    provider = Column(String, nullable=False, default='openai')
+    model = Column(String, nullable=True)
+    status = Column(String, nullable=False, default='generated')
+    headline = Column(String, nullable=False)
+    narrative = Column(Text, nullable=False)
+    highlights_json = Column(Text, nullable=False, default='[]')
+    watchouts_json = Column(Text, nullable=False, default='[]')
+    recommendations_json = Column(Text, nullable=False, default='[]')
+    source_years_json = Column(Text, nullable=False, default='[]')
+    framework_tags_json = Column(Text, nullable=False, default='[]')
+    generation_context_json = Column(Text, nullable=False, default='{}')
+    generated_payload_json = Column(Text, nullable=False, default='{}')
+    edited_payload_json = Column(Text, nullable=False, default='{}')
+    published_payload_json = Column(Text, nullable=False, default='{}')
+    source_company_count = Column(Integer, nullable=False, default=0)
+    source_submission_count = Column(Integer, nullable=False, default=0)
+    approved_by_role = Column(String, nullable=True)
+    approved_at = Column(DateTime, nullable=True)
+    edited_by_role = Column(String, nullable=True)
+    edited_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    company = relationship('Company')
 
 
 class ReviewAction(Base):
@@ -160,5 +204,71 @@ class ActionPlan(Base):
     target_completion_date = Column(String, nullable=False)
     assigned_owner = Column(String, nullable=False)
     status = Column(String, nullable=False, default='planned')
+    description = Column(Text, nullable=True)
+    linked_metric = Column(String, nullable=True)  # Area/metric this action targets
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     company = relationship('Company', back_populates='action_plans')
+
+
+# submission_data_fields — stores individual ESG data points for each submission
+class SubmissionDataField(Base):
+    __tablename__ = 'submission_data_fields'
+
+    id = Column(Integer, primary_key=True, index=True)
+    submission_id = Column(Integer, ForeignKey('submissions.id'), nullable=False, index=True)
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=False, index=True)
+    section = Column(String, nullable=False)  # "Environmental", "Social", "Governance"
+    field_key = Column(String, nullable=False)  # Unique field identifier
+    field_label = Column(String, nullable=False)  # Display name
+    value = Column(Text, nullable=True)  # The actual value entered
+    prior_year_value = Column(Text, nullable=True)  # For YoY variance reference
+    confidence_level = Column(String, nullable=False, default='estimated')  # Measured, Estimated, Not Available
+    yoy_variance_percent = Column(Text, nullable=True)  # Auto-calculated variance percentage
+    requires_explanation = Column(Boolean, nullable=False, default=False)  # True if variance > 30%
+    explanation = Column(Text, nullable=True)  # User explanation for variance
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    submission = relationship('Submission', backref='data_fields')
+    company = relationship('Company')
+
+
+# supporting_documents — stores file uploads for policies and documents
+class SupportingDocument(Base):
+    __tablename__ = 'supporting_documents'
+
+    id = Column(Integer, primary_key=True, index=True)
+    submission_id = Column(Integer, ForeignKey('submissions.id'), nullable=False, index=True)
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=False, index=True)
+    field_key = Column(String, nullable=False)  # Which field it's attached to (e.g., "esg_policy_document")
+    file_name = Column(String, nullable=False)
+    file_size = Column(Integer, nullable=False)  # Size in bytes
+    file_type = Column(String, nullable=False)  # MIME type
+    file_path = Column(String, nullable=False)  # Path where file is stored
+    uploaded_by_email = Column(String, nullable=True)
+    uploaded_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    submission = relationship('Submission', backref='documents')
+    company = relationship('Company')
+
+
+# validation_errors — real-time validation error tracking
+class ValidationError(Base):
+    __tablename__ = 'validation_errors'
+
+    id = Column(Integer, primary_key=True, index=True)
+    submission_id = Column(Integer, ForeignKey('submissions.id'), nullable=False, index=True)
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=False, index=True)
+    section = Column(String, nullable=False)  # Environmental, Social, Governance
+    field_key = Column(String, nullable=False)
+    field_label = Column(String, nullable=False)
+    error_type = Column(String, nullable=False)  # "required", "range", "variance", "format"
+    error_message = Column(String, nullable=False)
+    severity = Column(String, nullable=False, default='error')  # "error", "warning"
+    resolved = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    submission = relationship('Submission', backref='validation_errors')
+    company = relationship('Company')

@@ -1,19 +1,23 @@
 import { useMemo } from 'react'
-import { useOutletContext } from 'react-router-dom'
+import { useNavigate, useOutletContext } from 'react-router-dom'
 import DataTable from '../components/DataTable'
 import SectionCard from '../components/SectionCard'
 import StatusBadge from '../components/StatusBadge'
 import useDashboardData from '../hooks/useDashboardData'
+import { Button } from '../components/ui'
 
 export default function AlertsRisksPage() {
   const { user } = useOutletContext()
+  const navigate = useNavigate()
   const { companies } = useDashboardData(user)
 
   const riskIssueRows = useMemo(() => {
     return companies.flatMap(company => 
       (company.validation_flags || []).map(flag => ({
         id: flag.id,
+        companyId: company.id,
         company: company.name,
+        fieldName: flag.field_name,
         issue: flag.issue_description,
         severity: flag.severity,
       }))
@@ -36,9 +40,22 @@ export default function AlertsRisksPage() {
 
   const columns = [
     { key: 'company', label: 'Company', sortable: true },
+    { key: 'fieldName', label: 'Field', sortable: true },
     { key: 'issue', label: 'Issue', sortable: true },
     { key: 'severity', label: 'Severity', sortable: true, render: (row) => <StatusBadge value={row.severity} /> },
-    { key: 'action', label: 'Action', render: () => <button className="button">Open</button> },
+    {
+      key: 'action',
+      label: 'Action',
+      render: (row) => (
+        <Button
+          type="button"
+          className="button"
+          onClick={() => navigate(`/review-hub?companyId=${row.companyId}&field=${encodeURIComponent(row.fieldName || '')}`)}
+        >
+          Open
+        </Button>
+      ),
+    },
   ]
 
   return (
@@ -58,3 +75,4 @@ export default function AlertsRisksPage() {
     </div>
   )
 }
+

@@ -11,8 +11,10 @@ Set these in the Vercel project settings:
   - Do not use SQLite on Vercel
 - `BLOB_READ_WRITE_TOKEN`
   - Required for report and narrative PDF exports
-- `ANTHROPIC_API_KEY`
+- `OPENAI_API_KEY`
   - Required for AI ESG Narrative Summary generation
+- `OPENAI_MODEL`
+  - Optional model override, defaults to `gpt-4o-mini`
 - `FRONTEND_ORIGIN`
   - Exact public origin of the deployed app
   - Example: `https://your-app.vercel.app`
@@ -67,7 +69,7 @@ Check these live after deployment:
 
 - Missing `DATABASE_URL`
 - Missing `BLOB_READ_WRITE_TOKEN`
-- Missing `ANTHROPIC_API_KEY`
+- Missing `OPENAI_API_KEY`
 - Wrong `FRONTEND_ORIGIN`
 - Accidentally deploying from `client/` when you meant to use the root project
 - Using SQLite in production

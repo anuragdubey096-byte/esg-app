@@ -1,14 +1,15 @@
-export default function SectionCard({ title, subtitle, children, actions }) {
+import Card from './ui/Card'
+
+export default function SectionCard({ title, subtitle, children, actions, footer, className = '' }) {
   return (
-    <section className="section-card">
-      <div className="section-card-header">
-        <div>
-          <h3>{title}</h3>
-          {subtitle ? <p>{subtitle}</p> : null}
-        </div>
-        {actions ? <div>{actions}</div> : null}
-      </div>
+    <Card
+      title={title}
+      subtitle={subtitle}
+      actions={actions}
+      footer={footer}
+      className={className}
+    >
       {children}
-    </section>
+    </Card>
   )
 }

@@ -4,7 +4,7 @@ import json
 import re
 from pathlib import Path
 
-from sqlalchemy import text
+from sqlalchemy import inspect
 from database import SessionLocal, engine
 from models import (
     Base,
@@ -24,6 +24,13 @@ EXPECTED_FILES = {
     'submissions_previous': 'esg_submissions_previous_year.csv',
     'submissions_current': 'esg_submissions_current_year.csv',
 }
+
+
+def get_default_data_dir() -> Path:
+    fixtures_dir = Path(__file__).resolve().parent / 'fixtures'
+    if fixtures_dir.exists():
+        return fixtures_dir
+    return Path.cwd()
 
 
 def load_csv_rows(csv_path: Path):
@@ -217,11 +224,11 @@ def import_submissions(db, data_dir: Path):
 
 
 def ensure_schema_ready():
-    with engine.connect() as conn:
-        columns = [row[1] for row in conn.execute(text("PRAGMA table_info(companies)"))]
+    inspector = inspect(engine)
+    columns = [column['name'] for column in inspector.get_columns('companies')]
     if 'code' not in columns:
         raise RuntimeError(
-            'The existing database schema is outdated. Delete server/db.sqlite or run python server/reset_db.py before importing the new synthetic CSV files.'
+            'The existing database schema is outdated. Run python server/reset_db.py before importing the new synthetic CSV files.'
         )
 
 
@@ -244,12 +251,12 @@ def import_all(data_dir: Path):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Import ESG app CSV data into server/db.sqlite')
+    parser = argparse.ArgumentParser(description='Import ESG app CSV data into the configured database')
     parser.add_argument(
         'data_dir',
         nargs='?',
-        default='.',
-        help='Directory containing cycles.csv, review_actions.csv, validation_flags.csv, companies.csv, esg_submissions_previous_year.csv, and esg_submissions_current_year.csv',
+        default=str(get_default_data_dir()),
+        help='Directory containing cycles.csv, review_actions.csv, validation_flags.csv, companies.csv, esg_submissions_previous_year.csv, and esg_submissions_current_year.csv. Defaults to server/fixtures when present.',
     )
     args = parser.parse_args()
 

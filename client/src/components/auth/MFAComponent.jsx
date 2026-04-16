@@ -38,13 +38,13 @@ export default function MFAComponent({ onVerify, onBack, loading }) {
         </Button>
       </div>
 
-      <button
+      <Button
         type="button"
         onClick={onBack}
-        className="text-sm font-medium text-slate-500 underline underline-offset-4 hover:text-slate-700"
+        variant="ghost"
       >
         Back to sign in
-      </button>
+      </Button>
     </form>
   )
 }

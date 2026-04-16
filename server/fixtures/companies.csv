@@ -1,0 +1,21 @@
+company_id,company_name,asset_class,sector,geography,portfolio_contact_name,portfolio_contact_email,client_visible,current_status
+C001,Vantara Industrials,private_equity,Manufacturing,Australia,James Whitfield,j.whitfield@vantara.com.au,TRUE,approved
+C002,Meridian Healthcare Group,private_equity,Healthcare,United Kingdom,Sophie Hargreaves,s.hargreaves@meridianhcg.co.uk,TRUE,approved
+C003,Solstice Logistics Partners,private_equity,Logistics & Transport,Germany,Klaus Bauer,k.bauer@solsticelogistics.de,TRUE,under review
+C004,Arclight Renewable Energy,real_estate,Energy & Utilities,Australia,Priya Nair,p.nair@arclightre.com.au,TRUE,approved
+C005,Queensbridge Property Trust,real_estate,Real Estate,Australia,Thomas Garfield,t.garfield@qbptrust.com.au,TRUE,submitted
+C006,Northgate Capital Finance,debt,Financial Services,United Kingdom,Rebecca Lowe,r.lowe@northgatecf.co.uk,FALSE,under review
+C007,Pinnacle Aged Care,private_equity,Healthcare,Australia,Marcus Webb,m.webb@pinnacleac.com.au,TRUE,approved
+C008,Elara Consumer Brands,private_equity,Consumer Goods,United States,Dana Kowalski,d.kowalski@elarabrands.com,TRUE,resubmission requested
+C009,Verdant Agriculture Holdings,private_equity,Agriculture,New Zealand,Liam O'Sullivan,l.osullivan@verdantagri.co.nz,TRUE,approved
+C010,Steelmark Infrastructure,debt,Infrastructure,Australia,Charlotte Baines,c.baines@steelmarkinfra.com.au,FALSE,not started
+C011,Cobalt Digital Solutions,private_equity,Technology,United States,Ryan Patel,r.patel@cobaltdigital.com,TRUE,submitted
+C012,Harrington Commercial REIT,real_estate,Real Estate,Australia,Fiona McLaren,f.mclaren@harringtonreit.com.au,TRUE,approved
+C013,Pacific Timberlands,private_equity,Forestry & Land Use,New Zealand,Bruce Tane,b.tane@pacifictimber.co.nz,FALSE,under review
+C014,Luminary Education Group,private_equity,Education,Australia,Sarah Okonkwo,s.okonkwo@luminaryedu.com.au,TRUE,approved
+C015,Redwood Waste Solutions,private_equity,Waste Management,United Kingdom,Andrew Finch,a.finch@redwoodwaste.co.uk,TRUE,resubmission requested
+C016,Castlegate Senior Living,real_estate,Real Estate,Australia,Nicole Shepherd,n.shepherd@castlegatesl.com.au,TRUE,submitted
+C017,Ironbridge Mining Co,private_equity,Mining & Resources,Australia,Derek Huang,d.huang@ironbridgemining.com.au,FALSE,approved
+C018,Waverly Food & Beverage,private_equity,Food & Beverage,United Kingdom,Amelia Cross,a.cross@waverlyfb.co.uk,TRUE,not started
+C019,Nexus Telecommunications,debt,Telecommunications,Australia,Simon Tremblay,s.tremblay@nexustelecom.com.au,FALSE,submitted
+C020,BlueSky Aviation Services,private_equity,Aviation,Australia,Chloe Andersen,c.andersen@blueskyaviation.com.au,TRUE,under review

@@ -1,0 +1,748 @@
+ESG DATA COLLECTION PLATFORM
+Role-Based Application Workflow & Design Specification
+Private Equity Portfolio — ESG Data Management Solution
+Version 2.0  |  April 2026
+ROLE 1
+ROLE 2
+ROLE 3
+Admin / Portfolio Manager
+ESG Team & Fund Managers
+Investor / Limited Partner
+Fund Investors & LPs
+Portfolio Company
+ESG Data Submitters
+This document restructures the ESG platform requirements by user role, providing clear dashboard specifications, access functions, and workflow guidance for designers and developers building each role's interface.
+1. Executive Summary
+The ESG Data Collection Platform is a web-based system that replaces a manual, Excel-based process for collecting ESG (Environmental, Social, and Governance) data across a private equity portfolio of approximately 500 portfolio companies.
+This document is restructured around three primary user roles, providing designers and developers with precise specifications for each role's dashboard, access functions, and workflows. Additional use cases (third-party auditors, due diligence, etc.) are captured separately in the Additional Use Cases section.
+1.1 Platform Problem Being Solved
+Current Pain Point
+Platform Solution
+Manual Excel templates emailed to 500 companies
+Centralised web portal with automated notifications
+Manual validation by ESG team for each submission
+Real-time inline validation with automated flags
+No real-time visibility into submission progress
+Live dashboards with colour-coded status tracking
+Version control issues with multiple Excel files
+Single source of truth with audit trail
+No audit trail for changes or corrections
+Full timestamped audit log for all actions
+Time-consuming manual consolidation for reports
+Automated regulatory reports (EDCI, GRI, TCFD, SFDR, PRI)
+1.2 Three Core User Roles — At a Glance
+Role
+Who
+Primary Purpose
+Module Entry Point
+Admin / Portfolio Manager
+ESG Analysts, ESG Managers, Fund Managers
+Manage cycles, review submissions, approve data, generate reports
+Admin Review Hub
+Investor / Limited Partner
+LP representatives, Fund investors
+View portfolio ESG performance, download reports, track progress
+LP Self-Service Portal
+Portfolio Company
+Designated company ESG contacts
+Submit annual ESG data, upload supporting docs, log action plans
+Company Submission Portal
+ROLE 1: Admin / Portfolio Manager
+ESG Analysts · ESG Managers · Fund Managers — Admin Review Hub
+2.1 Role Overview & User Types
+User Type
+Who They Are
+Permissions Summary
+ESG Analyst
+Internal ESG team member
+View all submissions; validate and flag data; send reminders; generate reports; request resubmission
+ESG Manager
+Senior ESG team lead
+All Analyst permissions + approve/reject submissions; configure templates; manage users; activate data collection cycles
+System Administrator
+IT / Platform Administrator
+Full system access including user management, template configuration, audit logs, and system settings
+2.2 Dashboard Specification — Admin View
+FOR DESIGNERS
+The Admin dashboard is a data-dense command centre. Priority: real-time status visibility across all 500 companies. Use colour-coded status badges consistently throughout. The layout should support both high-level overview scanning and deep drill-down.
+2.2.1 Main Dashboard — Master Progress Overview
+URL Path: /admin/dashboard — Default landing page on login for all Admin roles.
+Dashboard Panel
+What It Shows / Content
+Interaction / Action
+Cycle Summary Banner
+Active cycle year, submission open date, deadline date, days remaining until deadline. Cycle status badge (Active / Closed / Draft).
+Click to open Cycle Settings
+Completion Ring Chart
+Overall portfolio completion %. Large donut chart. Segments: Not Started (grey), In Progress (blue), Submitted (yellow), Approved (green), Rejected/Resubmission (red).
+Click segment to filter company list
+Status Breakdown Cards
+6 metric cards showing count of companies per status: Not Started | In Progress | Submitted | Under Review | Approved | Resubmission Requested.
+Click card to filter company list below
+Flagged Submissions Alert
+Count of submissions with automated validation failures or YoY variance flags requiring analyst attention. Highlighted in amber/warning colour.
+Click to view flagged submissions list
+Upcoming Deadlines
+Companies with deadline in next 7 days that have not yet submitted. Shows company name, deadline date, current status.
+Click company name to send reminder or open submission
+Company Progress Table
+Full list of all 500 companies. Columns: Company Name | Asset Class | Sector | Status | % Complete | Last Activity | Deadline | Actions. Sortable and filterable by all columns.
+Search, filter, sort. Row click → Company Detail View. Actions: View, Send Reminder, Unlock
+Export Controls
+Export full progress report as Excel or PDF. Export as-of timestamp shown.
+Export to Excel / Export to PDF buttons
+2.2.2 Company Submission Detail View
+URL Path: /admin/companies/{companyId}/submission — Opened from the progress table.
+Dashboard Panel
+What It Shows / Content
+Interaction / Action
+Company Header
+Company name, asset class, sector, geography, submission status badge, submission deadline, assigned ESG analyst.
+Edit company profile (Manager only)
+Validation Summary
+Colour-coded summary bar: Pass (green) | Warning (amber) | Fail (red). Count of issues by type. Overall validation score.
+Click to jump to specific validation issues
+Data Review Table
+All submitted data points in their ESG sections (Environmental / Social / Governance). Each row: Field Name | Prior Year Value | Current Value | Change % | Confidence Flag | Validation Status | Analyst Comment.
+Add inline comment per data point. Flag field for follow-up.
+YoY Variance Flags
+Fields where value changed >30% are highlighted amber. Company's written explanation displayed inline. Analyst can accept or query the explanation.
+Accept explanation or Request Clarification
+Data Confidence Panel
+Summary of fields marked Measured vs Estimated vs Not Available. Estimated and Not Available fields are surfaced for attention.
+Filter to show only Estimated or N/A fields
+Supporting Documents
+Uploaded policy documents listed with upload date. Policy type: ESG Policy, WHS Policy, Cybersecurity Policy, Anti-Bribery Policy.
+Download document. Mark as Reviewed.
+Audit Trail
+Chronological log of all actions: submission date/time, who submitted, edits, resubmission requests, unlock events, approval actions.
+View full audit log. Export to PDF.
+Action Bar
+Primary actions for this submission based on current status and user role.
+Approve | Request Resubmission | Reject | Unlock | Send Reminder | Add Note
+2.2.3 Reporting & Analytics Dashboard
+URL Path: /admin/reports — Available to Analysts and Managers.
+Dashboard Panel
+What It Shows / Content
+Interaction / Action
+Portfolio ESG Scorecard
+Overall portfolio ESG score (weighted). Year-on-year trend sparkline. Score breakdown by E pillar, S pillar, G pillar.
+Configure scoring weights (Manager only)
+Emissions Summary
+Total Scope 1, 2, 3 emissions across portfolio. YoY trend chart. Progress against reduction target.
+Drill down to company-level detail
+Company Rankings Table
+All portfolio companies ranked by ESG score. Columns: Rank | Company | ESG Score | E Score | S Score | G Score | YoY Change | Status.
+Sort by any score column. Click company to open company report.
+Benchmark Comparison Chart
+Portfolio average vs sector/industry benchmark. Visual bar chart for key metrics (emissions intensity, female %, TRIFR, etc.).
+Toggle between metric views. Select benchmark dataset.
+Asset Class Breakdown
+ESG performance segmented by Private Equity / Real Estate / Debt. Separate metric views per asset class.
+Select asset class filter
+Data Quality Panel
+% submissions approved. % data points Measured vs Estimated across portfolio. % of companies with all mandatory fields complete.
+Export data quality report
+Regulatory Report Generator
+Generate framework-aligned reports: EDCI | TCFD | GRI | SFDR PAI | PRI. One-click generation once data is approved.
+Generate Report button per framework. Download PDF / Excel.
+2.2.4 Cycle Management View
+URL Path: /admin/cycles — Available to ESG Manager and System Admin only.
+Dashboard Panel
+What It Shows / Content
+Interaction / Action
+Active Cycle Overview
+Current cycle year, status, dates, companies enrolled, completion %.
+Edit cycle settings. Close cycle.
+Create New Cycle
+Form to set: Cycle year, open date, deadline, extension date, template version, asset class template mapping, prefill configuration.
+Create and Activate Cycle
+Template Configuration
+ESG data template editor. Add / modify / remove data points. Set mandatory/optional. Assign validation rules. Tag to regulatory frameworks. Configure sector-specific variants.
+Edit, Preview, Save, Version template
+Automated Reminder Schedule
+Configure reminder schedule: 30, 14, 7, 1 days before deadline. Email template editor. Preview notification email.
+Save schedule. Test send reminder.
+Past Cycles Archive
+List of all completed cycles with year, completion %, download report.
+Open historical cycle data. Export.
+2.3 Access Functions — Admin Role
+FOR DEVELOPERS
+Implement role-based access control (RBAC). ESG Analyst and ESG Manager share most access but Manager has exclusive access to approve/reject, cycle management, and template configuration. System Admin has full access.
+Function / Feature
+Description
+Access Level
+View All Company Submissions
+Browse all 500 companies and their submission data
+Full Access
+Validate & Flag Data
+Run manual validation checks; add analyst flags on data points
+Full Access
+Add Analyst Comments
+Add notes and comments against individual data points
+Full Access
+Request Resubmission
+Unlock a submission and send feedback to the company
+Full Access
+Send Reminders
+Send individual or bulk reminder emails to companies
+Full Access
+Generate Reports
+Generate portfolio and company-level ESG reports
+Full Access
+Export Data
+Export submission data, progress reports, and analytics to Excel/PDF
+Full Access
+Approve / Reject Submissions
+Final approval or rejection of reviewed submissions
+Manager Only
+Configure Data Cycles
+Create and activate annual data collection cycles
+Manager Only
+Template Management
+Add, edit, remove data points from the ESG template
+Manager Only
+User Management
+Create, edit, deactivate user accounts across all roles
+Manager / SysAdmin
+System Settings
+Configure system-wide settings, audit log access, integrations
+SysAdmin Only
+Grant Auditor Access
+Provide time-limited read-only access to external auditors
+Manager Only
+2.4 Key Workflows — Admin
+2.4.1 Annual Cycle Initiation (ESG Manager)
+Log into Admin Review Hub with Manager credentials.
+Navigate to Data Collection Cycles → Create New Cycle.
+Set cycle year, open date, submission deadline, and optional extension date.
+Select template type per asset class (private equity / real estate / debt).
+Review and configure ESG template — add, modify, or remove data points as needed. Ensure all points are tagged to regulatory frameworks.
+Configure prefilled data carried forward from prior year validated submissions.
+Set company-specific deadlines if required.
+Configure automated reminder schedule (30, 14, 7, and 1 day before deadline).
+Activate cycle — this triggers automatic company notification emails.
+2.4.2 Reviewing a Company Submission (ESG Analyst)
+Log in to Admin Review Hub.
+Open Submissions dashboard. Filter by status: Submitted / Flagged.
+Select a company to open the Submission Detail View.
+Review automated validation flags. Add manual notes where required.
+If data is acceptable → Mark as Reviewed → passes to Manager for approval.
+If data needs correction → Request Resubmission → enter specific feedback → company is notified automatically.
+2.4.3 Final Approval (ESG Manager)
+Review submissions marked as Reviewed by the Analyst.
+Approve (status → Approved, feeds into reporting layer) or Reject back to Analyst with comments.
+Monitor overall cycle progress on the main dashboard.
+ROLE 2: Investor / Limited Partner
+Fund Investors & LP Representatives — Self-Service LP Portal
+3.1 Role Overview
+The Investor / Limited Partner (LP) role provides read-only, self-service access to portfolio-level ESG performance data. LPs do not see individual company data unless specifically authorised. This portal eliminates manual report distribution and gives investors real-time visibility into the fund's ESG performance.
+User Type
+Who They Are
+Access Summary
+Limited Partner (LP)
+Fund investor / LP representative
+Read-only access to portfolio-level ESG dashboards. Download reports. Track year-on-year progress. No individual company data visible unless authorised.
+LP — Authorised Company View
+LP with specific company-level access granted by ESG Manager
+Portfolio-level access + read-only access to specific company submissions as authorised by ESG Manager.
+3.2 Dashboard Specification — LP Investor View
+FOR DESIGNERS
+The LP portal should feel like a premium investor-grade reporting interface — clean, polished, data-forward. Emphasis on charts, trend lines, and downloadable reports. Minimal UI complexity. No editing or submission functions visible. The investor should feel informed and confident.
+3.2.1 LP Portfolio Dashboard — Main View
+URL Path: /lp/dashboard — Default landing on LP login.
+Dashboard Panel
+What It Shows / Content
+Interaction / Action
+Portfolio ESG Scorecard
+Overall portfolio ESG score prominently displayed. Year-on-year comparison (current vs prior year). Score trend sparkline (3-5 year history).
+View score methodology (read only)
+ESG Pillar Summary
+Three metric cards: E Score (Environmental), S Score (Social), G Score (Governance). Current score, prior year score, change % with up/down indicator.
+Click pillar card to expand detailed metrics
+Portfolio Completion Status
+% of portfolio companies with Approved submissions for the current cycle. Data currency indicator (last updated date).
+Read only
+Key Metrics Summary Tiles
+6–8 headline metric tiles: Total Scope 1+2+3 Emissions | Emissions Intensity | Total Employees | Female Representation % | Total Fatalities | % Companies with ESG Policy | TRIFR.
+Click tile to view trend chart
+Emissions Trend Chart
+Multi-year line chart for Scope 1, 2, and 3 emissions. Portfolio-level aggregated. Toggle between absolute and intensity views.
+Hover for year values. Toggle Scope layers.
+Portfolio Diversity Metrics
+Female representation across portfolio (overall %). Female representation in leadership (%). Board gender diversity %.
+View year-on-year trend
+ESG Policy Adoption
+% of portfolio companies with ESG Policy, WHS Policy, Cybersecurity Policy, Anti-Bribery Policy in place. Donut charts per policy type.
+Read only
+Action Plan Progress
+Portfolio-level summary of active ESG improvement action plans. Count In Progress vs Completed.
+Read only
+3.2.2 Detailed ESG Metrics View
+URL Path: /lp/metrics — Accessible via navigation from dashboard.
+Dashboard Panel
+What It Shows / Content
+Interaction / Action
+Environmental Deep Dive
+Detailed charts for: GHG Emissions by Scope, Energy Consumption (total vs renewable), Water Withdrawal, Waste Generated vs Diverted. All with year-on-year trend lines.
+Download chart data as Excel. Toggle chart type.
+Social Deep Dive
+WHS metrics (TRIFR trend, fatalities, lost time injuries), Workforce metrics (headcount, turnover, gender diversity), Community investment totals.
+Download chart data. Export to PDF.
+Governance Deep Dive
+Policy compliance rates, Board composition (size, independence %, female %), Cyber incident rates, Anti-bribery compliance.
+Download chart data. Export to PDF.
+Asset Class Breakdown
+All metrics segmented by Private Equity / Real Estate / Debt. Performance comparison between asset classes.
+Select asset class filter. Download segment data.
+Benchmark Comparison
+Portfolio performance vs industry benchmark for key metrics. Visual above/at/below benchmark indicators.
+View benchmark methodology (read only)
+3.2.3 Reports & Downloads
+URL Path: /lp/reports — Report library for LP download.
+Dashboard Panel
+What It Shows / Content
+Interaction / Action
+Available Reports
+List of generated reports available for download: Annual ESG Report | EDCI Report | TCFD Report | GRI Report | SFDR PAI Report | PRI Report. Each shows: report name, year, generated date, format (PDF/Excel).
+Download PDF / Download Excel
+Historical Reports Archive
+Reports from prior cycles organised by year. Searchable.
+Download any historical report
+Custom Date Range Export
+Select date range to export portfolio metrics for specific periods.
+Set date range → Export to Excel
+3.3 Access Functions — LP Investor Role
+FOR DEVELOPERS
+LP role is strictly read-only on all data. No create, edit, or delete operations are permitted. Enforce at API level, not just UI. Configurable access per LP (full portfolio vs fund-specific view) must be implemented via ESG Manager settings.
+Function / Feature
+Description
+Access Level
+View Portfolio ESG Dashboard
+Access the main LP portfolio ESG performance dashboard
+Read Only
+View Detailed ESG Metrics
+Drill into detailed Environmental, Social, and Governance metric views
+Read Only
+View ESG Score & Trends
+View portfolio ESG score, pillar scores, and year-on-year trends
+Read Only
+View Asset Class Breakdown
+View ESG performance segmented by private equity, real estate, and debt
+Read Only
+View Benchmark Comparisons
+View portfolio performance vs industry benchmark
+Read Only
+Download Reports
+Download all available regulatory framework reports (EDCI, TCFD, GRI, SFDR, PRI) in PDF and Excel
+Read Only
+View Historical Reports Archive
+Access reports from prior cycles
+Read Only
+Export Chart Data to Excel
+Download underlying data for any displayed chart
+Read Only
+View Individual Company Data
+Access specific company-level ESG submissions
+Authorised LPs Only
+Submit or Edit Any Data
+Not available — LP portal is read-only throughout
+No Access
+Access Admin Hub
+Not available — LP users do not have access to the Admin Review Hub
+No Access
+3.4 Authentication & Access Configuration
+LP users access the platform via secure login with unique credentials (MFA not required by default, configurable).
+Each LP account is configured by the ESG Manager with a specific portfolio scope: full portfolio view or fund-specific view.
+LPs can only see portfolio-level aggregated data unless the ESG Manager has explicitly authorised individual company-level access.
+LP access is controlled independently per LP — one LP may see the full portfolio while another sees only Fund II data.
+All LP activity (report downloads, dashboard views) is logged in the audit trail.
+Session timeout applies after a defined period of inactivity.
+ROLE 3: Portfolio Company
+Designated ESG Contacts at Each Portfolio Company — Company Submission Portal
+4.1 Role Overview
+Portfolio Company users are the designated ESG contacts at each of the 500 portfolio companies. They access the platform to complete and submit the annual ESG data questionnaire. This is typically the only time these users interact with the platform — during the annual submission window.
+User Type
+Who They Are
+Access Summary
+Portfolio Company User
+Designated ESG contact(s) at each portfolio company
+Submit ESG data for their company only. View own submission status and history. Upload supporting documents. Log ESG improvement action plans.
+Portfolio Company — Multi-User
+Multiple team members from the same company assigned different sections
+Each user completes assigned ESG sections (e.g., one user for Environmental, another for Governance). All collaborate on the same company submission.
+4.2 Dashboard Specification — Company Portal View
+FOR DESIGNERS
+The Company Portal is used by non-technical users who may only log in once per year. Design for clarity and ease: clear progress indicators, prominent deadlines, step-by-step guidance, inline help tooltips. Avoid overwhelming the user with data. Every screen should answer: What do I need to do right now?
+4.2.1 Company Dashboard — Home Screen
+URL Path: /company/dashboard — Default landing on company login.
+Dashboard Panel
+What It Shows / Content
+Interaction / Action
+Status Banner
+Large, prominent current submission status: NOT STARTED / IN PROGRESS / SUBMITTED / APPROVED / REJECTED / RESUBMISSION REQUIRED. Colour-coded: grey / blue / yellow / green / red / amber.
+Click to start or continue submission
+Deadline Countdown
+Submission deadline date and days remaining displayed prominently. Urgency colour coding: green (>14 days), amber (7–14 days), red (<7 days).
+Read only
+Progress Bar
+Overall completion progress: X of 400 data points completed. Visual progress bar. Breakdown by section: Environmental X% | Social X% | Governance X%.
+Click section to navigate directly to it
+Validation Errors Alert
+Count of outstanding validation errors (if any). Shown as prominent alert if errors exist. Brief description of sections with errors.
+Click to jump to first error
+Feedback from Admin
+If submission was returned for resubmission: ESG team feedback notes displayed here. Sections requiring correction highlighted.
+Click to view full feedback and navigate to relevant sections
+Prior Year Summary
+Brief summary of last year's approved submission key metrics (for reference): Total Emissions, TRIFR, Employees, ESG Score.
+View prior year full submission (read only)
+Action Buttons
+Primary CTA button clearly visible.
+Start Submission / Continue Submission / Review & Submit
+4.2.2 ESG Data Submission Form
+URL Path: /company/submission/{cycleId} — The core data entry interface.
+Dashboard Panel
+What It Shows / Content
+Interaction / Action
+Section Navigation Sidebar
+Left sidebar showing all sections: Environmental | Social | Governance. Each section shows completion % and validation status (pass/warning/error icon).
+Click section to navigate. Progress saved automatically.
+Section Header
+Current section name, description, number of data points in section, completion count (X of Y), and section-level validation status.
+Read only
+Data Entry Fields
+Each field shows: Field label, help tooltip icon (i), unit of measurement, prior year value (read-only reference), input field. Formula-driven fields show auto-calculated value.
+Enter value. Select confidence level (Measured / Estimated / Not Available). Tooltip reveals field definition and calculation guidance.
+Confidence Flag Selector
+For every data field, a mandatory dropdown: Measured | Estimated | Not Available. Shown adjacent to each input field. Cannot be left blank.
+Select confidence level — required for every field
+Real-Time Validation
+Field turns red with error message on invalid input. Field turns amber if value triggers YoY variance alert (>30% change from prior year). Green tick on valid input.
+Correct error before moving to next section. YoY variance requires written explanation to proceed.
+YoY Variance Explanation Box
+Appears when a value triggers the variance threshold (>30% change). Text input box prompting the user to explain the change. Mandatory to complete before submitting.
+Enter explanation text (mandatory)
+Bulk Import Option
+Button to download pre-formatted CSV/Excel template and re-upload populated data. Available for numeric data sections.
+Download Template → Complete offline → Upload → Data populates fields
+Supporting Document Upload
+For relevant fields (ESG Policy, WHS Policy, Cybersecurity Policy, etc.), a file upload control appears. Accepts PDF, Word, Excel. Max file size shown.
+Upload document. View uploaded file. Remove and replace.
+Save & Progress
+Auto-save every 5 minutes (shown as 'Last saved: X mins ago'). Manual Save button. Navigate between sections without losing data.
+Auto-save. Manual Save. Navigate forward/back.
+4.2.3 Pre-Submission Review Screen
+URL Path: /company/submission/{cycleId}/review — Final step before submit.
+Dashboard Panel
+What It Shows / Content
+Interaction / Action
+Completion Summary
+Total data points: X of 400 complete. Count of mandatory fields outstanding (must be 0 to submit). Count of optional fields not completed.
+Click to jump to incomplete section
+Validation Error List
+All outstanding validation errors listed. Each error shows: Section, field name, error description. Cannot submit until all mandatory errors resolved.
+Click error to navigate to the field and correct it
+Full Data Preview
+Read-only preview of all entered data organised by section. Final check before submission.
+Scroll through to review. Click Edit Section to go back and change.
+Submission Declaration
+Checkbox: 'I confirm that the information submitted is accurate to the best of my knowledge.' Must be checked to enable Submit button.
+Check declaration to enable Submit
+Submit Button
+Large, prominent Submit button. Only active when all mandatory fields complete, all mandatory errors resolved, and declaration checked.
+Submit — triggers confirmation screen and email acknowledgement
+4.2.4 ESG Action Plan View
+URL Path: /company/action-plans — Accessible any time during the year.
+Dashboard Panel
+What It Shows / Content
+Interaction / Action
+Active Action Plans List
+Table of all current ESG action plan items. Columns: Title | Linked Metric/Area | Owner | Target Date | Status (Not Started / In Progress / Completed / Overdue).
+Click action to edit. Filter by status.
+Add New Action
+Form to create a new action plan item: title, description, target metric or area, owner name, target completion date.
+Add New Action button → inline form
+Completed Actions Archive
+List of completed actions. These are highlighted in the company's annual ESG report as evidence of continuous improvement.
+View completed actions. Read only.
+4.3 Access Functions — Portfolio Company Role
+FOR DEVELOPERS
+Company users are strictly scoped to their own company's data only. Implement tenant isolation at the data layer — a company user must never be able to access any other company's data, even with URL manipulation. Once a form is submitted, it must be locked from editing until unlocked by an ESG Analyst.
+Function / Feature
+Description
+Access Level
+View Own Company Dashboard
+Access their company's submission status, deadline, and progress overview
+Submit Only
+Complete ESG Data Form
+Enter and edit ESG data points in the submission form during the open submission window
+Submit Only
+Set Data Confidence Flags
+For each data point, select Measured / Estimated / Not Available
+Submit Only
+Upload Supporting Documents
+Upload policy documents (ESG, WHS, Cybersecurity, Anti-Bribery)
+Submit Only
+Use Bulk Import
+Download and re-upload CSV/Excel template to populate numeric data fields
+Submit Only
+Submit Annual ESG Data
+Submit completed form for review by the ESG team
+Submit Only
+View Own Submission History
+View prior year approved submissions for reference (read only)
+Read Only
+View Feedback from ESG Team
+View resubmission feedback notes and flags from ESG Analysts
+Read Only
+Manage ESG Action Plans
+Create, edit, and update their company's ESG improvement action plan items at any time
+Submit Only
+Edit Submitted Form
+Only available if ESG Analyst has unlocked the submission for resubmission
+After Unlock Only
+View Other Companies' Data
+Not available — strict data isolation between companies
+No Access
+View Portfolio-Level Reports
+Not available — company users see only their own data
+No Access
+Access Admin Hub
+Not available — no access to Admin Review Hub functions
+No Access
+4.4 Data Entry Guidance — Key Behaviours for Developers
+4.4.1 Field Validation Rules
+Validation Type
+Behaviour
+User-Facing Message
+Numeric range check
+Field rejects values outside configured min/max
+Value must be greater than zero / Value must be between 0 and 100
+Mandatory field empty
+Field highlighted red. Submit blocked.
+This field is required
+Formula cross-check
+Auto-calculated field (e.g., Total Emissions = S1+S2+S3) shown read-only
+Auto-calculated from Scope 1, 2 and 3 values above
+YoY variance >30%
+Field turns amber. Explanation text box appears. Submit blocked until explanation entered.
+This value has changed by X% from last year. Please explain this change.
+Confidence flag missing
+Field blocked until confidence level selected
+Please select whether this value is Measured, Estimated, or Not Available
+Document upload required
+If policy exists (Yes selected), document upload becomes mandatory
+Please upload the policy document to support this response
+4.4.2 Auto-Save & Session Behaviour
+Data is auto-saved every 5 minutes. A 'Last saved' timestamp is visible to the user.
+Users can close the browser and return — all entered data is preserved.
+Session timeout after configurable inactivity period. Warning shown 5 minutes before timeout. Data saved before session ends.
+Once submitted, the form is locked. Editing requires ESG Analyst to unlock via Admin Hub.
+5. Additional Use Cases
+The following modules and workflows extend the platform beyond the three primary roles. They are out of scope for the initial MVP and should be treated as Phase 2 or Phase 3 enhancements.
+5.1  Additional Use Case: External Auditor / Third-Party Verifier
+For funds requiring third-party ESG data assurance, an optional auditor verification workflow can be enabled. This is an additional role separate from the three primary roles.
+Auditor Role Summary
+Attribute
+Detail
+Who
+External ESG assurance providers, independent verifiers, Big 4 audit firm ESG teams
+Access Type
+Time-limited, read-only login granted by ESG Manager for specific company submissions
+Portal Entry Point
+Dedicated auditor view /auditor/review
+Phase
+Phase 2 — Post-MVP
+Auditor Functions
+ESG Manager grants external auditor access to selected company submissions via a time-limited, read-only login.
+Auditor reviews: submission data, data confidence flags, supporting documents, and automated validation results.
+Auditor can add verification notes against individual data points and mark submissions as Verified or Requires Clarification.
+A verification sign-off report is auto-generated on completion — suitable for LP reports and regulatory disclosures.
+All auditor actions are logged in the audit trail with timestamps.
+Auditor cannot edit, approve, or reject data — read-only plus annotation only.
+5.2  Additional Use Case: Due Diligence & Pre-Acquisition ESG Assessment
+This module supports pre-acquisition ESG assessments of potential investments by the deal team, outside the standard annual data collection cycle.
+Pre-Acquisition Workflow
+ESG Analyst creates a new Due Diligence Assessment record in the platform and invites the target company's nominated contact.
+Target company receives a focused ESG questionnaire (40–60 questions) covering material ESG risks and policy status.
+Responses are validated in real time and submitted to the ESG team.
+ESG Analyst reviews responses and generates a Pre-Acquisition ESG Risk Summary report shared with the deal team.
+Report identifies material ESG risks, policy gaps, and recommended actions — informing investment decision-making.
+If acquisition proceeds, pre-acquisition assessment data is carried forward to seed the company's first annual submission.
+New Company Onboarding Workflow
+ESG Manager creates a new company profile: company name, asset class, sector, geography, and designated ESG contacts.
+System generates login credentials and sends welcome email to the designated contact.
+New company completes a Baseline ESG Maturity Assessment covering current ESG policies, processes, and baseline metrics.
+ESG Analyst generates an ESG Maturity Report identifying improvement areas and recommended action plan items.
+Company is enrolled in the standard annual data collection cycle from the following cycle year.
+If pre-acquisition assessment was completed, the baseline is pre-filled from that data to reduce duplication.
+5.3  Additional Use Case: ESG Improvement Action Plans
+Beyond data collection, the platform supports active ESG management through improvement action plans. This is a year-round feature, not limited to the submission window.
+Company Action Plan Features
+Each portfolio company can maintain an active ESG Action Plan within the platform.
+Actions can be linked to specific ESG metrics or policy gaps identified during annual review.
+Each action includes: title, description, target metric/area, owner name, target completion date, and status (Not Started / In Progress / Completed / Overdue).
+Companies update action status at any time during the year — not just at submission time.
+Completed actions are highlighted in the company's ESG report as evidence of continuous improvement.
+Admin View of Action Plans
+ESG Analysts can view all portfolio companies' action plans in a consolidated view.
+Filter by status, asset class, sector, or metric area to identify portfolio-wide trends.
+Action plan completion rates are included in LP reports and portfolio ESG dashboards.
+ESG Manager can set recommended action plan items for all portfolio companies after each annual review cycle.
+5.4  Additional Use Case: Exit Readiness ESG Pack
+An auto-generated multi-year ESG performance summary for any portfolio company — suitable for M&A due diligence processes and vendor data rooms.
+Triggered by ESG Manager or Deal Team User for a specific portfolio company.
+Automatically compiles: ESG score trend (multi-year), policy compliance status, key environmental metrics, WHS record, governance summary, and data quality assessment.
+Exportable in PDF format for direct inclusion in vendor due diligence data rooms.
+No additional data entry required — generated from existing approved submission history.
+6. ESG Data Framework Summary
+The following summarises the key ESG data categories collected via the platform. Each metric is tagged to the relevant regulatory framework(s) to enable automated report generation. A full data dictionary (all 400 data points) is to be documented separately.
+6.1 Environmental Metrics
+Category
+Key Metrics
+Frameworks
+GHG Emissions
+Scope 1, Scope 2 (location + market-based), Scope 3, Total GHG Emissions (auto-calc)
+EDCI, TCFD, GRI, SFDR
+GHG Reduction
+Reduction Target (%), Target Year, Reduction Strategy Description
+TCFD, GRI, PRI
+Energy
+Total Energy Consumption (MWh), Renewable Energy Consumption (MWh)
+EDCI, GRI, SFDR
+Water
+Total Water Withdrawal (m³), Water Recycled/Reused (m³)
+EDCI, GRI, SFDR
+Waste
+Total Waste Generated (tonnes), Waste Diverted from Landfill, Hazardous Waste
+EDCI, GRI, SFDR
+Air Quality
+Air Quality Controls in Place (Y/N), NOx/SOx Emissions (if applicable)
+GRI, SFDR
+6.2 Social Metrics
+Category
+Key Metrics
+Frameworks
+Work Health & Safety
+WHS Policy (Y/N + doc upload), TRIFR, Total Fatalities, Lost Time Injuries, Total Incidents
+EDCI, GRI, SFDR
+Workforce
+Total Employees (FTE), Employee Turnover Rate (%), Female Representation (%), Female in Leadership (%)
+EDCI, GRI, SFDR
+Community
+Community Investment / Spend (AUD)
+GRI, PRI
+6.3 Governance Metrics
+Category
+Key Metrics
+Frameworks
+ESG Policy
+ESG Policy (Y/N + doc), Board-level ESG Oversight (Y/N), ESG KPIs Linked to Remuneration (Y/N)
+EDCI, TCFD, GRI, PRI
+Cybersecurity
+Cybersecurity Policy (Y/N + doc), Cyber Incidents in Reporting Period (count)
+GRI, SFDR
+Anti-Bribery
+Anti-Bribery & Corruption Policy (Y/N), Confirmed Cases of Corruption (count)
+GRI, SFDR
+Board Composition
+Total Board Members, Independent Board Members (%), Female Board Members (%)
+EDCI, GRI, SFDR
+7. Non-Functional Requirements
+These requirements apply across all three roles and the entire platform.
+Requirement
+Specification
+Performance
+Support up to 500 concurrent users during peak submission periods without degradation in response time.
+Availability
+Target uptime of 99.5% or greater, excluding scheduled maintenance windows.
+Security
+All data encrypted in transit (TLS 1.2+) and at rest. Role-based access control (RBAC) enforced throughout. MFA required for all Admin role users.
+Scalability
+Capable of scaling to support additional portfolio companies, data points, or asset classes without architectural changes.
+Auditability
+Full audit log of all user actions, data submissions, edits, approvals, and system events. Logs retained for a minimum of 7 years.
+Usability
+Company portal must be intuitive for non-technical users to complete submissions without training. Supported by inline guidance and help text throughout.
+Data Retention
+All submitted ESG data retained for a minimum of 10 years for historical trend analysis and regulatory requirements.
+Browser Compatibility
+Must function on current versions of Chrome, Edge, Firefox, and Safari. Accessible on desktop and tablet devices.
+Data Isolation
+Company users must be strictly isolated to their own company's data. Enforced at the API layer, not only at the UI layer.
+8. Next Steps
+#
+Action
+Owner
+Priority
+1
+Finalise and sign off this Application Workflow document (v2.0).
+ESG Manager
+High
+2
+Develop the full ESG Data Dictionary (all 400 data points with validation rules and framework tags).
+ESG Team
+High
+3
+Define sector-specific template variations for private equity, real estate, and debt asset classes.
+ESG Team
+High
+4
+Build and validate the synthetic ESG dataset (20 companies, all metrics) for testing.
+ESG Team
+High
+5
+Define ESG scoring methodology and metric weightings.
+ESG Manager
+High
+6
+Produce wireframes for all three role dashboards based on specifications in this document.
+Design Lead
+High
+7
+Define reporting requirements, dashboard KPI specifications, and regulatory framework report templates.
+ESG Manager
+Medium
+8
+Define LP portal access requirements and report formats.
+ESG Manager
+Medium
+9
+Evaluate build vs. buy vs. low-code platform options for development.
+ESG Manager + IT
+Medium
+10
+Select technology platform and engage development resources.
+ESG Manager + IT
+Medium
+11
+Develop and test platform using synthetic dataset, prioritising core modules first.
+Dev Team
+Medium
+12
+Pilot with a subset of 10–20 portfolio companies.
+ESG Team
+Medium
+13
+Full rollout to all 500 portfolio companies.
+ESG Team + IT
+Low
+Document Control
+Version
+Date
+Author
+Notes
+1.0
+March 2026
+ESG Team
+Initial draft.
+1.1
+March 2026
+ESG Team
+Updated to include sector-specific templates, data confidence flags, YoY variance alerts, bulk import, multi-user collaboration, cross-company anomaly detection, external auditor workflow, EDCI & framework mapping, ESG scoring, benchmark comparisons, LP portal, carbon calculator, exit readiness pack, due diligence & onboarding module, ESG action plans.
+2.0
+April 2026
+ESG Team
+Restructured into three primary role views (Admin/Portfolio Manager, Investor/LP, Portfolio Company). Added role-wise dashboard specifications with panel-level detail for designers. Added access function tables for developers. Additional use cases (auditor, due diligence, action plans, exit readiness) moved to dedicated Additional Use Cases section.
+This document is a living specification and should be updated as requirements are refined during the design and build phases.

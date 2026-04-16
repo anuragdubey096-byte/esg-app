@@ -1,12 +1,11 @@
 import LoginForm from './components/auth/LoginForm'
 import LoginLayout from './components/auth/LoginLayout'
-
-const backendUrl = 'http://127.0.0.1:8000'
+import { API_BASE_URL } from './lib/api'
 
 export default function LoginPage({ onLogin }) {
   const authenticate = async ({ email, password }) => {
     try {
-      const response = await fetch(`${backendUrl}/login`, {
+      const response = await fetch(`${API_BASE_URL}/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),
@@ -32,7 +31,7 @@ export default function LoginPage({ onLogin }) {
   }
 
   const forgotPassword = async ({ email }) => {
-    const response = await fetch(`${backendUrl}/auth/forgot-password`, {
+    const response = await fetch(`${API_BASE_URL}/auth/forgot-password`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email }),
@@ -48,7 +47,7 @@ export default function LoginPage({ onLogin }) {
   }
 
   const ssoSignIn = async (provider) => {
-    const response = await fetch(`${backendUrl}/auth/sso/${provider}`, {
+    const response = await fetch(`${API_BASE_URL}/auth/sso/${provider}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({}),

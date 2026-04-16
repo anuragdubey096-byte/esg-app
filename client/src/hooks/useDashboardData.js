@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-
-const BACKEND_URL = 'http://127.0.0.1:8000'
+import { normalizeStatusLabel } from '../components/ui/status'
+import { API_BASE_URL } from '../lib/api'
 
 const STATUS_TO_UI = {
   'not started': 'Not Started',
@@ -8,8 +8,9 @@ const STATUS_TO_UI = {
   submitted: 'Submitted',
   'under review': 'Under Review',
   approved: 'Approved',
-  rejected: 'Resubmission Requested',
-  'resubmission requested': 'Resubmission Requested',
+  rejected: 'Rejected',
+  'resubmission requested': 'Resubmission Required',
+  'resubmission required': 'Resubmission Required',
 }
 
 function toTitleCase(value) {
@@ -28,7 +29,7 @@ function getDashboardPath(user) {
 export function normalizeStatus(status) {
   const normalized = String(status || '').trim().toLowerCase()
   if (!normalized) return 'Not Started'
-  return STATUS_TO_UI[normalized] || toTitleCase(normalized)
+  return STATUS_TO_UI[normalized] || normalizeStatusLabel(toTitleCase(normalized))
 }
 
 export function getLatestSubmission(company) {
@@ -50,7 +51,7 @@ export function getProgressFromStatus(status) {
   if (status === 'Approved') return 100
   if (status === 'Under Review') return 84
   if (status === 'Submitted') return 85
-  if (status === 'Resubmission Requested') return 58
+  if (status === 'Resubmission Required') return 58
   if (status === 'In Progress') return 46
   return 8
 }
@@ -62,7 +63,8 @@ export function calculateESGScore(status, payload) {
     Submitted: 68,
     'Under Review': 75,
     Approved: 82,
-    'Resubmission Requested': 48,
+    'Resubmission Required': 48,
+    Rejected: 44,
   }[status] || 50
 
   if (!payload) return baseline
@@ -120,7 +122,7 @@ export function buildRecentMonthLabels(count = 6) {
 
 export function getRiskLevel({ status, esgScore, deadline }) {
   if (status === 'Approved') return 'Low'
-  if (status === 'Resubmission Requested') return 'High'
+  if (status === 'Resubmission Required' || status === 'Rejected') return 'High'
 
   const deadlineDate = parseDateString(deadline)
   if (deadlineDate) {
@@ -150,7 +152,7 @@ export default function useDashboardData(user) {
     setError('')
 
     try {
-      const dashboardResponse = await fetch(`${BACKEND_URL}${dashboardPath}`, {
+      const dashboardResponse = await fetch(`${API_BASE_URL}${dashboardPath}`, {
         headers: {
           'x-user-role': user?.role || '',
           'x-user-email': user?.email || '',
@@ -176,7 +178,7 @@ export default function useDashboardData(user) {
       }
 
       try {
-        const cycleResponse = await fetch(`${BACKEND_URL}/cycles`, {
+      const cycleResponse = await fetch(`${API_BASE_URL}/cycles`, {
           headers: {
             'x-user-role': user?.role || '',
             'x-user-email': user?.email || '',

@@ -1,8 +1,0 @@
-company_name,asset_class,sector,status,completion_percent,total_ghg_emissions,female_representation_percent,esg_score,period,cycle_year
-Acme Target,Venture Capital,Software,Not Started,8,0.0,0.0,50.0,Current Cycle,2593
-Healthy Foods,Growth Equity,Consumer Goods,Approved,100,51.5,49.0,53.75,Current Cycle,2593
-QA Company 1775997120,,Testing,Submitted,72,0.0,0.0,50.0,Current Cycle,2593
-QA Company 1775997820,,Testing,Submitted,72,0.0,0.0,50.0,Current Cycle,2593
-QA Company 1775998293,,Testing,Submitted,72,0.0,0.0,50.0,Current Cycle,2593
-QA Company 1775998755,,Testing,Submitted,72,0.0,0.0,50.0,Current Cycle,2593
-Solar Tech,Private Equity,Renewable Energy,Submitted,72,67.0,44.0,53.75,Current Cycle,2593

@@ -1,10 +1,21 @@
 import { useMemo } from 'react'
 import { useOutletContext } from 'react-router-dom'
+import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts'
 import DataTable from '../components/DataTable'
 import KpiCard from '../components/KpiCard'
 import SectionCard from '../components/SectionCard'
 import StatusBadge from '../components/StatusBadge'
 import useDashboardData, { getLatestSubmission, normalizeStatus } from '../hooks/useDashboardData'
+import { API_BASE_URL } from '../lib/api'
+import { Button } from '../components/ui'
+const STATUS_COLORS = {
+  'Not Started': '#94a3b8',
+  'In Progress': '#0ea5e9',
+  Submitted: '#f59e0b',
+  'Under Review': '#8b5cf6',
+  Approved: '#10b981',
+  'Resubmission Requested': '#ef4444',
+}
 
 function formatDays(value) {
   if (value == null) return 'N/A'
@@ -46,7 +57,7 @@ function buildFallbackSummary(companies) {
 
 export default function OverviewPage() {
   const { user } = useOutletContext()
-  const { companies, summary, loading, error } = useDashboardData(user)
+  const { companies, summary, loading, error, refresh } = useDashboardData(user)
 
   const managerSummary = useMemo(() => {
     if (summary && typeof summary === 'object' && summary.status_breakdown) {
@@ -54,6 +65,10 @@ export default function OverviewPage() {
     }
     return buildFallbackSummary(companies)
   }, [companies, summary])
+  const statusChartData = useMemo(
+    () => Object.keys(STATUS_COLORS).map((label) => ({ name: label, value: Number(managerSummary.status_breakdown?.[label] || 0), color: STATUS_COLORS[label] })),
+    [managerSummary.status_breakdown]
+  )
   const statusBreakdown = managerSummary.status_breakdown || {}
   const cycleBanner = managerSummary.cycle_banner || {}
 
@@ -76,6 +91,68 @@ export default function OverviewPage() {
     { key: 'status', label: 'Status', sortable: true, render: (row) => <StatusBadge value={row.status} /> },
     { key: 'completion_percent', label: 'Completion %', sortable: true },
     { key: 'days_remaining', label: 'Days Left', sortable: true },
+    {
+      key: 'actions',
+      label: 'Actions',
+      render: (row) => (
+        <div className="flex items-center gap-3">
+          <Button
+            type="button"
+            className="text-xs text-violet-700 ui-text-strong uppercase tracking-wide hover:underline"
+            onClick={async () => {
+              const message = window.prompt('Reminder message', 'Please submit ESG data before deadline.')
+              if (!message) return
+              const response = await fetch(`${API_BASE_URL}/companies/${row.company_id}/reminders`, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'x-user-role': user?.role || '',
+                  'x-user-email': user?.email || '',
+                },
+                body: JSON.stringify({ channel: 'email', message }),
+              })
+              if (!response.ok) {
+                const payload = await response.json().catch(() => ({}))
+                window.alert(payload.detail || 'Failed to send reminder')
+                return
+              }
+              window.alert('Reminder logged.')
+              refresh()
+            }}
+          >
+            Reminder
+          </Button>
+          {row.submission_id ? (
+            <Button
+              type="button"
+              className="text-xs text-amber-700 ui-text-strong uppercase tracking-wide hover:underline"
+              onClick={async () => {
+                const reason = window.prompt('Unlock reason', 'Allow correction for closed cycle')
+                if (!reason) return
+                const response = await fetch(`${API_BASE_URL}/companies/${row.company_id}/unlock`, {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'x-user-role': user?.role || '',
+                    'x-user-email': user?.email || '',
+                  },
+                  body: JSON.stringify({ reason, expiry_hours: 24 }),
+                })
+                if (!response.ok) {
+                  const payload = await response.json().catch(() => ({}))
+                  window.alert(payload.detail || 'Failed to unlock')
+                  return
+                }
+                window.alert('Company unlocked for 24 hours.')
+                refresh()
+              }}
+            >
+              Unlock
+            </Button>
+          ) : null}
+        </div>
+      ),
+    },
   ]
 
   const progressColumns = [
@@ -117,6 +194,51 @@ export default function OverviewPage() {
 
   return (
     <div className="page-grid">
+      <SectionCard title="Live Admin Snapshot" subtitle="Backend-fed portfolio state and cycle context">
+        <div className="two-col-grid">
+          <div className="summary-grid three">
+            <article className="summary-box">
+              <p>Active Cycle</p>
+              <strong>{cycleBanner.active_cycle_year ?? 'N/A'}</strong>
+            </article>
+            <article className="summary-box">
+              <p>Reporting Companies</p>
+              <strong>{companies.length || 0}</strong>
+            </article>
+            <article className="summary-box">
+              <p>Progress Rows</p>
+              <strong>{(managerSummary.progress_rows || []).length}</strong>
+            </article>
+            <article className="summary-box">
+              <p>Upcoming Deadlines</p>
+              <strong>{(managerSummary.upcoming_deadlines || []).length}</strong>
+            </article>
+            <article className="summary-box">
+              <p>Cycle Status</p>
+              <strong>{cycleBanner.cycle_status || 'closed'}</strong>
+            </article>
+            <article className="summary-box">
+              <p>Days Remaining</p>
+              <strong>{formatDays(cycleBanner.days_remaining)}</strong>
+            </article>
+          </div>
+
+          <div className="chart-wrap">
+            <p className="text-sm ui-text-strong text-slate-700 mb-3">Submission Status Mix</p>
+            <ResponsiveContainer width="100%" height={260}>
+              <PieChart>
+                <Pie data={statusChartData} dataKey="value" nameKey="name" innerRadius={64} outerRadius={102} paddingAngle={3}>
+                  {statusChartData.map((entry) => (
+                    <Cell key={entry.name} fill={entry.color} />
+                  ))}
+                </Pie>
+                <Tooltip />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      </SectionCard>
+
       <section className="kpi-grid">
         {statusCards.map((card) => <KpiCard key={card.title} {...card} />)}
       </section>
@@ -159,3 +281,5 @@ export default function OverviewPage() {
     </div>
   )
 }
+
+

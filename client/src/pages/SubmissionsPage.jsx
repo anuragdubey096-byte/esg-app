@@ -4,6 +4,7 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, Responsive
 import DataTable from '../components/DataTable'
 import SectionCard from '../components/SectionCard'
 import StatusBadge from '../components/StatusBadge'
+import { Button } from '../components/ui'
 import { CONFIDENCE_OPTIONS, ESG_FORM_SECTIONS, createInitialFormValues } from '../esgFormConfig'
 import { validateSubmissionData } from '../esgValidation'
 import useDashboardData, {
@@ -15,8 +16,7 @@ import useDashboardData, {
   normalizeStatus,
   parseSubmissionPayload,
 } from '../hooks/useDashboardData'
-
-const BACKEND_URL = 'http://127.0.0.1:8000'
+import { API_BASE_URL } from '../lib/api'
 
 const numericFields = new Set(
   ESG_FORM_SECTIONS.flatMap((section) =>
@@ -125,7 +125,7 @@ export default function SubmissionsPage() {
   }), [user?.email, user?.role])
 
   const managerPost = async (path, method = 'POST', body = null) => {
-    const response = await fetch(`${BACKEND_URL}${path}`, {
+      const response = await fetch(`${API_BASE_URL}${path}`, {
       method,
       headers: body ? managerHeaders : {
         'x-user-role': user?.role || '',
@@ -166,11 +166,11 @@ export default function SubmissionsPage() {
     } catch(e) { alert(e.message) }
   }
 
-  const handleUnlock = async (submissionId) => {
+  const handleUnlock = async (companyId) => {
     const reason = window.prompt('Enter unlock reason', 'Allow targeted correction after cycle close')
     if (!reason) return
     try {
-      await managerPost(`/submissions/${submissionId}/unlock`, 'POST', {
+      await managerPost(`/companies/${companyId}/unlock`, 'POST', {
         reason,
         expiry_hours: 24,
       })
@@ -198,7 +198,7 @@ export default function SubmissionsPage() {
 
   const handleDownloadReport = async (type) => {
     try {
-      const res = await fetch(`${BACKEND_URL}/reports/${type}`)
+    const res = await fetch(`${API_BASE_URL}/reports/${type}`)
       const data = await res.json()
       alert(`Report generated! Download URL: ${data.download_url}`)
     } catch(e) { alert(e.message) }
@@ -261,16 +261,16 @@ export default function SubmissionsPage() {
   if (user?.role === 'manager') {
     columns.push({
       key: 'flags', label: 'Anomalies', sortable: true, render: (row) => (
-        row.flags > 0 ? <span className="text-red-600 font-bold">{row.flags} Flag(s)</span> : <span className="text-slate-400">None</span>
+        row.flags > 0 ? <span className="text-red-600 ui-text-strong">{row.flags} Flag(s)</span> : <span className="text-slate-400">None</span>
       )
     })
     columns.push({
       key: 'actions', label: 'Actions', render: (row) => (
         <div className="flex items-center gap-3">
           {row.currentStatus === 'pre-acquisition' && (
-            <button className="text-xs text-indigo-600 font-bold uppercase tracking-wide hover:underline" onClick={async () => {
+            <Button className="text-xs text-indigo-600 ui-text-strong uppercase tracking-wide hover:underline" onClick={async () => {
               try {
-                const res = await fetch(`${BACKEND_URL}/company/${row.id}/onboarding/complete`, {
+      const res = await fetch(`${API_BASE_URL}/company/${row.id}/onboarding/complete`, {
                   method: 'POST',
                   headers: {
                     'x-user-role': user?.role || '',
@@ -281,20 +281,20 @@ export default function SubmissionsPage() {
                 alert('Company onboarded successfully!');
                 refresh();
               } catch(e) { alert(e.message) }
-            }}>Onboard</button>
+            }}>Onboard</Button>
           )}
           {row.submissionId ? (
             <>
-              <button className="text-xs text-blue-600 font-bold uppercase tracking-wide hover:underline" onClick={() => handleValidate(row.submissionId)}>Validate</button>
-              <button className="text-xs text-sky-700 font-bold uppercase tracking-wide hover:underline" onClick={() => handleReview(row.submissionId, 'under review', row.status)}>Under Review</button>
-              <button className="text-xs text-green-600 font-bold uppercase tracking-wide hover:underline" onClick={() => handleReview(row.submissionId, 'approved', row.status)}>Approve</button>
-              <button className="text-xs text-orange-600 font-bold uppercase tracking-wide hover:underline" onClick={() => handleReview(row.submissionId, 'resubmission requested', row.status)}>Resubmit</button>
-              <button className="text-xs text-red-600 font-bold uppercase tracking-wide hover:underline" onClick={() => handleReview(row.submissionId, 'rejected', row.status)}>Reject</button>
-              <button className="text-xs text-amber-700 font-bold uppercase tracking-wide hover:underline" onClick={() => handleUnlock(row.submissionId)}>Unlock</button>
-              <button className="text-xs text-violet-700 font-bold uppercase tracking-wide hover:underline" onClick={() => handleReminder(row.id)}>Reminder</button>
+              <Button className="text-xs text-blue-600 ui-text-strong uppercase tracking-wide hover:underline" onClick={() => handleValidate(row.submissionId)}>Validate</Button>
+              <Button className="text-xs text-sky-700 ui-text-strong uppercase tracking-wide hover:underline" onClick={() => handleReview(row.submissionId, 'under review', row.status)}>Under Review</Button>
+              <Button className="text-xs text-green-600 ui-text-strong uppercase tracking-wide hover:underline" onClick={() => handleReview(row.submissionId, 'approved', row.status)}>Approve</Button>
+              <Button className="text-xs text-orange-600 ui-text-strong uppercase tracking-wide hover:underline" onClick={() => handleReview(row.submissionId, 'resubmission requested', row.status)}>Resubmit</Button>
+              <Button className="text-xs text-red-600 ui-text-strong uppercase tracking-wide hover:underline" onClick={() => handleReview(row.submissionId, 'rejected', row.status)}>Reject</Button>
+              <Button className="text-xs text-amber-700 ui-text-strong uppercase tracking-wide hover:underline" onClick={() => handleUnlock(row.id)}>Unlock</Button>
+              <Button className="text-xs text-violet-700 ui-text-strong uppercase tracking-wide hover:underline" onClick={() => handleReminder(row.id)}>Reminder</Button>
             </>
           ) : (
-            <button className="text-xs text-violet-700 font-bold uppercase tracking-wide hover:underline" onClick={() => handleReminder(row.id)}>Send Reminder</button>
+            <Button className="text-xs text-violet-700 ui-text-strong uppercase tracking-wide hover:underline" onClick={() => handleReminder(row.id)}>Send Reminder</Button>
           )}
         </div>
       )
@@ -350,7 +350,7 @@ export default function SubmissionsPage() {
     setIsSubmitting(true)
     setFormMessage('Submitting ESG data...')
     try {
-      const response = await fetch(`${BACKEND_URL}/company/${selectedCompany.id}/submissions`, {
+      const response = await fetch(`${API_BASE_URL}/company/${selectedCompany.id}/submissions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(buildSubmissionPayload(formValues)),
@@ -375,7 +375,7 @@ export default function SubmissionsPage() {
     
     const autoSaveInterval = setInterval(async () => {
       try {
-        await fetch(`${BACKEND_URL}/company/${selectedCompany.id}/submissions`, {
+      await fetch(`${API_BASE_URL}/company/${selectedCompany.id}/submissions`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(buildSubmissionPayload(formValuesRef.current)),
@@ -431,11 +431,11 @@ export default function SubmissionsPage() {
             </label>
             <label>
               <span>Latest ESG score</span>
-              <p className="pt-2 text-sm font-semibold text-slate-700">{selectedCompanyRow?.esgScore ?? '--'}</p>
+              <p className="pt-2 text-sm ui-text-strong text-slate-700">{selectedCompanyRow?.esgScore ?? '--'}</p>
             </label>
             <label>
               <span>Deadline</span>
-              <p className="pt-2 text-sm font-semibold text-slate-700">{selectedCompanyRow?.deadline || '--'}</p>
+              <p className="pt-2 text-sm ui-text-strong text-slate-700">{selectedCompanyRow?.deadline || '--'}</p>
             </label>
           </div>
 
@@ -444,7 +444,7 @@ export default function SubmissionsPage() {
 
               {selectedCompany.current_status === 'pre-acquisition' && (
                 <div className="rounded-xl border border-indigo-200 bg-indigo-50 p-4">
-                  <h4 className="mb-2 text-base font-semibold text-indigo-800">Target Onboarding Workflow</h4>
+                  <h4 className="mb-2 text-base ui-text-strong text-indigo-800">Target Onboarding Workflow</h4>
                   <ul className="list-disc pl-5 text-sm text-indigo-700 space-y-1">
                     <li>Complete the lightweight Pre-Acquisition ESG Questionnaire below.</li>
                     <li>Upload initial compliance evidence (Policies & Certificates).</li>
@@ -454,7 +454,7 @@ export default function SubmissionsPage() {
               )}
 
               <div className="rounded-xl border border-slate-200 bg-blue-50/50 p-4">
-                <h4 className="mb-2 text-base font-semibold text-slate-800">Built-in GHG Calculator</h4>
+                <h4 className="mb-2 text-base ui-text-strong text-slate-800">Built-in GHG Calculator</h4>
                 <div className="flex flex-wrap items-end gap-4">
                   <label className="flex-1 min-w-[150px]">
                     <span className="block text-sm font-medium text-slate-700">Fuel (Liters)</span>
@@ -464,11 +464,11 @@ export default function SubmissionsPage() {
                     <span className="block text-sm font-medium text-slate-700">Electricity (kWh)</span>
                     <input type="number" id="calc_elec" className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm mt-1" />
                   </label>
-                  <button type="button" className="button bg-blue-600 text-white" onClick={async () => {
+                  <Button type="button" className="button bg-blue-600 text-white" onClick={async () => {
                     const fuel = parseFloat(document.getElementById('calc_fuel').value) || 0;
                     const elec = parseFloat(document.getElementById('calc_elec').value) || 0;
                     try {
-                      const res = await fetch(`${BACKEND_URL}/calculator/ghg`, {
+      const res = await fetch(`${API_BASE_URL}/calculator/ghg`, {
                         method: 'POST', headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ fuel_liters: fuel, electricity_kwh: elec })
                       });
@@ -481,26 +481,26 @@ export default function SubmissionsPage() {
                       }));
                       alert(`Calculated Total: ${data.total_tco2e} tCO2e`);
                     } catch(e) { alert("Calculator error") }
-                  }}>Calculate & Apply</button>
+                  }}>Calculate & Apply</Button>
                 </div>
               </div>
 
               <div className="flex overflow-x-auto border-b border-slate-200 mb-6 pb-2 gap-2">
                 {ESG_FORM_SECTIONS.map((section) => (
-                  <button
+                  <Button
                     key={section.key}
                     type="button"
-                    className={`whitespace-nowrap py-2 px-4 rounded-lg font-semibold text-sm transition-colors ${activeTab === section.key ? 'bg-blue-600 text-white shadow-md' : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'}`}
+                    className={`whitespace-nowrap py-2 px-4 rounded-lg ui-text-strong text-sm transition-colors ${activeTab === section.key ? 'bg-blue-600 text-white shadow-md' : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'}`}
                     onClick={() => setActiveTab(section.key)}
                   >
                     {section.title}
-                  </button>
+                  </Button>
                 ))}
               </div>
 
               {ESG_FORM_SECTIONS.filter(s => s.key === activeTab).map((section) => (
                 <div key={section.key} className="rounded-xl border border-slate-200 bg-slate-50/60 p-4">
-                  <h4 className="mb-1 text-base font-semibold text-slate-800">{section.title}</h4>
+                  <h4 className="mb-1 text-base ui-text-strong text-slate-800">{section.title}</h4>
                   <p className="mb-4 text-sm text-slate-500">{section.description}</p>
                   <div className="grid gap-3 md:grid-cols-2">
                     {section.fields.map((field) => (
@@ -547,7 +547,7 @@ export default function SubmissionsPage() {
 
                         {field.type !== 'text' && field.type !== 'textarea' ? (
                           <div className="mt-2">
-                            <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500" htmlFor={`${field.name}_confidence`}>
+                            <label className="mb-1 block text-xs ui-text-strong uppercase tracking-wide text-slate-500" htmlFor={`${field.name}_confidence`}>
                               Data confidence
                             </label>
                             <select
@@ -575,25 +575,25 @@ export default function SubmissionsPage() {
                   <label className="mb-1 block text-sm font-medium text-slate-700">Upload Evidence (Policies/Certificates)</label>
                   <div className="grid gap-3 mt-2 md:grid-cols-[1fr_auto]">
                     <input type="file" id="evidence_file" className="text-sm border border-slate-300 rounded-md p-1 w-full bg-slate-50" />
-                    <button type="button" className="button" onClick={async () => {
+                    <Button type="button" className="button" onClick={async () => {
                       const fileInput = document.getElementById('evidence_file');
                       if (!fileInput?.files?.[0]) return alert('Select a file first');
                       const formData = new FormData();
                       formData.append('file', fileInput.files[0]);
                       try {
-                        const res = await fetch(`${BACKEND_URL}/company/${selectedCompany.id}/upload-evidence`, {
+      const res = await fetch(`${API_BASE_URL}/company/${selectedCompany.id}/upload-evidence`, {
                           method: 'POST', body: formData
                         });
                         if (res.ok) alert('Evidence uploaded successfully');
                         else alert('Upload failed');
                       } catch(e) { alert(e.message) }
-                    }}>Upload File</button>
+                    }}>Upload File</Button>
                   </div>
                 </div>
               )}
 
               <div className="rounded-xl border border-slate-200 bg-white p-4 mt-4">
-                <h4 className="mb-4 text-base font-semibold text-slate-800">Action Plans & Improvement Initiatives</h4>
+                <h4 className="mb-4 text-base ui-text-strong text-slate-800">Action Plans & Improvement Initiatives</h4>
                 <div className="mb-4">
                   {selectedCompany?.action_plans?.length > 0 ? (
                     <ul className="space-y-2">
@@ -610,19 +610,19 @@ export default function SubmissionsPage() {
                   <input type="text" id="ap_name" placeholder="Initiative Name" className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm" />
                   <input type="text" id="ap_owner" placeholder="Owner" className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm" />
                   <input type="date" id="ap_date" className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm" />
-                  <button type="button" className="button bg-indigo-600 text-white whitespace-nowrap md:self-end" onClick={async () => {
+                  <Button type="button" className="button bg-indigo-600 text-white whitespace-nowrap md:self-end" onClick={async () => {
                     const name = document.getElementById('ap_name').value;
                     const owner = document.getElementById('ap_owner').value;
                     const date = document.getElementById('ap_date').value;
                     if (!name || !owner || !date) return alert('Fill all fields');
                     try {
-                      const res = await fetch(`${BACKEND_URL}/company/${selectedCompany.id}/action-plans`, {
+      const res = await fetch(`${API_BASE_URL}/company/${selectedCompany.id}/action-plans`, {
                         method: 'POST', headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ initiative_name: name, assigned_owner: owner, target_completion_date: date })
                       });
                       if (res.ok) { alert('Action Plan created'); refresh(); }
                     } catch (e) { alert(e.message) }
-                  }}>Add Plan</button>
+                  }}>Add Plan</Button>
                 </div>
               </div>
 
@@ -641,16 +641,16 @@ export default function SubmissionsPage() {
               </div>
 
               <div className="flex flex-wrap items-center gap-3">
-                <button className="button" type="submit" disabled={isSubmitting}>
+                <Button className="button" type="submit" disabled={isSubmitting}>
                   {isSubmitting ? 'Submitting...' : 'Submit ESG Form'}
-                </button>
-                <button
+                </Button>
+                <Button
                   className="button"
                   type="button"
                   onClick={() => selectedCompany && setFormValues(createPrefilledFormValues(selectedCompany))}
                 >
                   Reset to latest saved
-                </button>
+                </Button>
                 {formMessage ? <p className="action-message">{formMessage}</p> : null}
               </div>
             </form>
@@ -699,15 +699,15 @@ export default function SubmissionsPage() {
 
         {user?.role === 'investor' && (
           <div className="flex gap-4 mb-6">
-             <button className="button bg-emerald-600 text-white" onClick={() => handleDownloadReport('edci')}>Generate EDCI Report</button>
-             <button className="button bg-blue-600 text-white" onClick={() => handleDownloadReport('sfdr')}>Generate SFDR Report</button>
+             <Button className="button bg-emerald-600 text-white" onClick={() => handleDownloadReport('edci')}>Generate EDCI Report</Button>
+             <Button className="button bg-blue-600 text-white" onClick={() => handleDownloadReport('sfdr')}>Generate SFDR Report</Button>
           </div>
         )}
 
         {user?.role === 'investor' && investorChartData.length > 0 && (
           <div className="mb-8 grid grid-cols-1 xl:grid-cols-2 gap-6">
             <div className="rounded-xl border border-slate-200 bg-white p-4 h-80">
-              <h4 className="text-sm font-semibold mb-4 text-slate-700">Portfolio Emissions (tCO2e)</h4>
+              <h4 className="text-sm ui-text-strong mb-4 text-slate-700">Portfolio Emissions (tCO2e)</h4>
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={investorChartData} margin={{ top: 10, right: 30, left: 0, bottom: 20 }}>
                   <CartesianGrid strokeDasharray="3 3" />
@@ -722,7 +722,7 @@ export default function SubmissionsPage() {
               </ResponsiveContainer>
             </div>
             <div className="rounded-xl border border-slate-200 bg-white p-4 h-80">
-              <h4 className="text-sm font-semibold mb-4 text-slate-700">Female Leadership Representation (%)</h4>
+              <h4 className="text-sm ui-text-strong mb-4 text-slate-700">Female Leadership Representation (%)</h4>
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={investorChartData} margin={{ top: 10, right: 30, left: 0, bottom: 20 }}>
                   <CartesianGrid strokeDasharray="3 3" />
@@ -742,3 +742,5 @@ export default function SubmissionsPage() {
     </div>
   )
 }
+
+

@@ -1,4 +1,4 @@
-from typing import Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -285,6 +285,18 @@ class InvestorDashboardResponse(InvestorSummary):
     data_quality: Dict[str, float]
 
 
+class ManagerAnalyticsResponse(BaseModel):
+    summary_cards: List[Dict[str, Any]]
+    status_distribution: List[Dict[str, Any]]
+    emissions_trend: List[Dict[str, Any]]
+    sector_performance: List[Dict[str, Any]]
+    policy_adoption: List[Dict[str, Any]]
+    top_performers: List[Dict[str, Any]]
+    bottom_performers: List[Dict[str, Any]]
+    data_quality: Dict[str, float]
+    cycle_snapshot: Dict[str, Any]
+
+
 class SubmissionStatusUpdateRequest(BaseModel):
     status: str
 
@@ -385,6 +397,75 @@ class ReportExportResponse(BaseModel):
     rows_exported: int
 
 
+class NarrativeSummaryResponse(BaseModel):
+    available: bool
+    audience: Literal['company', 'lp', 'board']
+    scope: Literal['company', 'portfolio']
+    tone: str = 'board-ready'
+    status: str = 'generated'
+    company_id: Optional[int] = None
+    company_name: Optional[str] = None
+    source_years: List[int] = []
+    source_company_count: int = 0
+    source_submission_count: int = 0
+    provider: str = 'openai'
+    model: Optional[str] = None
+    cached: bool = False
+    fallback_used: bool = False
+    generated_at: str
+    headline: str = ''
+    summary: str = ''
+    highlights: List[str] = []
+    watchouts: List[str] = []
+    recommendations: List[str] = []
+    message: Optional[str] = None
+
+
+class NarrativeGenerateRequest(BaseModel):
+    audience: Literal['company', 'lp', 'board'] = 'company'
+    company_id: Optional[int] = None
+    tone: Literal['board-ready', 'lp-letter', 'exec-summary'] = 'board-ready'
+    force_refresh: bool = False
+
+
+class NarrativeUpdateRequest(BaseModel):
+    headline: Optional[str] = None
+    summary: Optional[str] = None
+    highlights: Optional[List[str]] = None
+    watchouts: Optional[List[str]] = None
+    recommendations: Optional[List[str]] = None
+    tone: Optional[Literal['board-ready', 'lp-letter', 'exec-summary']] = None
+
+
+class NarrativeApproveRequest(BaseModel):
+    approved: bool = True
+
+
+class NarrativeDetailResponse(NarrativeSummaryResponse):
+    narrative_id: int
+    framework_tags: List[str] = []
+    generated_payload: Dict[str, Any] = {}
+    edited_payload: Dict[str, Any] = {}
+    published_payload: Dict[str, Any] = {}
+    approved_by_role: Optional[str] = None
+    approved_at: Optional[str] = None
+    edited_by_role: Optional[str] = None
+    edited_at: Optional[str] = None
+    generated_at: str
+    updated_at: str
+    can_edit: bool = False
+    can_approve: bool = False
+    can_export: bool = False
+
+
+class NarrativeExportResponse(BaseModel):
+    narrative_id: int
+    file_name: str
+    file_path: str
+    download_url: str
+    content_type: str
+
+
 class ManagerCycleBanner(BaseModel):
     active_cycle_year: Optional[int] = None
     submission_open_date: Optional[str] = None
@@ -395,6 +476,7 @@ class ManagerCycleBanner(BaseModel):
 
 class ManagerDeadlineRow(BaseModel):
     company_id: int
+    submission_id: Optional[int] = None
     company_name: str
     asset_class: Optional[str] = None
     sector: str
@@ -426,3 +508,314 @@ class ManagerDashboardSummary(BaseModel):
 class ManagerDashboardResponse(BaseModel):
     companies: List[CompanyDetail]
     summary: ManagerDashboardSummary
+
+
+# ==========================================
+# LP (LIMITED PARTNER / INVESTOR) SCHEMAS
+# ==========================================
+
+class LPCompanyMetrics(BaseModel):
+    id: int
+    name: str
+    sector: str
+    asset_class: Optional[str] = None
+    geography: Optional[str] = None
+    approval_status: str
+    esg_score: float
+    e_score: float
+    s_score: float
+    g_score: float
+
+
+class LPESGPillar(BaseModel):
+    name: str  # "E", "S", or "G"
+    current_score: float
+    previous_score: float
+    yoy_change: float  # percentage
+    trend_sparkline: List[float]  # Last 5 years
+
+
+class LPPortfolioScorecard(BaseModel):
+    overall_esg_score: float
+    overall_esg_score_previous: float
+    yoy_change_percent: float
+    three_year_trend: List[float]
+    pillars: List[LPESGPillar]
+
+
+class LPPortfolioCompletion(BaseModel):
+    total_companies: int
+    companies_with_approved_submission: int
+    completion_percent: float
+    last_updated: str
+
+
+class LPKeyMetricTile(BaseModel):
+    metric_name: str
+    current_value: str  # Can be number or percentage
+    unit: str
+    trend_percent: Optional[float] = None
+    trend_direction: Optional[str] = None  # "up", "down", "neutral"
+    last_updated: str
+
+
+class LPEmissionsPoint(BaseModel):
+    period: str
+    scope_1: float
+    scope_2: float
+    scope_3: float
+
+
+class LPDiversityMetric(BaseModel):
+    metric_name: str
+    percentage: float
+    previous_year: float
+    trend: str  # "up", "down", "stable"
+
+
+class LPPolicyAdoption(BaseModel):
+    policy_name: str
+    adoption_percentage: float
+    companies_with_policy: int
+    total_companies: int
+
+
+class LPActionPlanStatus(BaseModel):
+    in_progress: int
+    completed: int
+
+
+class LPDashboardResponse(BaseModel):
+    portfolio_scorecard: LPPortfolioScorecard
+    completion_status: LPPortfolioCompletion
+    key_metrics: List[LPKeyMetricTile]
+    emissions_trend: List[LPEmissionsPoint]
+    diversity_metrics: List[LPDiversityMetric]
+    policy_adoption: List[LPPolicyAdoption]
+    action_plan_status: LPActionPlanStatus
+    portfolio_companies: List[LPCompanyMetrics]  # For authorised LPs only
+
+
+class LPEnvironmentalMetrics(BaseModel):
+    scope_1_emissions: List[Dict[str, Any]]  # {period: str, value: float, trend: float}
+    scope_2_emissions: List[Dict[str, Any]]
+    scope_3_emissions: List[Dict[str, Any]]
+    energy_total: List[Dict[str, Any]]
+    energy_renewable: List[Dict[str, Any]]
+    water_usage: List[Dict[str, Any]]
+    water_recycled: List[Dict[str, Any]]
+    waste_generated: List[Dict[str, Any]]
+    waste_diverted: List[Dict[str, Any]]
+
+
+class LPSocialMetrics(BaseModel):
+    trifr: List[Dict[str, Any]]  # {period: str, value: float, trend: float}
+    fatalities: List[Dict[str, Any]]
+    total_employees: List[Dict[str, Any]]
+    female_workforce_percent: List[Dict[str, Any]]
+    female_leadership_percent: List[Dict[str, Any]]
+    community_investment: List[Dict[str, Any]]
+
+
+class LPGovernanceMetrics(BaseModel):
+    esg_policy_compliance: float
+    whs_policy_compliance: float
+    cybersecurity_policy_compliance: float
+    antibribery_policy_compliance: float
+    board_esg_oversight: float
+    cyber_incidents: List[Dict[str, Any]]  # {period: str, value: int}
+
+
+class LPAssetClassBreakdown(BaseModel):
+    asset_class: str
+    company_count: int
+    avg_esg_score: float
+    avg_emission_intensity: float
+    avg_female_representation: float
+
+
+class LPBenchmarkComparison(BaseModel):
+    metric_name: str
+    portfolio_value: float
+    benchmark_value: float
+    status: str  # "above", "at", "below"
+    industry: str
+
+
+class LPMetricsPageResponse(BaseModel):
+    environmental: LPEnvironmentalMetrics
+    social: LPSocialMetrics
+    governance: LPGovernanceMetrics
+    asset_class_breakdown: List[LPAssetClassBreakdown]
+    benchmark_comparisons: List[LPBenchmarkComparison]
+
+
+class LPReportMetadata(BaseModel):
+    report_type: Optional[str] = None  # edci | sfdr (when export-enabled)
+    report_name: str
+    year: int
+    generated_date: str
+    format: str  # "PDF", "Excel"
+    download_url: str
+
+
+class LPReportsResponse(BaseModel):
+    available_reports: List[LPReportMetadata]
+    historical_archive: Dict[int, List[LPReportMetadata]]  # Grouped by year
+    export_available: bool
+
+
+# ==========================================
+# COMPANY PORTAL / PORTFOLIO COMPANY SCHEMAS
+# ==========================================
+
+class ValidationErrorResponse(BaseModel):
+    id: int
+    section: str
+    field_key: str
+    field_label: str
+    error_type: str  # "required", "range", "variance", "format"
+    error_message: str
+    severity: str  # "error", "warning"
+    resolved: bool
+
+
+class MetricReviewDecisionRequest(BaseModel):
+    field_key: str
+    decision: Literal['pass', 'fail']
+    comment: Optional[str] = None
+
+
+class MetricReviewDecisionResponse(BaseModel):
+    submission_id: int
+    field_key: str
+    decision: Literal['pass', 'fail']
+    updated_errors: int
+    message: str
+
+
+class SubmissionDataFieldResponse(BaseModel):
+    field_key: str
+    field_label: str
+    value: Optional[str] = None
+    prior_year_value: Optional[str] = None
+    unit: Optional[str] = None
+    confidence_level: str  # High, Medium, Low, Estimated, Not Available, Measured(legacy)
+    yoy_variance_percent: Optional[float] = None
+    requires_explanation: bool
+    explanation: Optional[str] = None
+    subsection: Optional[str] = None
+    input_type: Optional[str] = None
+    helper_text: Optional[str] = None
+    required: bool = False
+    read_only: bool = False
+    supports_reporting: bool = True
+    confidence_field: Optional[str] = None
+    confidence_options: List[str] = Field(default_factory=list)
+    policy_options: List[str] = Field(default_factory=list)
+    conditional_visibility: Optional[str] = None
+    last_updated_at: Optional[str] = None
+    validation_errors: List[ValidationErrorResponse] = []
+
+
+class CompanySubmissionSectionResponse(BaseModel):
+    section: str  # Environmental, Social, Governance
+    completion_percent: int
+    total_fields: int
+    completed_fields: int
+    validation_status: str  # "pass", "warning", "error"
+    error_count: int
+    warning_count: int
+    fields: List[SubmissionDataFieldResponse] = []
+
+
+class CompanyDashboardResponse(BaseModel):
+    company_id: int
+    company_name: str
+    current_cycle_year: int
+    submission_status: str  # NOT STARTED, IN PROGRESS, SUBMITTED, APPROVED, REJECTED, RESUBMISSION REQUIRED
+    status_color: str  # grey, blue, yellow, green, red, amber
+    deadline: str
+    days_remaining: int
+    deadline_urgency: str  # green (>14 days), amber (7–14 days), red (<7 days)
+    overall_completion_percent: int
+    total_data_points: int
+    completed_data_points: int
+    section_breakdown: Dict[str, int]  # {"Environmental": 45, "Social": 32, "Governance": 28}
+    outstanding_validation_errors: int
+    feedback_from_admin: Optional[str] = None
+    sections_requiring_correction: List[str] = []
+    prior_year_summary: Optional[Dict[str, str]] = None  # Last year's key metrics for reference
+    action_items_in_progress: int
+
+
+class CompanySubmissionReviewResponse(BaseModel):
+    submission_id: int
+    company_id: int
+    company_name: str
+    cycle_year: int
+    total_data_points: int
+    mandatory_fields_incomplete: int  # Must be 0 to submit
+    optional_fields_incomplete: int
+    outstanding_validation_errors: List[ValidationErrorResponse]
+    all_entered_data: List[CompanySubmissionSectionResponse]
+    can_submit: bool  # True if all mandatory fields complete, all mandatory errors resolved
+
+
+class CompanyActionPlanResponse(BaseModel):
+    id: int
+    title: str
+    description: Optional[str] = None
+    linked_metric: Optional[str] = None
+    owner: str
+    target_date: str
+    status: str  # "Not Started", "In Progress", "Completed", "Overdue"
+    created_at: str
+    updated_at: str
+
+
+class CompanyActionPlansPageResponse(BaseModel):
+    active_actions: List[CompanyActionPlanResponse]
+    completed_actions: List[CompanyActionPlanResponse]
+    overdue_actions: List[CompanyActionPlanResponse]
+
+
+class CompanyActionPlanCreateRequest(BaseModel):
+    title: str
+    description: Optional[str] = None
+    linked_metric: Optional[str] = None
+    owner: str
+    target_date: str
+
+
+class CompanyActionPlanUpdateRequest(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    linked_metric: Optional[str] = None
+    owner: Optional[str] = None
+    target_date: Optional[str] = None
+    status: Optional[str] = None
+
+
+class CompanySubmissionDataUpdateRequest(BaseModel):
+    field_key: str
+    value: str
+    confidence_level: str  # High, Medium, Low, Estimated, Not Available, Measured(legacy)
+    explanation: Optional[str] = None  # For YoY variance
+
+
+class CompanyBulkImportResponse(BaseModel):
+    success: bool
+    imported_fields: int
+    skipped_fields: int
+    errors: List[str] = []
+
+
+class SupportingDocumentResponse(BaseModel):
+    id: int
+    field_key: str
+    file_name: str
+    file_size: int
+    file_type: str
+    uploaded_at: str
+    uploaded_by_email: Optional[str] = None

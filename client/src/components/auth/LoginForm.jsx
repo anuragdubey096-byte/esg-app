@@ -122,7 +122,7 @@ export default function LoginForm({ authenticate, onForgotPassword, onSsoSignIn,
       {step === 'credentials' ? (
         <>
           <div className="mb-6 space-y-1">
-            <h2 className="text-2xl font-semibold text-slate-900">Welcome back</h2>
+            <h2 className="ui-text-display ui-text-strong text-slate-900">Welcome back</h2>
             <p className="text-sm text-slate-500">Sign in to your account</p>
           </div>
 
@@ -148,14 +148,14 @@ export default function LoginForm({ authenticate, onForgotPassword, onSsoSignIn,
             />
 
             <div className="text-right">
-              <button
+              <Button
                 type="button"
                 onClick={handleForgotPassword}
                 disabled={isForgotSubmitting || isSubmitting || Boolean(ssoProviderLoading)}
-                className="text-sm font-medium text-brand-700 hover:text-brand-600 disabled:cursor-not-allowed disabled:opacity-70"
+                variant="ghost"
               >
                 {isForgotSubmitting ? 'Sending reset link...' : 'Forgot password?'}
-              </button>
+              </Button>
             </div>
 
             {authError ? (
@@ -170,40 +170,47 @@ export default function LoginForm({ authenticate, onForgotPassword, onSsoSignIn,
               </p>
             ) : null}
 
-            <Button type="submit" loading={isSubmitting} disabled={isForgotSubmitting || Boolean(ssoProviderLoading)}>
+            <Button
+              type="submit"
+              loading={isSubmitting}
+              disabled={isForgotSubmitting || Boolean(ssoProviderLoading)}
+              fullWidth
+            >
               {isSubmitting ? 'Signing in...' : 'Sign In'}
             </Button>
           </form>
 
           <div className="my-5 flex items-center gap-3">
             <div className="h-px flex-1 bg-slate-200" />
-            <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">OR</span>
+            <span className="text-xs ui-text-strong uppercase tracking-wide text-slate-400">OR</span>
             <div className="h-px flex-1 bg-slate-200" />
           </div>
 
           <div className="grid gap-2">
-            <button
+            <Button
               type="button"
               onClick={() => handleSsoClick('google')}
               disabled={Boolean(ssoProviderLoading) || isSubmitting || isForgotSubmitting}
-              className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+              variant="secondary"
+              fullWidth
             >
               {ssoProviderLoading === 'google' ? 'Connecting to Google...' : 'Continue with Google'}
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
               onClick={() => handleSsoClick('microsoft')}
               disabled={Boolean(ssoProviderLoading) || isSubmitting || isForgotSubmitting}
-              className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+              variant="secondary"
+              fullWidth
             >
               {ssoProviderLoading === 'microsoft' ? 'Connecting to Microsoft...' : 'Continue with Microsoft'}
-            </button>
+            </Button>
           </div>
         </>
       ) : (
         <>
           <div className="mb-6 space-y-1">
-            <h2 className="text-2xl font-semibold text-slate-900">Multi-factor authentication</h2>
+            <h2 className="ui-text-display ui-text-strong text-slate-900">Multi-factor authentication</h2>
             <p className="text-sm text-slate-500">Enter the code sent to your email</p>
           </div>
           {authError ? (
@@ -231,3 +238,4 @@ export default function LoginForm({ authenticate, onForgotPassword, onSsoSignIn,
     </div>
   )
 }
+

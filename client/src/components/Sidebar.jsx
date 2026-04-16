@@ -1,13 +1,14 @@
 import { NavLink } from 'react-router-dom'
+import { Button } from './ui'
 
 export default function Sidebar({ collapsed, items = [], mobileOpen, onToggle, onNavigate }) {
   return (
     <aside className={`sidebar ${collapsed ? 'collapsed' : ''} ${mobileOpen ? 'mobile-open' : ''}`}>
       <div className="sidebar-top">
         <span className="sidebar-title">Navigation</span>
-        <button className="sidebar-toggle" type="button" onClick={onToggle}>
+        <Button variant="secondary" className="sidebar-toggle" type="button" onClick={onToggle}>
           {collapsed ? '>>' : '<<'}
-        </button>
+        </Button>
       </div>
       <nav className="sidebar-nav" aria-label="Primary">
         {items.map((item) => (

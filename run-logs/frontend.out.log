@@ -2,8 +2,120 @@
 > esg-app-client@0.0.1 dev
 > vite --host 127.0.0.1 --port 5173
 
-Re-optimizing dependencies because vite config has changed
 
-  [32m[1mVITE[22m v5.4.21[39m  [2mready in [0m[1m1299[22m[2m[0m ms[22m
+  [32m[1mVITE[22m v5.4.21[39m  [2mready in [0m[1m1041[22m[2m[0m ms[22m
 
   [32m➜[39m  [1mLocal[22m:   [36mhttp://127.0.0.1:[1m5173[22m/[39m
+[2m1:17:48 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/style.css[22m
+[2m1:18:17 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/style.css[22m
+[2m1:20:51 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/style.css[22m
+[2m1:21:12 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/components/auth/BrandingPanel.jsx, /src/style.css[22m
+[2m1:21:12 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/AdminSettingsPage.jsx, /src/style.css[22m
+[2m1:21:12 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/CompanyActionPlansPage.jsx, /src/style.css[22m
+[2m1:21:12 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/CompanyDashboardPage.jsx, /src/style.css[22m
+[2m1:21:12 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/CompanySubmissionPage.jsx, /src/style.css[22m
+[2m1:21:12 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/CompanySubmissionReviewPage.jsx, /src/style.css[22m
+[2m1:21:12 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/LPDashboardPage.jsx, /src/style.css[22m
+[2m1:21:12 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/LPMetricsPage.jsx, /src/style.css[22m
+[2m1:21:12 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/OverviewPage.jsx, /src/style.css[22m
+[2m1:21:12 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/SubmissionsPage.jsx, /src/style.css[22m
+[2m1:43:52 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/components/auth/BrandingPanel.jsx, /src/style.css[22m
+[2m1:43:52 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/components/auth/LoginForm.jsx, /src/style.css[22m
+[2m1:43:52 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/components/auth/PasswordField.jsx, /src/style.css[22m
+[2m1:43:52 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/AnalyticsPage.jsx, /src/style.css[22m
+[2m1:43:52 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/CompanyActionPlansPage.jsx, /src/style.css[22m
+[2m1:43:52 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/CompanyDashboardPage.jsx, /src/style.css[22m
+[2m1:43:52 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/CompanySubmissionPage.jsx, /src/style.css[22m
+[2m1:43:52 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/CompanySubmissionReviewPage.jsx, /src/style.css[22m
+[2m1:43:52 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/LPDashboardPage.jsx, /src/style.css[22m
+[2m1:43:52 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/LPMetricsPage.jsx, /src/style.css[22m
+[2m1:43:52 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/LPReportsPage.jsx, /src/style.css[22m
+[2m1:43:52 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/OverviewPage.jsx, /src/style.css[22m
+[2m1:43:52 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/SubmissionsPage.jsx, /src/style.css[22m
+[2m2:05:28 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/AdminSettingsPage.jsx, /src/style.css[22m
+[2m2:05:28 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/AlertsRisksPage.jsx, /src/style.css[22m
+[2m2:05:28 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/CompanyActionPlansPage.jsx, /src/style.css[22m
+[2m2:05:28 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/CompanyDashboardPage.jsx, /src/style.css[22m
+[2m2:05:29 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/CompanySubmissionPage.jsx, /src/style.css[22m
+[2m2:05:29 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/LPMetricsPage.jsx, /src/style.css[22m
+[2m2:05:29 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/LPReportsPage.jsx, /src/style.css[22m
+[2m2:05:29 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/OverviewPage.jsx, /src/style.css[22m
+[2m2:05:29 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/ReportsPage.jsx, /src/style.css[22m
+[2m2:05:29 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/SubmissionsPage.jsx, /src/style.css[22m
+[2m2:07:14 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/SubmissionsPage.jsx, /src/style.css[22m
+[2m2:12:25 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/components/Sidebar.jsx, /src/style.css[22m
+[2m2:12:25 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/components/auth/PasswordField.jsx, /src/style.css[22m
+[2m2:12:25 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/components/TopNavbar.jsx, /src/style.css[22m
+[2m2:12:25 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/components/ui/Fields.jsx, /src/style.css[22m
+[2m2:12:25 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/components/auth/MFAComponent.jsx, /src/style.css[22m
+[2m2:12:25 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/style.css[22m
+[2m2:13:51 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/layouts/AdminLayout.jsx, /src/style.css[22m
+[2m2:13:51 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/style.css[22m
+[2m2:13:51 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/layouts/LPLayout.jsx, /src/style.css[22m
+[2m2:13:51 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/layouts/CompanyLayout.jsx, /src/style.css[22m
+[2m2:23:29 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/CompanyDashboardPage.jsx, /src/style.css[22m
+[2m2:23:37 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/LPDashboardPage.jsx, /src/style.css[22m
+[2m2:23:45 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/ReviewHubPage.jsx, /src/style.css[22m
+[2m2:24:20 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/ReviewHubPage.jsx, /src/style.css[22m
+[2m2:31:50 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/components/NarrativeSummaryCard.jsx, /src/style.css[22m
+[2m2:39:39 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/CompanyDashboardPage.jsx, /src/style.css[22m
+[2m2:39:39 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/LPDashboardPage.jsx, /src/style.css[22m
+[2m2:41:57 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/CompanyDashboardPage.jsx, /src/style.css[22m
+[2m2:42:01 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/LPDashboardPage.jsx, /src/style.css[22m
+[2m2:42:04 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/ReviewHubPage.jsx, /src/style.css[22m
+[2m2:42:12 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/style.css[22m
+[2m2:43:57 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/style.css[22m
+[2m2:49:01 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/style.css[22m
+[2m2:49:07 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/LPDashboardPage.jsx, /src/style.css[22m
+[2m2:50:05 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/CompanyDashboardPage.jsx, /src/style.css[22m
+[2m2:50:27 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/CompanyDashboardPage.jsx[22m
+[2m2:50:30 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/LPDashboardPage.jsx, /src/style.css[22m
+[2m2:50:54 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/LPDashboardPage.jsx[22m
+[2m2:54:44 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/layouts/LPLayout.jsx, /src/style.css[22m
+[2m2:54:47 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/layouts/CompanyLayout.jsx, /src/style.css[22m
+[2m2:54:49 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/layouts/AdminLayout.jsx, /src/style.css[22m
+[2m2:54:55 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/style.css[22m
+[2m2:58:07 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/style.css[22m
+[2m2:59:48 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/layouts/AdminLayout.jsx, /src/style.css[22m
+[2m2:59:52 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/layouts/LPLayout.jsx, /src/style.css[22m
+[2m2:59:57 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/layouts/CompanyLayout.jsx, /src/style.css[22m
+[2m3:00:01 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/App.jsx, /src/style.css[22m
+[2m3:00:06 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/style.css[22m
+[2m3:04:02 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/App.jsx, /src/style.css[22m
+[2m3:04:07 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/Dashboard.jsx, /src/style.css[22m
+[2m3:12:22 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/style.css[22m
+[2m3:24:00 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/ReviewHubPage.jsx, /src/style.css[22m
+[2m3:25:55 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/components/NarrativeSummaryCard.jsx, /src/style.css[22m
+[2m3:53:36 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/style.css, /src/pages/ReviewHubPage.jsx[22m
+[2m3:53:40 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/style.css, /src/pages/ReviewHubPage.jsx[22m
+[2m3:54:03 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/components/NarrativeSummaryCard.jsx, /src/style.css[22m
+[2m3:57:52 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/ReviewHubPage.jsx, /src/style.css[22m
+[2m3:58:12 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/ReviewHubPage.jsx, /src/style.css[22m
+[2m3:58:27 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/ReportsPage.jsx, /src/style.css[22m
+[2m3:58:40 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/ReportsPage.jsx, /src/style.css[22m
+[2m3:59:05 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/CompanySubmissionReviewPage.jsx, /src/style.css[22m
+[2m3:59:11 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/LPReportsPage.jsx, /src/style.css[22m
+[2m3:59:18 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/LPDashboardPage.jsx, /src/style.css[22m
+[2m3:59:28 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/ReportsPage.jsx, /src/style.css[22m
+[2m3:59:35 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/components/NarrativeToolbar.jsx, /src/style.css[22m
+[2m4:17:47 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/LoginPage.jsx, /src/style.css[22m
+[2m4:17:47 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/style.css, /src/pages/ActionPlansPage.jsx, /src/pages/ReportsPage.jsx, /src/pages/AlertsRisksPage.jsx, /src/pages/AdminSettingsPage.jsx, /src/pages/InvestorAnalyticsPage.jsx, /src/pages/InvestorOverviewPage.jsx, /src/pages/OverviewPage.jsx, /src/pages/ReviewHubPage.jsx, /src/pages/SubmissionsPage.jsx[22m
+[2m4:17:47 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/LoginPage.jsx, /src/style.css[22m
+[2m4:17:47 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/style.css, /src/pages/ReviewHubPage.jsx, /src/pages/ReportsPage.jsx, /src/pages/CompanySubmissionReviewPage.jsx, /src/pages/LPReportsPage.jsx, /src/pages/LPDashboardPage.jsx[22m
+[2m4:17:56 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/AdminSettingsPage.jsx, /src/style.css[22m
+[2m4:17:57 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/AnalyticsPage.jsx, /src/style.css[22m
+[2m4:17:57 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/CompanyActionPlansPage.jsx, /src/style.css[22m
+[2m4:17:57 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/CompanyDashboardPage.jsx, /src/style.css[22m
+[2m4:17:57 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/CompanyHistoricalDataPage.jsx, /src/style.css[22m
+[2m4:19:30 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/style.css, /src/pages/ReviewHubPage.jsx, /src/pages/ReportsPage.jsx, /src/pages/CompanySubmissionReviewPage.jsx, /src/pages/LPReportsPage.jsx, /src/pages/LPDashboardPage.jsx[22m
+[2m4:19:30 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/CompanySubmissionPage.jsx, /src/style.css[22m
+[2m4:19:50 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/CompanySubmissionReviewPage.jsx, /src/style.css[22m
+[2m4:20:12 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/LPDashboardPage.jsx, /src/style.css[22m
+[2m4:20:12 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/LPMetricsPage.jsx, /src/style.css[22m
+[2m4:20:12 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/LPReportsPage.jsx, /src/style.css[22m
+[2m4:20:12 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/LPDashboardPage.jsx, /src/style.css[22m
+[2m4:20:41 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/OverviewPage.jsx, /src/style.css[22m
+[2m4:20:41 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/ReportsPage.jsx, /src/style.css[22m
+[2m4:20:41 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/ReviewHubPage.jsx, /src/style.css[22m
+[2m4:20:41 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/SubmissionsPage.jsx, /src/style.css[22m
+[2m4:28:44 pm[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/pages/CompanySubmissionReviewPage.jsx, /src/style.css[22m

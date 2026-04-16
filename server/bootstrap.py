@@ -1,11 +1,7 @@
 import json
-from pathlib import Path
 
-from database import SessionLocal, engine
+from database import IS_SQLITE, SQLITE_DB_PATH, SessionLocal, engine
 from models import Base, CollectionCycle, Company, Submission, User, ReviewAction, ValidationFlag, UserRole
-
-
-DB_PATH = Path(__file__).resolve().parent / 'db.sqlite'
 
 
 def build_sample_submission(
@@ -128,10 +124,30 @@ def seed_sample_data(db):
             db.add(User(name=name, email=email, password=password, role=role))
     db.commit()
 
+    # Create collection cycles
+    from datetime import datetime, timedelta
+    if db.query(CollectionCycle).count() == 0:
+        # Create 2026 active cycle with deadline
+        today = datetime.utcnow()
+        deadline = today + timedelta(days=30)
+        db.add(
+            CollectionCycle(
+                cycle_year=2026,
+                submission_open_date=today.strftime('%Y-%m-%d'),
+                submission_deadline=deadline.strftime('%Y-%m-%d'),
+                extension_date=None,
+                reminder_schedule='["Day 1", "Day 7", "Day 14", "Day 28"]',
+                template_config='{}',
+                prefill_summary='{}',
+                status='active',
+            )
+        )
+        db.commit()
+
     sample_companies = [
-        ('Solar Tech', 'Renewable Energy', 'APAC', 'Private Equity', 'company@example.com', 'submitted'),
-        ('Healthy Foods', 'Consumer Goods', 'North America', 'Growth Equity', 'healthyfoods@example.com', 'approved'),
-        ('Acme Target', 'Software', 'EMEA', 'Venture Capital', 'target@example.com', 'pre-acquisition'),
+        ('Solar Tech', 'Renewable Energy', 'APAC', 'Senior Secured Debt', 'company@example.com', 'submitted'),
+        ('Healthy Foods', 'Consumer Goods', 'North America', 'Direct Lending', 'healthyfoods@example.com', 'approved'),
+        ('Acme Target', 'Software', 'EMEA', 'Mezzanine Finance', 'target@example.com', 'pre-acquisition'),
     ]
     for company_name, sector, geography, asset_class, owner_email, current_status in sample_companies:
         existing_company = db.query(Company).filter(Company.name == company_name).first()
@@ -152,11 +168,14 @@ def seed_sample_data(db):
     if db.query(Submission).count() == 0:
         solar_company = db.query(Company).filter(Company.name == 'Solar Tech').first()
         healthy_company = db.query(Company).filter(Company.name == 'Healthy Foods').first()
-        if solar_company:
+        active_cycle = db.query(CollectionCycle).filter(CollectionCycle.status == 'active').first()
+        
+        if solar_company and active_cycle:
             # Baseline submission for year-over-year comparison
             db.add(
                 Submission(
                     company_id=solar_company.id,
+                    cycle_id=active_cycle.id,
                     esg_data=json.dumps(
                         build_sample_submission(
                             scope_1=8.5,
@@ -187,6 +206,7 @@ def seed_sample_data(db):
             db.add(
                 Submission(
                     company_id=solar_company.id,
+                    cycle_id=active_cycle.id,
                     esg_data=json.dumps(
                         build_sample_submission(
                             scope_1=12.0,
@@ -213,10 +233,11 @@ def seed_sample_data(db):
                     status='submitted',
                 )
             )
-        if healthy_company:
+        if healthy_company and active_cycle:
             db.add(
                 Submission(
                     company_id=healthy_company.id,
+                    cycle_id=active_cycle.id,
                     esg_data=json.dumps(
                         build_sample_submission(
                             scope_1=8.5,
@@ -268,9 +289,9 @@ def seed_sample_data(db):
 
 def reset_database():
     engine.dispose()
-    if DB_PATH.exists():
+    if IS_SQLITE and SQLITE_DB_PATH.exists():
         try:
-            DB_PATH.unlink()
+            SQLITE_DB_PATH.unlink()
         except PermissionError:
             pass
 

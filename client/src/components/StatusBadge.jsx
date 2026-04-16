@@ -1,24 +1,7 @@
-const statusClassMap = {
-  'Not Started': 'status-critical',
-  'In Progress': 'status-warning',
-  Submitted: 'status-info',
-  Approved: 'status-good',
-  Rejected: 'status-critical',
-  Pass: 'status-good',
-  Warning: 'status-warning',
-  Fail: 'status-critical',
-  Critical: 'status-critical',
-  High: 'status-critical',
-  Medium: 'status-warning',
-  Low: 'status-good',
-  Active: 'status-good',
-  Closed: 'status-muted',
-  Blocked: 'status-critical',
-  Complete: 'status-good',
-  Invited: 'status-warning',
-}
+import { getStatusTone, normalizeStatusLabel } from './ui/status'
 
 export default function StatusBadge({ value }) {
-  const className = statusClassMap[value] || 'status-muted'
-  return <span className={`status-badge ${className}`}>{value}</span>
+  const tone = getStatusTone(value)
+  const label = normalizeStatusLabel(value)
+  return <span className={`status-badge status-${tone}`}>{label}</span>
 }

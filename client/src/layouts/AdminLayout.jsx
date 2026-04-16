@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import { Outlet, useLocation } from 'react-router-dom'
 import Sidebar from '../components/Sidebar'
 import TopNavbar from '../components/TopNavbar'
+import { Button } from '../components/ui'
 import { getDashboardTitle } from '../dashboardNavigation'
 
 export default function AdminLayout({ user, onLogout, navItems }) {
@@ -15,6 +16,14 @@ export default function AdminLayout({ user, onLogout, navItems }) {
 
   useEffect(() => {
     setMobileNavOpen(false)
+  }, [location.pathname])
+
+  useLayoutEffect(() => {
+    const pageContainer = document.querySelector('.page-container')
+    if (pageContainer) {
+      pageContainer.scrollTop = 0
+    }
+    window.scrollTo(0, 0)
   }, [location.pathname])
 
   const toggleSidebar = () => {
@@ -36,9 +45,10 @@ export default function AdminLayout({ user, onLogout, navItems }) {
         onToggle={toggleSidebar}
         onNavigate={() => setMobileNavOpen(false)}
       />
-      <button
+      <Button
         type="button"
-        className={`mobile-backdrop ${mobileNavOpen ? 'visible' : ''}`}
+        variant="ghost"
+        className={`mobile-backdrop ui-backdrop-button ${mobileNavOpen ? 'visible' : ''}`}
         aria-label="Close navigation"
         onClick={() => setMobileNavOpen(false)}
       />

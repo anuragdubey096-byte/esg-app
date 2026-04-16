@@ -61,7 +61,8 @@ Root project env vars:
 - `DATABASE_URL`: Postgres connection string.
 - `BLOB_READ_WRITE_TOKEN`: Blob storage token for report and narrative exports.
 - `FRONTEND_ORIGIN`: your Vercel URL for CORS.
-- `ANTHROPIC_API_KEY`: required for Claude narrative generation.
+- `OPENAI_API_KEY`: required for OpenAI narrative generation.
+- `OPENAI_MODEL`: optional OpenAI model override, defaults to `gpt-4o-mini`.
 
 Build settings:
 - Root `vercel.json` builds the React client from `client/` and serves it from `client/dist`.
