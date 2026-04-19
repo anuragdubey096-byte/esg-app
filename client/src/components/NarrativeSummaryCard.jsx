@@ -2,6 +2,7 @@ import { useState } from 'react'
 import SectionCard from './SectionCard'
 import EmptyState from './ui/EmptyState'
 import { Button } from './ui'
+import { NARRATIVE_UI_COPY } from '../lib/portalOptions'
 
 function splitSentences(text) {
   const value = String(text || '').trim()
@@ -32,10 +33,10 @@ function SectionList({ title, items }) {
   if (!items?.length) return null
   return (
     <div className="space-y-2">
-      <p className="ui-text-strong text-slate-700">{title}</p>
+      <p className="ui-text-strong text-[color:var(--ui-text)]">{title}</p>
       <ul className="space-y-2">
         {items.map((item) => (
-          <li key={item} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+          <li key={item} className="rounded-lg border border-[color:var(--ui-panel-border)] bg-[color:var(--ui-surface-muted)] px-3 py-2 text-sm text-[color:var(--ui-text)]">
             {item}
           </li>
         ))}
@@ -44,7 +45,14 @@ function SectionList({ title, items }) {
   )
 }
 
-export default function NarrativeSummaryCard({ title = 'AI ESG Narrative Summary', subtitle = 'Board-ready plain-English summary generated from approved data only', data, loading, error, onRefresh }) {
+export default function NarrativeSummaryCard({
+  title = NARRATIVE_UI_COPY.summaryCard.title,
+  subtitle = NARRATIVE_UI_COPY.summaryCard.subtitle,
+  data,
+  loading,
+  error,
+  onRefresh,
+}) {
   const [expanded, setExpanded] = useState(false)
   const summaryBlocks = data?.summary ? buildSummaryBlocks(data.summary) : []
   const actions = (
@@ -64,12 +72,12 @@ export default function NarrativeSummaryCard({ title = 'AI ESG Narrative Summary
     return (
       <SectionCard title={title} subtitle={subtitle} actions={actions}>
         {expanded ? (
-          <div className="flex items-center gap-3 py-4 text-slate-600">
-            <div className="h-4 w-4 animate-spin rounded-full border-2 border-slate-300 border-t-slate-600" />
-            <p className="text-sm">Generating narrative from approved submission data...</p>
+          <div className="flex items-center gap-3 py-4 text-[color:var(--ui-text-muted)]">
+            <div className="h-4 w-4 animate-spin rounded-full border-2 border-[color:var(--ui-border)] border-t-[color:var(--ui-text)]" />
+            <p className="text-sm">{NARRATIVE_UI_COPY.summaryCard.loading}</p>
           </div>
         ) : (
-          <p className="text-sm text-slate-600">Narrative summary is ready to open.</p>
+          <p className="text-sm text-[color:var(--ui-text-muted)]">Narrative summary is ready to open.</p>
         )}
       </SectionCard>
     )
@@ -83,7 +91,7 @@ export default function NarrativeSummaryCard({ title = 'AI ESG Narrative Summary
             {error}
           </div>
         ) : (
-          <p className="text-sm text-rose-700">Narrative summary could not load.</p>
+          <p className="text-sm text-rose-700">{NARRATIVE_UI_COPY.summaryCard.error}</p>
         )}
       </SectionCard>
     )
@@ -94,12 +102,12 @@ export default function NarrativeSummaryCard({ title = 'AI ESG Narrative Summary
       <SectionCard title={title} subtitle={subtitle} actions={actions}>
         {expanded ? (
           <EmptyState
-            title="Narrative not ready yet"
-            description={data?.message || 'This summary appears after an approved submission is available.'}
+            title={NARRATIVE_UI_COPY.summaryCard.notReadyTitle}
+            description={data?.message || NARRATIVE_UI_COPY.summaryCard.notReadyDescription}
           />
         ) : (
-          <p className="text-sm text-slate-600">
-            Narrative summary will appear after an approved submission is available.
+          <p className="text-sm text-[color:var(--ui-text-muted)]">
+            {NARRATIVE_UI_COPY.summaryCard.notReadyDescription}
           </p>
         )}
       </SectionCard>
@@ -121,14 +129,14 @@ export default function NarrativeSummaryCard({ title = 'AI ESG Narrative Summary
     <SectionCard title={title} subtitle={subtitle} actions={actions}>
       {!expanded ? (
         <div className="space-y-3">
-          {data.headline ? <h3 className="ui-text-display text-slate-900">{data.headline}</h3> : null}
-          <p className="text-sm leading-6 text-slate-700">
+          {data.headline ? <h3 className="ui-text-display text-[color:var(--ui-text)]">{data.headline}</h3> : null}
+          <p className="text-sm leading-6 text-[color:var(--ui-text)]">
             {buildPreviewSummary(data.summary)}
           </p>
           {metaChips.length ? (
             <div className="flex flex-wrap gap-2">
               {metaChips.slice(0, 3).map((chip) => (
-                <span key={chip} className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs ui-text-strong text-slate-600">
+                <span key={chip} className="rounded-full border border-[color:var(--ui-panel-border)] bg-[color:var(--ui-surface)] px-3 py-1 text-xs ui-text-strong text-[color:var(--ui-text-muted)]">
                   {chip}
                 </span>
               ))}
@@ -140,27 +148,27 @@ export default function NarrativeSummaryCard({ title = 'AI ESG Narrative Summary
           {metaChips.length ? (
             <div className="flex flex-wrap gap-2">
               {metaChips.map((chip) => (
-                <span key={chip} className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs ui-text-strong text-slate-600">
+                <span key={chip} className="rounded-full border border-[color:var(--ui-panel-border)] bg-[color:var(--ui-surface)] px-3 py-1 text-xs ui-text-strong text-[color:var(--ui-text-muted)]">
                   {chip}
                 </span>
               ))}
             </div>
           ) : null}
 
-          {data.headline ? <h3 className="ui-text-display text-slate-900">{data.headline}</h3> : null}
+          {data.headline ? <h3 className="ui-text-display text-[color:var(--ui-text)]">{data.headline}</h3> : null}
 
           <div className="space-y-3">
             {summaryBlocks.map((block) => (
-              <p key={block} className="text-sm leading-6 text-slate-700">
+              <p key={block} className="text-sm leading-6 text-[color:var(--ui-text)]">
                 {block}
               </p>
             ))}
           </div>
 
           <div className="grid gap-4 lg:grid-cols-3">
-            <SectionList title="Highlights" items={data.highlights} />
-            <SectionList title="Watchouts" items={data.watchouts} />
-            <SectionList title="Next steps" items={data.recommendations} />
+            <SectionList title={NARRATIVE_UI_COPY.summaryCard.highlightsTitle} items={data.highlights} />
+            <SectionList title={NARRATIVE_UI_COPY.summaryCard.watchoutsTitle} items={data.watchouts} />
+            <SectionList title={NARRATIVE_UI_COPY.summaryCard.nextStepsTitle} items={data.recommendations} />
           </div>
         </div>
       )}

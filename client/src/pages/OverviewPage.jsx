@@ -2,20 +2,15 @@ import { useMemo } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts'
 import DataTable from '../components/DataTable'
+import ImpactStoryCard from '../components/ImpactStoryCard'
 import KpiCard from '../components/KpiCard'
 import SectionCard from '../components/SectionCard'
 import StatusBadge from '../components/StatusBadge'
 import useDashboardData, { getLatestSubmission, normalizeStatus } from '../hooks/useDashboardData'
 import { API_BASE_URL } from '../lib/api'
+import { STATUS_COLORS } from '../lib/foundation'
+import { UI_LABELS } from '../lib/uiLabels'
 import { Button } from '../components/ui'
-const STATUS_COLORS = {
-  'Not Started': '#94a3b8',
-  'In Progress': '#0ea5e9',
-  Submitted: '#f59e0b',
-  'Under Review': '#8b5cf6',
-  Approved: '#10b981',
-  'Resubmission Requested': '#ef4444',
-}
 
 function formatDays(value) {
   if (value == null) return 'N/A'
@@ -71,6 +66,7 @@ export default function OverviewPage() {
   )
   const statusBreakdown = managerSummary.status_breakdown || {}
   const cycleBanner = managerSummary.cycle_banner || {}
+  const impactStory = managerSummary.impact_story || null
 
   const statusCards = [
     'Not Started',
@@ -175,8 +171,8 @@ export default function OverviewPage() {
   if (loading) {
     return (
       <div className="page-grid">
-        <SectionCard title="Overview Dashboard" subtitle="Loading ESG overview from database...">
-          <p>Loading data from backend.</p>
+        <SectionCard title={UI_LABELS.pages.managerOverview.title} subtitle={UI_LABELS.pages.managerOverview.loadingSubtitle}>
+          <p>{UI_LABELS.common.loadingDataFromBackend}</p>
         </SectionCard>
       </div>
     )
@@ -185,7 +181,7 @@ export default function OverviewPage() {
   if (error) {
     return (
       <div className="page-grid">
-        <SectionCard title="Overview Dashboard" subtitle="Live data unavailable">
+        <SectionCard title={UI_LABELS.pages.managerOverview.title} subtitle={UI_LABELS.pages.managerOverview.errorSubtitle}>
           <p>{error}</p>
         </SectionCard>
       </div>
@@ -238,6 +234,13 @@ export default function OverviewPage() {
           </div>
         </div>
       </SectionCard>
+
+      <ImpactStoryCard
+        title="Admin Impact Intelligence"
+        subtitle="Plain-English context for the current portfolio"
+        story={impactStory}
+        maxInsights={4}
+      />
 
       <section className="kpi-grid">
         {statusCards.map((card) => <KpiCard key={card.title} {...card} />)}

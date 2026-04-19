@@ -3,6 +3,7 @@ import { useNavigate, useOutletContext, useSearchParams } from 'react-router-dom
 import SectionCard from '../components/SectionCard'
 import { Button, ConfidenceFlagSelector, SelectInput, TextareaInput, TextInput } from '../components/ui'
 import { API_BASE_URL } from '../lib/api'
+import { UI_LABELS } from '../lib/uiLabels'
 
 const CONFIDENCE_OPTIONS = ['High', 'Medium', 'Low', 'Estimated', 'Not Available', 'Measured']
 const DEFAULT_POLICY_OPTIONS = ['Yes', 'No', 'In Progress', 'Not Applicable']
@@ -109,7 +110,7 @@ export default function CompanySubmissionPage() {
   if (loading) {
     return (
       <div className="page-grid">
-        <SectionCard title="ESG Data Entry Form" subtitle="Loading">
+        <SectionCard title={UI_LABELS.pages.companySubmission.title} subtitle={UI_LABELS.pages.companySubmission.loadingSubtitle}>
           <div className="flex items-center justify-center py-12">
             <div className="h-12 w-12 animate-spin rounded-full border-b-2 border-blue-600" />
           </div>
@@ -121,10 +122,10 @@ export default function CompanySubmissionPage() {
   if (error) {
     return (
       <div className="page-grid">
-        <SectionCard title="ESG Data Entry Form" subtitle="Error loading data">
+        <SectionCard title={UI_LABELS.pages.companySubmission.title} subtitle={UI_LABELS.pages.companySubmission.errorSubtitle}>
           <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-red-800">
             <p className="ui-text-strong">Error: {error}</p>
-            <p className="mt-2 text-sm">Make sure the backend server is running.</p>
+            <p className="mt-2 text-sm">{UI_LABELS.common.backendServerRunning}</p>
           </div>
         </SectionCard>
       </div>
@@ -134,8 +135,8 @@ export default function CompanySubmissionPage() {
   if (!data) {
     return (
       <div className="page-grid">
-        <SectionCard title="ESG Data Entry Form" subtitle="No data available">
-          <p className="text-gray-600">Unable to load submission form.</p>
+        <SectionCard title={UI_LABELS.pages.companySubmission.title} subtitle={UI_LABELS.pages.companySubmission.noDataSubtitle}>
+          <p className="text-gray-600">{UI_LABELS.pages.companySubmission.noDataMessage}</p>
         </SectionCard>
       </div>
     )

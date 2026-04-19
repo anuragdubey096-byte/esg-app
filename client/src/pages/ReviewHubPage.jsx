@@ -10,6 +10,7 @@ import { Button, SelectInput, TextInput } from '../components/ui'
 import useDashboardData, { getLatestSubmission, parseSubmissionPayload, calculateESGScore, normalizeStatus } from '../hooks/useDashboardData'
 import useNarrativeSummary from '../hooks/useNarrativeSummary'
 import { API_BASE_URL } from '../lib/api'
+import { DEFAULT_REPORT_VIEW, NARRATIVE_UI_COPY } from '../lib/portalOptions'
 
 function toNumber(value) {
   if (value === null || value === undefined || value === '') return null
@@ -70,7 +71,7 @@ export default function ReviewHubPage() {
   const [loadingValidation, setLoadingValidation] = useState(false)
   const [validationErrorMessage, setValidationErrorMessage] = useState('')
   const [activeDecisionField, setActiveDecisionField] = useState('')
-  const [narrativeTone, setNarrativeTone] = useState('board-ready')
+  const [narrativeTone, setNarrativeTone] = useState(DEFAULT_REPORT_VIEW.narrativeTone)
   const [narrativeDraft, setNarrativeDraft] = useState(null)
   const [narrativeMessage, setNarrativeMessage] = useState('')
   const [narrativeBusy, setNarrativeBusy] = useState(false)
@@ -418,7 +419,7 @@ export default function ReviewHubPage() {
       render: (row) => (
         <div>
           <div>{row.metric}</div>
-          {row.validationMessage ? <small style={{ color: '#64748b' }}>{row.validationMessage}</small> : null}
+          {row.validationMessage ? <small style={{ color: 'var(--ui-text-muted)' }}>{row.validationMessage}</small> : null}
         </div>
       ),
     },
@@ -567,12 +568,12 @@ export default function ReviewHubPage() {
         error={narrative.error}
         onRefresh={narrative.refresh}
         title="AI ESG Narrative Summary"
-        subtitle="Company-level narrative from approved submission data"
+        subtitle={NARRATIVE_UI_COPY.pages.reviewHubNarrativeSubtitle}
       />
 
       <SectionCard
         title="Narrative Controls"
-        subtitle="Admin can edit, approve, and export the company confirmation letter"
+        subtitle={NARRATIVE_UI_COPY.pages.reviewHubNarrativeControlsSubtitle}
       >
         <div className="space-y-4">
           <NarrativeToolbar

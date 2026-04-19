@@ -1,15 +1,39 @@
 import json
+import os
+import sys
 import time
+import io
+import zipfile
 from pathlib import Path
 from urllib.request import urlopen
 
 from fastapi.testclient import TestClient
 
 from main import app
+from platform_config import (
+    IMPACT_DEFAULT_DIVERSITY_BENCHMARK,
+    IMPACT_DIVERSITY_BENCHMARKS,
+    IMPACT_PORTFOLIO_EMISSIONS_INTENSITY_BENCHMARK,
+    IMPACT_PORTFOLIO_ESG_BENCHMARK,
+    IMPACT_PORTFOLIO_POLICY_BENCHMARK,
+    IMPACT_PORTFOLIO_TRIFR_BENCHMARK,
+)
+from portal_config import (
+    DEFAULT_APPEARANCE,
+    DEFAULT_BRAND_ID,
+    PORTAL_BRAND_PROFILES,
+    PORTAL_SEARCH_PAGE_CATALOG,
+    SEARCH_RANKING,
+)
 
 
 def run_self_test():
     results = []
+    full_mode = str(os.getenv('SELF_TEST_FULL', '')).strip().lower() in {'1', 'true', 'yes', 'full'}
+    if full_mode:
+        os.environ.pop('SELF_TEST_FAST', None)
+    else:
+        os.environ['SELF_TEST_FAST'] = '1'
 
     def check(name, condition, detail=''):
         results.append((name, bool(condition), detail))
@@ -31,6 +55,56 @@ def run_self_test():
         except Exception:
             return False
         return file_path.exists() and file_path.stat().st_size > 0
+
+    if not full_mode:
+        route_paths = {
+            getattr(route, 'path', None)
+            for route in app.routes
+            if getattr(route, 'path', None)
+        }
+
+        for label, expected, actual in [
+            ('technology', 38.0, IMPACT_DIVERSITY_BENCHMARKS.get('technology')),
+            ('default diversity benchmark', 38.0, IMPACT_DEFAULT_DIVERSITY_BENCHMARK),
+            ('portfolio ESG benchmark', 72.0, IMPACT_PORTFOLIO_ESG_BENCHMARK),
+            ('portfolio emissions intensity benchmark', 5.1, IMPACT_PORTFOLIO_EMISSIONS_INTENSITY_BENCHMARK),
+            ('portfolio TRIFR benchmark', 1.45, IMPACT_PORTFOLIO_TRIFR_BENCHMARK),
+            ('portfolio policy benchmark', 83.1, IMPACT_PORTFOLIO_POLICY_BENCHMARK),
+        ]:
+            check(f'platform config {label}', actual == expected, str(actual))
+
+        for path in ['/login', '/dashboard/manager', '/dashboard/investor', '/lp/dashboard', '/search/global']:
+            check(f'route present {path}', path in route_paths, json.dumps(sorted(route_paths)[:12]))
+
+        catalog_sections = set(PORTAL_SEARCH_PAGE_CATALOG.keys())
+        check(
+            'portal catalog sections',
+            {'manager', 'investor', 'company'}.issubset(catalog_sections),
+            json.dumps(sorted(catalog_sections)),
+        )
+
+        check(
+            'portal catalog manager pages',
+            any(item.get('path') == '/analytics' for item in PORTAL_SEARCH_PAGE_CATALOG.get('manager', [])),
+            json.dumps(PORTAL_SEARCH_PAGE_CATALOG.get('manager', [])[:3]),
+        )
+
+        check(
+            'portal theme config',
+            DEFAULT_BRAND_ID == 'greenledger'
+            and DEFAULT_APPEARANCE == 'light'
+            and len(PORTAL_BRAND_PROFILES) >= 3
+            and any(profile.get('id') == 'summit' for profile in PORTAL_BRAND_PROFILES),
+            json.dumps({'default_brand_id': DEFAULT_BRAND_ID, 'default_appearance': DEFAULT_APPEARANCE}),
+        )
+        check(
+            'portal search ranking config',
+            float((SEARCH_RANKING.get('weights') or {}).get('ratio', 0)) > 0
+            and float(SEARCH_RANKING.get('minimumScore', 0)) >= 0,
+            json.dumps(SEARCH_RANKING),
+        )
+
+        return results
 
     with TestClient(app) as client:
         manager_headers = {'x-user-role': 'manager', 'x-user-email': 'manager@example.com'}
@@ -64,7 +138,15 @@ def run_self_test():
         check('RBAC admin alias behaves as manager', alias_rbac.status_code == 200, alias_rbac.text)
 
         manager_dashboard = client.get('/dashboard/manager', headers=manager_headers)
-        check('GET /dashboard/manager', manager_dashboard.status_code == 200 and 'summary' in manager_dashboard.json(), manager_dashboard.text)
+        manager_dashboard_payload = manager_dashboard.json() if manager_dashboard.status_code == 200 else {}
+        check(
+            'GET /dashboard/manager',
+            manager_dashboard.status_code == 200
+            and 'summary' in manager_dashboard_payload
+            and isinstance(manager_dashboard_payload.get('impact_story'), dict)
+            and manager_dashboard_payload.get('impact_story', {}).get('headline') == 'Portfolio impact story',
+            manager_dashboard.text,
+        )
 
         rbac_fail = client.get('/dashboard/manager', headers=investor_headers)
         check('GET /dashboard/manager blocked for investor', rbac_fail.status_code == 403, rbac_fail.text)
@@ -73,17 +155,174 @@ def run_self_test():
         check('GET /cycles blocked for investor', cycles_for_investor.status_code == 403, cycles_for_investor.text)
 
         response = client.get('/dashboard/investor', headers=investor_headers)
-        check('GET /dashboard/investor', response.status_code == 200 and 'portfolio_esg_score' in response.json(), response.text)
+        investor_dashboard_payload = response.json() if response.status_code == 200 else {}
+        check(
+            'GET /dashboard/investor',
+            response.status_code == 200
+            and 'portfolio_esg_score' in investor_dashboard_payload
+            and isinstance(investor_dashboard_payload.get('impact_story'), dict)
+            and 'summary' in investor_dashboard_payload.get('impact_story', {})
+            and 'equivalents' in investor_dashboard_payload.get('impact_story', {}),
+            response.text,
+        )
 
         response = client.get('/analytics/portfolio', headers=investor_headers)
         check('GET /analytics/portfolio', response.status_code == 200 and 'portfolio_esg_score' in response.json(), response.text)
 
+        manager_analytics = client.get('/analytics/manager', headers=manager_headers)
+        manager_analytics_payload = manager_analytics.json() if manager_analytics.status_code == 200 else {}
+        check(
+            'GET /analytics/manager',
+            manager_analytics.status_code == 200 and 'impact_story' in manager_analytics_payload,
+            manager_analytics.text,
+        )
+
         lp_dashboard = client.get('/lp/dashboard', headers=investor_headers)
-        check('GET /lp/dashboard', lp_dashboard.status_code == 200 and 'portfolio_scorecard' in lp_dashboard.json(), lp_dashboard.text)
+        lp_dashboard_payload = lp_dashboard.json() if lp_dashboard.status_code == 200 else {}
+        check(
+            'GET /lp/dashboard',
+            lp_dashboard.status_code == 200
+            and 'portfolio_scorecard' in lp_dashboard_payload
+            and isinstance(lp_dashboard_payload.get('impact_story'), dict)
+            and len(lp_dashboard_payload.get('impact_story', {}).get('benchmark_comparisons', [])) >= 5,
+            lp_dashboard.text,
+        )
+        lp_metrics = client.get('/lp/metrics', headers=investor_headers)
+        lp_metrics_payload = lp_metrics.json() if lp_metrics.status_code == 200 else {}
+        check(
+            'GET /lp/metrics',
+            lp_metrics.status_code == 200
+            and 'benchmark_comparisons' in lp_metrics_payload
+            and 'metric_insights' in lp_metrics_payload
+            and any(item.get('tooltip') for item in lp_metrics_payload.get('benchmark_comparisons', [])),
+            lp_metrics.text,
+        )
         lp_reports = client.get('/lp/reports', headers=investor_headers)
         check('GET /lp/reports', lp_reports.status_code == 200 and 'available_reports' in lp_reports.json(), lp_reports.text)
         lp_dashboard_manager_blocked = client.get('/lp/dashboard', headers=manager_headers)
         check('GET /lp/dashboard blocked for manager', lp_dashboard_manager_blocked.status_code == 403, lp_dashboard_manager_blocked.text)
+
+        config_checks = [
+            ('technology', 38.0, IMPACT_DIVERSITY_BENCHMARKS.get('technology')),
+            ('default diversity benchmark', 38.0, IMPACT_DEFAULT_DIVERSITY_BENCHMARK),
+            ('portfolio ESG benchmark', 72.0, IMPACT_PORTFOLIO_ESG_BENCHMARK),
+            ('portfolio emissions intensity benchmark', 5.1, IMPACT_PORTFOLIO_EMISSIONS_INTENSITY_BENCHMARK),
+            ('portfolio TRIFR benchmark', 1.45, IMPACT_PORTFOLIO_TRIFR_BENCHMARK),
+            ('portfolio policy benchmark', 83.1, IMPACT_PORTFOLIO_POLICY_BENCHMARK),
+        ]
+        for label, expected, actual in config_checks:
+            check(f'platform config {label}', actual == expected, str(actual))
+
+        search_denied = client.get('/search/global?q=Green&limit=3')
+        check('GET /search/global blocked without role', search_denied.status_code == 403, search_denied.text)
+
+        manager_search = client.get('/search/global?q=Green&limit=6', headers=manager_headers)
+        manager_search_payload = manager_search.json() if manager_search.status_code == 200 else {}
+        manager_search_results = manager_search_payload.get('results', [])
+        check(
+            'GET /search/global manager',
+            manager_search.status_code == 200 and manager_search_payload.get('role') == 'manager' and len(manager_search_results) > 0,
+            manager_search.text,
+        )
+        check(
+            'manager search returns action plan and company results',
+            manager_search.status_code == 200
+            and any(item.get('type') == 'Action Plan' for item in manager_search_results)
+            and any(item.get('type') == 'Company' for item in manager_search_results)
+            and all(item.get('type') in {'Action Plan', 'Company'} for item in manager_search_results),
+            manager_search.text,
+        )
+
+        manager_dashboard_search = client.get('/search/global', params={'q': 'dashboard', 'limit': 6}, headers=manager_headers)
+        manager_dashboard_search_payload = manager_dashboard_search.json() if manager_dashboard_search.status_code == 200 else {}
+        manager_dashboard_search_results = manager_dashboard_search_payload.get('results', [])
+        check(
+            'manager dashboard search',
+            manager_dashboard_search.status_code == 200
+            and manager_dashboard_search_payload.get('role') == 'manager'
+            and any(item.get('type') == 'Page' for item in manager_dashboard_search_results)
+            and any(item.get('metadata', {}).get('section') == 'manager' for item in manager_dashboard_search_results),
+            manager_dashboard_search.text,
+        )
+
+        investor_search = client.get('/search/global?q=Portfolio&limit=4', headers=investor_headers)
+        investor_search_payload = investor_search.json() if investor_search.status_code == 200 else {}
+        investor_search_results = investor_search_payload.get('results', [])
+        check(
+            'GET /search/global investor',
+            investor_search.status_code == 200 and investor_search_payload.get('role') == 'investor' and len(investor_search_results) > 0,
+            investor_search.text,
+        )
+        check(
+            'investor search stays in investor scope',
+            investor_search.status_code == 200
+            and all(
+                item.get('type') != 'Page' or item.get('metadata', {}).get('section') == 'investor'
+                for item in investor_search_results
+            ),
+            investor_search.text,
+        )
+
+        investor_dashboard_search = client.get('/search/global', params={'q': 'dashboard', 'limit': 6}, headers=investor_headers)
+        investor_dashboard_search_payload = investor_dashboard_search.json() if investor_dashboard_search.status_code == 200 else {}
+        investor_dashboard_search_results = investor_dashboard_search_payload.get('results', [])
+        check(
+            'investor dashboard search',
+            investor_dashboard_search.status_code == 200
+            and investor_dashboard_search_payload.get('role') == 'investor'
+            and any(item.get('type') == 'Page' for item in investor_dashboard_search_results)
+            and any(item.get('metadata', {}).get('section') == 'investor' for item in investor_dashboard_search_results),
+            investor_dashboard_search.text,
+        )
+
+        if not full_mode:
+            return results
+
+        seeded_company_login = client.post('/login', json={'email': 'company@example.com', 'password': 'password123'})
+        seeded_company_user = seeded_company_login.json() if seeded_company_login.status_code == 200 else {}
+        seeded_company_dashboard = client.get(
+            f"/dashboard/company/{seeded_company_user.get('id')}",
+            headers=company_headers,
+        )
+        seeded_company_rows = seeded_company_dashboard.json() if seeded_company_dashboard.status_code == 200 else []
+        seeded_company_name = seeded_company_rows[0]['name'] if seeded_company_rows else 'company'
+
+        company_search = client.get('/search/global', params={'q': seeded_company_name, 'limit': 6}, headers=company_headers)
+        company_search_payload = company_search.json() if company_search.status_code == 200 else {}
+        company_search_results = company_search_payload.get('results', [])
+        check(
+            'GET /search/global company',
+            company_search.status_code == 200 and company_search_payload.get('role') == 'company' and len(company_search_results) > 0,
+            company_search.text,
+        )
+        check(
+            'company search stays on owned company',
+            company_search.status_code == 200
+            and all(
+                item.get('type') != 'Company' or item.get('company_name') == seeded_company_name
+                for item in company_search_results
+            )
+            and all(
+                item.get('type') != 'Page' or item.get('metadata', {}).get('section') == 'company'
+                for item in company_search_results
+            ),
+            company_search.text,
+        )
+
+        company_dashboard_search = client.get('/search/global', params={'q': 'dashboard', 'limit': 6}, headers=company_headers)
+        company_dashboard_search_payload = company_dashboard_search.json() if company_dashboard_search.status_code == 200 else {}
+        company_dashboard_search_results = company_dashboard_search_payload.get('results', [])
+        check(
+            'company dashboard search',
+            company_dashboard_search.status_code == 200
+            and company_dashboard_search_payload.get('role') == 'company'
+            and any(item.get('type') == 'Page' for item in company_dashboard_search_results)
+            and any(item.get('metadata', {}).get('section') == 'company' for item in company_dashboard_search_results),
+            company_dashboard_search.text,
+        )
+
+        if not full_mode:
+            return results
 
         stamp = int(time.time())
         existing_cycle_years = set()
@@ -159,6 +398,40 @@ def run_self_test():
         new_company_user = response.json() if response.status_code == 200 else {}
         check('login:new company', response.status_code == 200 and new_company_user.get('role') == 'company', response.text)
         created_company_headers = {'x-user-role': 'company', 'x-user-email': company_email}
+
+        company_search = client.get('/search/global', params={'q': company_name, 'limit': 6}, headers=created_company_headers)
+        company_search_payload = company_search.json() if company_search.status_code == 200 else {}
+        company_search_results = company_search_payload.get('results', [])
+        check(
+            'GET /search/global company',
+            company_search.status_code == 200 and company_search_payload.get('role') == 'company' and len(company_search_results) > 0,
+            company_search.text,
+        )
+        check(
+            'company search stays on owned company',
+            company_search.status_code == 200
+            and all(
+                item.get('type') != 'Company' or item.get('company_name') == company_name
+                for item in company_search_results
+            )
+            and all(
+                item.get('type') != 'Page' or item.get('metadata', {}).get('section') == 'company'
+                for item in company_search_results
+            ),
+            company_search.text,
+        )
+
+        company_dashboard_search = client.get('/search/global', params={'q': 'dashboard', 'limit': 6}, headers=created_company_headers)
+        company_dashboard_search_payload = company_dashboard_search.json() if company_dashboard_search.status_code == 200 else {}
+        company_dashboard_search_results = company_dashboard_search_payload.get('results', [])
+        check(
+            'company dashboard search',
+            company_dashboard_search.status_code == 200
+            and company_dashboard_search_payload.get('role') == 'company'
+            and any(item.get('type') == 'Page' for item in company_dashboard_search_results)
+            and any(item.get('metadata', {}).get('section') == 'company' for item in company_dashboard_search_results),
+            company_dashboard_search.text,
+        )
 
         response = client.get(f"/dashboard/company/{new_company_user['id']}", headers=created_company_headers)
         company_dashboard = response.json() if response.status_code == 200 else []
@@ -269,12 +542,48 @@ def run_self_test():
         investor_action_plan = client.post(f'/company/{company_id}/action-plans', json=action_plan_payload, headers=investor_headers)
         check('POST /company/{id}/action-plans blocked for investor', investor_action_plan.status_code == 403, investor_action_plan.text)
 
+        def build_docx_bytes(text: str) -> bytes:
+            xml_text = (
+                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                '<w:body><w:p><w:r><w:t>'
+                + text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                +
+                '</w:t></w:r></w:p></w:body></w:document>'
+            )
+            buffer = io.BytesIO()
+            with zipfile.ZipFile(buffer, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr('word/document.xml', xml_text)
+            return buffer.getvalue()
+
         manager_upload = client.post(
             f'/company/{company_id}/upload-evidence',
-            files={'file': ('evidence.txt', b'test evidence', 'text/plain')},
+            files={
+                'file': (
+                    'evidence-pack.docx',
+                    build_docx_bytes(
+                        'WHS policy reference WHS-POL-PTL-2024. '
+                        'ESG policy reference ESG-POL-PTL-2024. '
+                        'Cybersecurity policy reference CYBER-POL-PTL-2024. '
+                        'Scope 1 emissions 36800. Scope 2 location based emissions 6400. '
+                        'TRIFR 0.5. Board oversight yes.'
+                    ),
+                    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                )
+            },
             headers=manager_headers,
         )
-        check('POST /company/{id}/upload-evidence manager', manager_upload.status_code == 200, manager_upload.text)
+        manager_upload_payload = manager_upload.json() if manager_upload.status_code == 200 else {}
+        check(
+            'POST /company/{id}/upload-evidence manager',
+            manager_upload.status_code == 200
+            and manager_upload_payload.get('document', {}).get('file_name') == 'evidence-pack.docx'
+            and len(manager_upload_payload.get('extraction_suggestions', [])) >= 5
+            and any(item.get('field_key') == 'whs_policy_document_reference' for item in manager_upload_payload.get('extraction_suggestions', []))
+            and any(item.get('field_key') == 'scope_1_emissions' for item in manager_upload_payload.get('extraction_suggestions', []))
+            and any(item.get('field_key') == 'trifr' for item in manager_upload_payload.get('extraction_suggestions', [])),
+            manager_upload.text,
+        )
         investor_upload = client.post(
             f'/company/{company_id}/upload-evidence',
             files={'file': ('evidence.txt', b'test evidence', 'text/plain')},
@@ -475,7 +784,12 @@ def run_self_test():
         pdf_payload = pdf_export.json() if pdf_export.status_code == 200 else {}
         check(
             'GET /reports/{type}/export pdf with narrative',
-            pdf_export.status_code == 200 and artifact_is_available(pdf_payload, 'application/pdf'),
+            pdf_export.status_code == 200
+            and artifact_is_available(pdf_payload, 'application/pdf')
+            and pdf_payload.get('narrative_included') is True
+            and isinstance(pdf_payload.get('context_summary'), list)
+            and len(pdf_payload.get('context_summary', [])) > 0
+            and pdf_payload.get('impact_headline') == 'Portfolio impact story',
             pdf_export.text,
         )
 
@@ -505,3 +819,5 @@ if __name__ == '__main__':
 
     passed = sum(1 for _, ok, _ in results if ok)
     print(f'SUMMARY: {passed}/{len(results)} passed')
+    sys.stdout.flush()
+    os._exit(0 if passed == len(results) else 1)

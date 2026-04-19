@@ -3,44 +3,18 @@ import { Outlet, useLocation } from 'react-router-dom'
 import Sidebar from '../components/Sidebar'
 import TopNavbar from '../components/TopNavbar'
 import { Button } from '../components/ui'
-
-// Company (Portfolio Company) navigation
-const COMPANY_NAV_ITEMS = [
-  {
-    to: '/company/dashboard',
-    label: 'Dashboard',
-    icon: 'D',
-    title: 'Submission Status & Progress',
-  },
-  {
-    to: '/company/submission',
-    label: 'ESG Data',
-    icon: 'E',
-    title: 'Complete ESG Data Entry',
-  },
-  {
-    to: '/company/action-plans',
-    label: 'Action Plans',
-    icon: 'A',
-    title: 'ESG Improvement Initiatives',
-  },
-  {
-    to: '/company/historical',
-    label: 'Historical Data',
-    icon: 'H',
-    title: 'Historical Submissions & YoY Reference',
-  },
-]
+import { getAllowedNavItems } from '../dashboardNavigation'
 
 export default function CompanyLayout({ user, onLogout }) {
   const [collapsed, setCollapsed] = useState(false)
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const location = useLocation()
+  const navItems = useMemo(() => getAllowedNavItems('company'), [])
 
   const pageTitle = useMemo(() => {
-    const matched = COMPANY_NAV_ITEMS.find((item) => location.pathname.startsWith(item.to))
+    const matched = navItems.find((item) => location.pathname.startsWith(item.to))
     return matched?.title || 'Company Portal'
-  }, [location.pathname])
+  }, [location.pathname, navItems])
 
   useEffect(() => {
     setMobileNavOpen(false)
@@ -68,7 +42,7 @@ export default function CompanyLayout({ user, onLogout }) {
     <div className={`admin-shell ${collapsed ? 'collapsed' : ''}`}>
       <Sidebar
         collapsed={collapsed}
-        items={COMPANY_NAV_ITEMS}
+        items={navItems}
         mobileOpen={mobileNavOpen}
         onToggle={toggleSidebar}
         onNavigate={() => setMobileNavOpen(false)}

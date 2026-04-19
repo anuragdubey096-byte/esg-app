@@ -6,6 +6,7 @@ import StatusBadge from '../components/StatusBadge'
 import useDashboardData from '../hooks/useDashboardData'
 import { API_BASE_URL } from '../lib/api'
 import { Button } from '../components/ui'
+import { UI_LABELS } from '../lib/uiLabels'
 
 const adminSettingsTabs = ['Data Collection Cycles', 'Users']
 export default function AdminSettingsPage() {
@@ -116,8 +117,8 @@ export default function AdminSettingsPage() {
   return (
     <div className="page-grid">
       <SectionCard
-        title="Admin Settings"
-        subtitle="Manage access, templates, rules, and data governance controls"
+        title={UI_LABELS.pages.adminSettings.title}
+        subtitle={UI_LABELS.pages.adminSettings.subtitle}
         actions={
           <div className="tab-row">
             {adminSettingsTabs.map((tab) => (

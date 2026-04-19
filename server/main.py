@@ -1,10 +1,15 @@
 import csv
+import io
 import json
 import hashlib
 import os
 import re
+import zipfile
+from difflib import SequenceMatcher
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import quote_plus
+from xml.etree import ElementTree as ET
 from typing import Any, Dict, List, Optional, Tuple
 from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Header, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,10 +25,21 @@ except ImportError:  # pragma: no cover - optional until dependency is installed
 from env import load_local_env
 from bootstrap import seed_sample_data
 from database import SessionLocal, engine
+from platform_config import (
+    IMPACT_DEFAULT_DIVERSITY_BENCHMARK,
+    IMPACT_DIVERSITY_BENCHMARKS,
+    IMPACT_PORTFOLIO_EMISSIONS_INTENSITY_BENCHMARK,
+    IMPACT_PORTFOLIO_ESG_BENCHMARK,
+    IMPACT_PORTFOLIO_POLICY_BENCHMARK,
+    IMPACT_PORTFOLIO_TRIFR_BENCHMARK,
+    IMPACT_TCO2E_PER_PASSENGER_VEHICLE_YEAR,
+)
+from portal_config import PORTAL_SEARCH_PAGE_CATALOG, SEARCH_RANKING
 from models import (
     Base,
     User,
     UserRole,
+    LPType,
     Company,
     Submission,
     NarrativeSummary,
@@ -79,11 +95,15 @@ from schemas import (
     CompanyActionPlanCreateRequest,
     CompanyActionPlanUpdateRequest,
     CompanySubmissionDataUpdateRequest,
+    DocumentExtractionSuggestion,
+    SupportingDocumentResponse,
+    SupportingDocumentUploadResponse,
     ValidationErrorResponse,
     SubmissionDataFieldResponse,
     MetricReviewDecisionRequest,
     MetricReviewDecisionResponse,
     ManagerAnalyticsResponse,
+    GlobalSearchResponse,
 )
 from new_esg_module import router as new_esg_router
 from storage import ensure_local_export_dir, is_blob_storage_enabled, list_export_artifacts, save_export_artifact
@@ -1443,7 +1463,9 @@ def startup_event():
         ensure_action_plan_columns(db)
         ensure_narrative_columns(db)
         Base.metadata.create_all(bind=engine)
-        seed_sample_data(db)
+        skip_sample_seed = str(os.getenv('SELF_TEST_FAST', '')).strip().lower() in {'1', 'true', 'yes', 'fast'}
+        if not skip_sample_seed:
+            seed_sample_data(db)
         migrate_legacy_user_roles(db)
         fix_cycle_statuses_and_active_conflicts(db)
         ensure_submission_cycle_backfill(db)
@@ -1743,7 +1765,385 @@ def calculate_ghg(payload: GHGCalculatorRequest):
         total_tco2e=round(scope_1 + scope_2, 4)
     )
 
-@app.post('/company/{company_id}/upload-evidence', dependencies=[Depends(require_company_or_manager)])
+DOCUMENT_EXTRACTION_RULES = [
+    {
+        'field_key': 'whs_policy_document_reference',
+        'kind': 'reference',
+        'keywords': ['whs', 'health and safety', 'work health safety', 'safety policy'],
+        'confidence_level': 'High',
+        'explanation': 'The file appears to support the work health and safety policy field.',
+    },
+    {
+        'field_key': 'esg_policy_document_reference',
+        'kind': 'reference',
+        'keywords': ['esg policy', 'environmental social governance', 'sustainability policy', 'policy'],
+        'confidence_level': 'High',
+        'explanation': 'The file appears to support the ESG policy field.',
+    },
+    {
+        'field_key': 'cybersecurity_policy_document_reference',
+        'kind': 'reference',
+        'keywords': ['cyber', 'information security', 'security policy', 'incident response'],
+        'confidence_level': 'High',
+        'explanation': 'The file appears to support the cybersecurity policy field.',
+    },
+    {
+        'field_key': 'scope_1_emissions',
+        'kind': 'numeric',
+        'keywords': ['scope 1 emissions', 'scope 1', 'direct emissions'],
+        'confidence_level': 'Medium',
+        'explanation': 'The file appears to contain Scope 1 emissions data.',
+    },
+    {
+        'field_key': 'scope_2_location_based',
+        'kind': 'numeric',
+        'keywords': ['scope 2 location based', 'scope 2', 'purchased electricity emissions'],
+        'confidence_level': 'Medium',
+        'explanation': 'The file appears to contain Scope 2 location-based emissions data.',
+    },
+    {
+        'field_key': 'scope_3_emissions',
+        'kind': 'numeric',
+        'keywords': ['scope 3 emissions', 'scope 3', 'value chain emissions'],
+        'confidence_level': 'Medium',
+        'explanation': 'The file appears to contain Scope 3 emissions data.',
+    },
+    {
+        'field_key': 'total_ghg_emissions',
+        'kind': 'numeric',
+        'keywords': ['total ghg emissions', 'greenhouse gas emissions', 'ghg emissions total'],
+        'confidence_level': 'Medium',
+        'explanation': 'The file appears to contain a total greenhouse gas emissions figure.',
+    },
+    {
+        'field_key': 'total_energy_consumption',
+        'kind': 'numeric',
+        'keywords': ['total energy consumption', 'energy consumption', 'energy use'],
+        'confidence_level': 'Medium',
+        'explanation': 'The file appears to contain total energy consumption data.',
+    },
+    {
+        'field_key': 'renewable_energy_consumption',
+        'kind': 'numeric',
+        'keywords': ['renewable energy consumption', 'renewable energy', 'clean energy'],
+        'confidence_level': 'Medium',
+        'explanation': 'The file appears to contain renewable energy consumption data.',
+    },
+    {
+        'field_key': 'total_water_withdrawal',
+        'kind': 'numeric',
+        'keywords': ['total water withdrawal', 'water withdrawal', 'water use'],
+        'confidence_level': 'Medium',
+        'explanation': 'The file appears to contain total water withdrawal data.',
+    },
+    {
+        'field_key': 'water_recycled_reused',
+        'kind': 'numeric',
+        'keywords': ['water recycled', 'water reused', 'recycled water'],
+        'confidence_level': 'Medium',
+        'explanation': 'The file appears to contain water recycled or reused data.',
+    },
+    {
+        'field_key': 'total_waste_generated',
+        'kind': 'numeric',
+        'keywords': ['total waste generated', 'waste generated', 'waste total'],
+        'confidence_level': 'Medium',
+        'explanation': 'The file appears to contain total waste generated data.',
+    },
+    {
+        'field_key': 'waste_diverted_from_landfill',
+        'kind': 'numeric',
+        'keywords': ['waste diverted from landfill', 'diverted from landfill', 'waste diversion'],
+        'confidence_level': 'Medium',
+        'explanation': 'The file appears to contain landfill diversion data.',
+    },
+    {
+        'field_key': 'trifr',
+        'kind': 'numeric',
+        'keywords': ['trifr', 'total recordable injury frequency rate', 'recordable injury frequency'],
+        'confidence_level': 'Medium',
+        'explanation': 'The file appears to contain a TRIFR value.',
+    },
+    {
+        'field_key': 'total_incidents_reported',
+        'kind': 'numeric',
+        'keywords': ['total incidents reported', 'incidents reported', 'incident count'],
+        'confidence_level': 'Medium',
+        'explanation': 'The file appears to contain incident reporting data.',
+    },
+    {
+        'field_key': 'employee_turnover_rate',
+        'kind': 'numeric',
+        'keywords': ['employee turnover rate', 'turnover rate', 'staff turnover'],
+        'confidence_level': 'Medium',
+        'explanation': 'The file appears to contain employee turnover data.',
+    },
+    {
+        'field_key': 'female_representation_percent',
+        'kind': 'numeric',
+        'keywords': ['female representation', 'women representation', 'gender diversity'],
+        'confidence_level': 'Medium',
+        'explanation': 'The file appears to contain overall female representation data.',
+    },
+    {
+        'field_key': 'female_leadership_representation_percent',
+        'kind': 'numeric',
+        'keywords': ['female leadership', 'women in leadership', 'leadership representation'],
+        'confidence_level': 'Medium',
+        'explanation': 'The file appears to contain female leadership representation data.',
+    },
+    {
+        'field_key': 'community_investment_spend',
+        'kind': 'numeric',
+        'keywords': ['community investment', 'community spend', 'social investment'],
+        'confidence_level': 'Medium',
+        'explanation': 'The file appears to contain community investment spend data.',
+    },
+    {
+        'field_key': 'reduction_target_percent',
+        'kind': 'numeric',
+        'keywords': ['reduction target', 'target reduction', 'emissions target'],
+        'confidence_level': 'Medium',
+        'explanation': 'The file appears to contain a reduction target.',
+    },
+    {
+        'field_key': 'reduction_target_year',
+        'kind': 'numeric',
+        'keywords': ['target year', 'reduction year', 'net zero year', 'carbon neutral year'],
+        'confidence_level': 'Medium',
+        'explanation': 'The file appears to contain a target year.',
+    },
+    {
+        'field_key': 'board_level_esg_oversight',
+        'kind': 'boolean',
+        'keywords': ['board oversight', 'board level esg', 'esg oversight', 'board governance'],
+        'confidence_level': 'Medium',
+        'explanation': 'The file appears to describe board-level ESG oversight.',
+    },
+    {
+        'field_key': 'esg_kpis_linked_to_remuneration',
+        'kind': 'boolean',
+        'keywords': ['kpis linked to remuneration', 'linked to remuneration', 'incentive linked', 'compensation linked'],
+        'confidence_level': 'Medium',
+        'explanation': 'The file appears to describe ESG KPI linkage to remuneration.',
+    },
+    {
+        'field_key': 'cyber_incidents_in_reporting_period',
+        'kind': 'numeric',
+        'keywords': ['cyber incidents', 'security incidents', 'reporting period incidents'],
+        'confidence_level': 'Medium',
+        'explanation': 'The file appears to contain cybersecurity incident data.',
+    },
+]
+
+
+def _extract_plain_text(content: bytes) -> str:
+    for encoding in ('utf-8', 'utf-16', 'cp1252', 'latin-1'):
+        try:
+            text = content.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        if text.strip():
+            return text
+    return content.decode('utf-8', errors='ignore')
+
+
+def _extract_xml_text(xml_bytes: bytes) -> str:
+    try:
+        root = ET.fromstring(xml_bytes)
+    except ET.ParseError:
+        return ''
+    return ' '.join(part.strip() for part in root.itertext() if part and part.strip())
+
+
+def _extract_zip_xml_text(content: bytes, prefixes: List[str]) -> str:
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as archive:
+            parts: List[str] = []
+            for name in archive.namelist():
+                if not any(name.startswith(prefix) for prefix in prefixes):
+                    continue
+                if not name.endswith('.xml'):
+                    continue
+                try:
+                    xml_text = _extract_xml_text(archive.read(name))
+                except KeyError:
+                    continue
+                if xml_text:
+                    parts.append(xml_text)
+            return '\n'.join(parts).strip()
+    except (zipfile.BadZipFile, OSError, ValueError):
+        return ''
+
+
+def _extract_pdf_text(content: bytes) -> str:
+    text = _extract_plain_text(content)
+    matches: List[str] = []
+    for match in re.finditer(r'\(((?:\\.|[^()]){1,5000})\)\s*T[Jj]', text, flags=re.S):
+        segment = match.group(1)
+        segment = segment.replace(r'\\', '\\').replace(r'\(', '(').replace(r'\)', ')')
+        cleaned = segment.strip()
+        if cleaned:
+            matches.append(cleaned)
+    if matches:
+        return '\n'.join(matches).strip()
+    return text
+
+
+def _extract_document_text(file_name: str, content: bytes, content_type: str | None) -> str:
+    lower_name = (file_name or '').lower()
+    lower_type = (content_type or '').lower()
+    suffix = Path(lower_name).suffix
+
+    if suffix == '.pdf' or lower_type == 'application/pdf':
+        return _extract_pdf_text(content)
+
+    if suffix in {'.docx'} or 'wordprocessingml.document' in lower_type:
+        text = _extract_zip_xml_text(content, ['word/'])
+        if text:
+            return text
+
+    if suffix in {'.xlsx', '.xlsm'} or 'spreadsheetml.sheet' in lower_type:
+        text = _extract_zip_xml_text(content, ['xl/'])
+        if text:
+            return text
+
+    if suffix in {'.csv', '.tsv', '.json', '.xml', '.txt', '.md', '.log', '.html', '.htm'} or lower_type.startswith('text/') or 'json' in lower_type or 'xml' in lower_type:
+        return _extract_plain_text(content)
+
+    if zipfile.is_zipfile(io.BytesIO(content)):
+        text = _extract_zip_xml_text(content, ['word/', 'xl/'])
+        if text:
+            return text
+
+    return _extract_plain_text(content)
+
+
+def _extract_document_reference(file_name: str, content_text: str) -> str:
+    normalized_file_name = _search_normalize(file_name)
+    for source in (content_text, file_name):
+        for pattern in [
+            r'\b[A-Z]{2,}(?:[-_/][A-Z0-9]+){1,}\b',
+            r'\b[A-Z]{2,}\d{2,}(?:[-_/][A-Z0-9]+)*\b',
+            r'\b(?:POL|WHS|ESG|CYBER)[-_][A-Z0-9]+(?:[-_/][A-Z0-9]+)*\b',
+        ]:
+            match = re.search(pattern, source or '')
+            if match:
+                return match.group(0)
+
+    if normalized_file_name:
+        return Path(file_name or 'document').stem.replace('_', ' ').replace('-', ' ').strip() or 'document'
+    return 'document'
+
+
+def _extract_excerpt(content_text: str, keyword: str) -> str | None:
+    normalized_content = _search_normalize(content_text)
+    normalized_keyword = _search_normalize(keyword)
+    if not normalized_content or not normalized_keyword:
+        return None
+    index = normalized_content.find(normalized_keyword)
+    if index < 0:
+        return None
+    start = max(0, index - 80)
+    end = min(len(normalized_content), index + len(normalized_keyword) + 160)
+    excerpt = normalized_content[start:end].strip()
+    return excerpt or None
+
+
+def _extract_numeric_value(content_text: str, keywords: List[str]) -> tuple[str | None, str | None]:
+    normalized_content = _search_normalize(content_text)
+    for keyword in keywords:
+        normalized_keyword = _search_normalize(keyword)
+        if not normalized_keyword:
+            continue
+        direct_patterns = [
+            rf'{re.escape(normalized_keyword)}[^0-9]{{0,80}}(?P<value>\d[\d,]*(?:\.\d+)?)',
+            rf'(?P<value>\d[\d,]*(?:\.\d+)?)\s*(?:%|percent|pct|tco2e|tco2e\.)?[^a-z0-9]{{0,60}}{re.escape(normalized_keyword)}',
+        ]
+        for pattern in direct_patterns:
+            match = re.search(pattern, normalized_content, flags=re.I | re.S)
+            if match:
+                value = match.group('value').replace(',', '')
+                return value, _extract_excerpt(content_text, keyword) or keyword
+    return None, None
+
+
+def _extract_boolean_value(content_text: str, positive_keywords: List[str], negative_keywords: List[str] | None = None) -> tuple[str | None, str | None]:
+    normalized_content = _search_normalize(content_text)
+    for keyword in positive_keywords:
+        normalized_keyword = _search_normalize(keyword)
+        if normalized_keyword and normalized_keyword in normalized_content:
+            return 'Yes', _extract_excerpt(content_text, keyword) or keyword
+    for keyword in negative_keywords or []:
+        normalized_keyword = _search_normalize(keyword)
+        if normalized_keyword and normalized_keyword in normalized_content:
+            return 'No', _extract_excerpt(content_text, keyword) or keyword
+    return None, None
+
+
+def _detect_document_suggestions(file_name: str, content_text: str) -> List[dict]:
+    normalized_name = _search_normalize(file_name)
+    normalized_content = _search_normalize(content_text)
+    combined = f'{normalized_name} {normalized_content}'.strip()
+    suggestions: List[dict] = []
+    seen_fields: set[str] = set()
+
+    for rule in DOCUMENT_EXTRACTION_RULES:
+        if rule['field_key'] in seen_fields:
+            continue
+
+        matched_keyword = next(
+            (
+                keyword
+                for keyword in rule['keywords']
+                if _search_normalize(keyword) in combined
+            ),
+            None,
+        )
+        if not matched_keyword:
+            continue
+
+        confidence = rule['confidence_level']
+        if _search_normalize(matched_keyword) in normalized_name and _search_normalize(matched_keyword) in normalized_content:
+            confidence = 'High'
+        elif normalized_content and normalized_name:
+            confidence = 'Medium'
+        elif normalized_content or normalized_name:
+            confidence = 'Low'
+
+        suggested_value = None
+        source_excerpt = _extract_excerpt(content_text, matched_keyword) or file_name
+
+        if rule['kind'] == 'reference':
+            suggested_value = _extract_document_reference(file_name, content_text)
+        elif rule['kind'] == 'numeric':
+            suggested_value, numeric_excerpt = _extract_numeric_value(content_text, rule['keywords'])
+            if numeric_excerpt:
+                source_excerpt = numeric_excerpt
+        elif rule['kind'] == 'boolean':
+            suggested_value, boolean_excerpt = _extract_boolean_value(content_text, rule['keywords'], rule.get('negative_keywords'))
+            if boolean_excerpt:
+                source_excerpt = boolean_excerpt
+
+        if suggested_value is None:
+            continue
+
+        seen_fields.add(rule['field_key'])
+        suggestions.append(
+            {
+                'field_key': rule['field_key'],
+                'suggested_value': suggested_value,
+                'confidence_level': confidence,
+                'explanation': rule['explanation'],
+                'source_excerpt': source_excerpt,
+                'needs_confirmation': True,
+            }
+        )
+
+    return suggestions
+
+
+@app.post('/company/{company_id}/upload-evidence', response_model=SupportingDocumentUploadResponse, dependencies=[Depends(require_company_or_manager)])
 def upload_evidence(
     company_id: int,
     file: UploadFile = File(...),
@@ -1755,7 +2155,52 @@ def upload_evidence(
     company = db.query(Company).filter(Company.id == company_id).first()
     if not company:
         raise HTTPException(status_code=404, detail='Company not found')
-    return {"filename": file.filename, "message": "Evidence uploaded successfully"}
+    latest_submission = company.submissions[-1] if company.submissions else None
+    if not latest_submission:
+        raise HTTPException(status_code=404, detail='No submission available for this company')
+
+    content = file.file.read()
+    file_name = Path(file.filename or 'evidence').name
+    safe_name = re.sub(r'[^A-Za-z0-9._-]+', '_', file_name) or 'evidence'
+    document_dir = EXPORT_DIR / 'supporting-documents' / f'company_{company_id}'
+    document_dir.mkdir(parents=True, exist_ok=True)
+    stored_name = f'{datetime.utcnow().strftime("%Y%m%dT%H%M%S")}_{safe_name}'
+    file_path = document_dir / stored_name
+    file_path.write_bytes(content)
+
+    document = SupportingDocument(
+        submission_id=latest_submission.id,
+        company_id=company_id,
+        field_key='supporting_document',
+        file_name=file_name,
+        file_size=len(content),
+        file_type=file.content_type or 'application/octet-stream',
+        file_path=str(file_path),
+        uploaded_by_email=user_email,
+    )
+    db.add(document)
+    db.commit()
+    db.refresh(document)
+
+    content_text = _extract_document_text(file_name, content, file.content_type)
+
+    suggestions = _detect_document_suggestions(file_name, content_text)
+    return SupportingDocumentUploadResponse(
+        message='Evidence uploaded successfully',
+        document=SupportingDocumentResponse(
+            id=document.id,
+            field_key=document.field_key,
+            file_name=document.file_name,
+            file_size=document.file_size,
+            file_type=document.file_type,
+            uploaded_at=document.uploaded_at.isoformat(),
+            uploaded_by_email=document.uploaded_by_email,
+        ),
+        extraction_suggestions=[
+            DocumentExtractionSuggestion(**suggestion)
+            for suggestion in suggestions
+        ],
+    )
 
 @app.post('/submissions/{submission_id}/review', dependencies=[Depends(require_manager)])
 def review_submission(submission_id: int, payload: ReviewSubmissionRequest, db: Session = Depends(get_db)):
@@ -2223,9 +2668,33 @@ def escape_pdf_text(text_value: str) -> str:
     return str(text_value).replace('\\', '\\\\').replace('(', '\\(').replace(')', '\\)')
 
 
+def wrap_pdf_lines(lines: List[str], max_length: int = 92) -> List[str]:
+    wrapped_lines: List[str] = []
+    for raw_line in lines or []:
+        text = str(raw_line or '').strip()
+        if not text:
+            wrapped_lines.append('')
+            continue
+        if len(text) <= max_length:
+            wrapped_lines.append(text)
+            continue
+
+        current = ''
+        for word in text.split():
+            candidate = word if not current else f'{current} {word}'
+            if len(candidate) <= max_length:
+                current = candidate
+            else:
+                if current:
+                    wrapped_lines.append(current)
+                current = word
+        if current:
+            wrapped_lines.append(current)
+    return wrapped_lines or ['No data']
+
+
 def build_simple_pdf(lines: List[str]) -> bytes:
-    if not lines:
-        lines = ['No data']
+    lines = wrap_pdf_lines(lines)
     content_lines = ['BT', '/F1 12 Tf', '50 780 Td', '16 TL']
     for index, line in enumerate(lines):
         escaped = escape_pdf_text(line)
@@ -2261,6 +2730,7 @@ def build_pdf_export_bytes(
     period: str,
     cycle: CollectionCycle,
     rows: List[dict],
+    context_lines: Optional[List[str]] = None,
     narrative_lines: Optional[List[str]] = None,
 ) -> bytes:
     status_counts = {}
@@ -2276,12 +2746,67 @@ def build_pdf_export_bytes(
         f'Status Distribution: {json.dumps(status_counts)}',
         '--- Company Snapshot ---',
     ]
+    if context_lines:
+        lines.append('--- Report Context ---')
+        lines.extend(context_lines)
     for row in rows[:25]:
         lines.append(f"{row['company_name']} | {row['sector']} | {row['status']} | ESG {row['esg_score']}")
     if narrative_lines:
         lines.append('--- Narrative Insert ---')
         lines.extend(narrative_lines)
     return build_simple_pdf(lines)
+
+
+def _build_report_export_context(
+    db: Session,
+    *,
+    report_name: str,
+    period: str,
+    portfolio: str,
+    rows: List[dict],
+    narrative_id: int | None = None,
+) -> dict:
+    context_lines = [
+        f'Report focus: {report_name.upper()}',
+        f'Portfolio: {portfolio}',
+        f'Period: {period}',
+        f'Companies in scope: {len(rows)}',
+    ]
+    narrative_lines: List[str] = []
+    narrative_headline = None
+    narrative_included = False
+
+    if narrative_id is not None:
+        narrative_record = _get_narrative_record_or_404(db, narrative_id)
+        narrative_lines = _render_narrative_file_lines(narrative_record)
+        narrative_headline = narrative_record.headline
+        narrative_included = True
+        context_lines.append(f'Narrative insert: {narrative_record.headline or "Approved narrative attached"}')
+
+    impact_headline = None
+    benchmark_callouts: List[str] = []
+    if report_name in {'edci', 'sfdr'}:
+        analytics = build_investor_analytics(db)
+        companies = db.query(Company).order_by(Company.name.asc()).all()
+        impact_story = _build_impact_intelligence(db, analytics, companies)
+        impact_headline = impact_story.get('headline')
+        context_lines.append(impact_story.get('summary', ''))
+        context_lines.extend((impact_story.get('highlights') or [])[:2])
+        benchmark_callouts = (impact_story.get('benchmark_callouts') or [])[:3]
+    elif rows:
+        top_row = rows[0]
+        context_lines.append(f"Top row: {top_row['company_name']} | {top_row['sector']} | ESG {top_row['esg_score']}")
+
+    context_lines = [line for line in context_lines if str(line or '').strip()]
+
+    return {
+        'context_lines': context_lines,
+        'narrative_lines': narrative_lines,
+        'narrative_headline': narrative_headline,
+        'narrative_included': narrative_included,
+        'impact_headline': impact_headline,
+        'benchmark_callouts': benchmark_callouts,
+    }
 
 
 def create_unlock_record(
@@ -2472,10 +2997,14 @@ def export_report(
         raise HTTPException(status_code=400, detail='format must be csv or pdf')
 
     rows, cycle = build_report_rows(db, portfolio=portfolio, period=period)
-    narrative_lines: List[str] | None = None
-    if narrative_id is not None:
-        narrative_record = _get_narrative_record_or_404(db, narrative_id)
-        narrative_lines = _render_narrative_file_lines(narrative_record)
+    report_context = _build_report_export_context(
+        db,
+        report_name=report_name,
+        period=period,
+        portfolio=portfolio,
+        rows=rows,
+        narrative_id=narrative_id,
+    )
     timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
     file_name = f'{report_name}_{slugify(period)}_{slugify(portfolio)}_{timestamp}.{export_format}'
     if export_format == 'csv':
@@ -2484,7 +3013,14 @@ def export_report(
     else:
         artifact = save_export_artifact(
             file_name,
-            build_pdf_export_bytes(report_name, period, cycle, rows, narrative_lines=narrative_lines),
+            build_pdf_export_bytes(
+                report_name,
+                period,
+                cycle,
+                rows,
+                context_lines=report_context['context_lines'],
+                narrative_lines=report_context['narrative_lines'],
+            ),
             'application/pdf',
         )
         content_type = 'application/pdf'
@@ -2500,6 +3036,11 @@ def export_report(
         download_url=str(artifact['download_url']),
         content_type=content_type,
         rows_exported=len(rows),
+        context_summary=report_context['context_lines'][:6],
+        impact_headline=report_context['impact_headline'],
+        narrative_headline=report_context['narrative_headline'],
+        narrative_included=bool(report_context['narrative_included']),
+        benchmark_callouts=report_context['benchmark_callouts'],
     )
 
 
@@ -2527,10 +3068,13 @@ def narrative_summary(
 @app.get('/dashboard/manager', response_model=ManagerDashboardResponse, dependencies=[Depends(require_manager)])
 def manager_dashboard(db: Session = Depends(get_db)):
     companies = db.query(Company).order_by(Company.name.asc()).all()
+    analytics = build_investor_analytics(db)
     summary = build_manager_summary(db, companies)
+    impact_story = _build_impact_intelligence(db, analytics, companies)
     return {
         'companies': companies,
         'summary': summary,
+        'impact_story': impact_story,
     }
 
 def safe_number(value, default: float = 0.0) -> float:
@@ -2673,13 +3217,19 @@ def _tone_brief(tone: str, audience: str) -> str:
 
 
 def _framework_insertions(snapshot: dict, audience: str) -> dict:
+    entity_label = snapshot.get('company_name') or 'this portfolio'
+    metrics = snapshot.get('metrics') or {}
+    female_representation = safe_number(
+        snapshot.get('avg_female_representation', metrics.get('female_representation_percent'))
+    )
+    trifr = safe_number(snapshot.get('avg_trifr', metrics.get('trifr')))
     return {
         'TCFD': {
-            'climate_risk': f"{snapshot['company_name']} has approved climate data suitable for TCFD-style disclosure, including emissions, energy mix, and transition signals.",
+            'climate_risk': f"{entity_label} has approved climate data suitable for TCFD-style disclosure, including emissions, energy mix, and transition signals.",
             'governance': 'Refer to board oversight, policy adoption, and management controls.',
         },
         'GRI': {
-            'workforce': f"GRI-style workforce disclosure can cite female representation at {snapshot['metrics']['female_representation_percent']:.1f}% and TRIFR at {snapshot['metrics']['trifr']:.1f}.",
+            'workforce': f"GRI-style workforce disclosure can cite female representation at {female_representation:.1f}% and TRIFR at {trifr:.1f}.",
             'community': 'Use the approved submission to support community and social impact discussion.',
         },
         'SFDR': {
@@ -2687,7 +3237,7 @@ def _framework_insertions(snapshot: dict, audience: str) -> dict:
             'sustainability': 'The approved snapshot can support sustainability narrative in LP reporting.',
         },
         'EDCI': {
-            'data_quality': f"Approved-data completeness and measured confidence are available for {snapshot['company_name']}.",
+            'data_quality': f"Approved-data completeness and measured confidence are available for {entity_label}.",
             'comparability': 'Year-over-year comparisons are already precomputed for the approved submission.',
         },
     }
@@ -4146,6 +4696,718 @@ def build_investor_analytics(db: Session) -> dict:
     }
 
 
+_IMPACT_INTELLIGENCE_CACHE: Dict[str, dict] = {}
+
+
+def _normalize_impact_text(value: Any) -> str:
+    return re.sub(r'\s+', ' ', str(value or '').strip().lower())
+
+
+def _impact_sector_benchmark(sector: str | None) -> float:
+    normalized = _normalize_impact_text(sector)
+    if not normalized:
+        return IMPACT_DEFAULT_DIVERSITY_BENCHMARK
+    for key, benchmark in IMPACT_DIVERSITY_BENCHMARKS.items():
+        if key in normalized:
+            return benchmark
+    return IMPACT_DEFAULT_DIVERSITY_BENCHMARK
+
+
+def _impact_field_helper(field_key: str) -> str:
+    for section_fields in ESG_FIELD_CATALOG.values():
+        for field in section_fields:
+            if field.get('field_key') == field_key:
+                return str(field.get('helper_text') or '').strip()
+    return ''
+
+
+def _impact_emissions_equivalent(value_tco2e: float) -> str:
+    if value_tco2e <= 0:
+        return 'No material emissions recorded.'
+    vehicle_years = value_tco2e / IMPACT_TCO2E_PER_PASSENGER_VEHICLE_YEAR
+    if vehicle_years >= 1000:
+        return f'Equivalent to roughly {vehicle_years:,.0f} passenger vehicles driven for a year.'
+    return f'Equivalent to roughly {vehicle_years:,.0f} passenger vehicles driven for a year.'
+
+
+def _impact_status(portfolio_value: float, benchmark_value: float, *, direction: str = 'higher') -> str:
+    if benchmark_value == 0:
+        return 'at'
+    delta_pct = abs(portfolio_value - benchmark_value) / max(abs(benchmark_value), 1)
+    if delta_pct <= 0.05:
+        return 'at'
+    if direction == 'lower':
+        return 'above' if portfolio_value < benchmark_value else 'below'
+    return 'above' if portfolio_value > benchmark_value else 'below'
+
+
+def _build_impact_tooltip_bundle_prompt(metric_specs: List[dict]) -> str:
+    return (
+        'You are writing concise ESG metric tooltips for an LP dashboard.\n'
+        'Return valid JSON only with exactly this shape: {"tooltips":{"Metric Name":"tooltip","...":"..."}}.\n'
+        'Keep each tooltip to 1-2 plain-English sentences, no markdown, no bullets, and no jargon.\n'
+        'Explain what the metric means and why it matters, using the benchmark and real-world equivalent where helpful.\n'
+        f'Metrics:\n{json.dumps(metric_specs, indent=2, sort_keys=True, default=str)}'
+    )
+
+
+def _build_impact_intelligence(db: Session, analytics: dict, companies: List[Company]) -> dict:
+    company_rows: List[dict] = []
+    sector_buckets: Dict[str, dict] = {}
+
+    for company in companies:
+        latest_submission = company.submissions[-1] if company.submissions else None
+        payload = parse_submission(latest_submission)
+        if not payload:
+            continue
+
+        sector = str(company.sector or 'Unknown').strip() or 'Unknown'
+        scope_1 = safe_number(payload.get('scope_1_emissions'))
+        scope_2 = safe_number(payload.get('scope_2_location_based'))
+        scope_3 = safe_number(payload.get('scope_3_emissions'))
+        total_ghg = safe_number(payload.get('total_ghg_emissions')) or (scope_1 + scope_2 + scope_3)
+        female_rep = safe_number(payload.get('female_representation_percent'))
+        female_leadership = safe_number(payload.get('female_leadership_representation_percent'))
+        trifr = safe_number(payload.get('trifr'))
+        completed = bool(latest_submission)
+
+        company_rows.append(
+            {
+                'sector': sector,
+                'scope_1': scope_1,
+                'scope_2': scope_2,
+                'scope_3': scope_3,
+                'total_ghg': total_ghg,
+                'female_rep': female_rep,
+                'female_leadership': female_leadership,
+                'trifr': trifr,
+                'completed': completed,
+            }
+        )
+
+        bucket = sector_buckets.setdefault(
+            sector,
+            {
+                'count': 0,
+                'female_rep_total': 0.0,
+                'female_leadership_total': 0.0,
+                'trifr_total': 0.0,
+            },
+        )
+        bucket['count'] += 1
+        bucket['female_rep_total'] += female_rep
+        bucket['female_leadership_total'] += female_leadership
+        bucket['trifr_total'] += trifr
+
+    reporting_companies = len(company_rows)
+    scope_1_total = safe_number(analytics.get('emissions_totals', {}).get('scope_1'))
+    scope_2_total = safe_number(analytics.get('emissions_totals', {}).get('scope_2'))
+    scope_3_total = safe_number(analytics.get('emissions_totals', {}).get('scope_3'))
+    total_emissions = safe_number(analytics.get('emissions_totals', {}).get('total'))
+    female_rep = safe_number(analytics.get('diversity_safety', {}).get('female_representation_percent'))
+    trifr = safe_number(analytics.get('diversity_safety', {}).get('trifr'))
+    governance_adoption = safe_number(analytics.get('governance_adoption_percent'))
+    completeness = safe_number(analytics.get('data_quality', {}).get('completeness'))
+    portfolio_esg_score = safe_number(analytics.get('portfolio_esg_score'))
+
+    weighted_diversity_benchmark = (
+        sum(_impact_sector_benchmark(sector) * bucket['count'] for sector, bucket in sector_buckets.items())
+        / max(sum(bucket['count'] for bucket in sector_buckets.values()), 1)
+    )
+
+    sector_benchmark_rows = []
+    sector_gaps = []
+    for sector, bucket in sorted(sector_buckets.items(), key=lambda item: item[1]['count'], reverse=True)[:5]:
+        average_female_rep = bucket['female_rep_total'] / max(bucket['count'], 1)
+        benchmark_value = _impact_sector_benchmark(sector)
+        status = _impact_status(average_female_rep, benchmark_value, direction='higher')
+        gap = round(average_female_rep - benchmark_value, 2)
+        sector_gaps.append((sector, gap))
+        sector_benchmark_rows.append(
+            {
+                'metric_name': f'{sector} Female Representation',
+                'portfolio_value': round(average_female_rep, 2),
+                'benchmark_value': round(benchmark_value, 2),
+                'status': status,
+                'industry': f'{sector} peer benchmark',
+                'tooltip': f'{sector} averages {average_female_rep:.1f}% female representation versus a sector benchmark of {benchmark_value:.1f}%.',
+                'real_world_equivalent': None,
+                'direction': 'higher',
+            }
+        )
+
+    total_emissions_equivalent = _impact_emissions_equivalent(total_emissions)
+    scope_1_equivalent = _impact_emissions_equivalent(scope_1_total)
+    scope_2_equivalent = _impact_emissions_equivalent(scope_2_total)
+    scope_3_equivalent = _impact_emissions_equivalent(scope_3_total)
+
+    metric_specs = [
+        {
+            'metric_name': 'Scope 1 Emissions',
+            'field_key': 'scope_1_emissions',
+            'value': scope_1_total,
+            'unit': 'tCO2e',
+            'benchmark_label': None,
+            'benchmark_value': None,
+            'real_world_equivalent': scope_1_equivalent,
+        },
+        {
+            'metric_name': 'Scope 2 Emissions',
+            'field_key': 'scope_2_location_based',
+            'value': scope_2_total,
+            'unit': 'tCO2e',
+            'benchmark_label': None,
+            'benchmark_value': None,
+            'real_world_equivalent': scope_2_equivalent,
+        },
+        {
+            'metric_name': 'Scope 3 Emissions',
+            'field_key': 'scope_3_emissions',
+            'value': scope_3_total,
+            'unit': 'tCO2e',
+            'benchmark_label': None,
+            'benchmark_value': None,
+            'real_world_equivalent': scope_3_equivalent,
+        },
+        {
+            'metric_name': 'Total GHG Emissions',
+            'field_key': 'total_ghg_emissions',
+            'value': total_emissions,
+            'unit': 'tCO2e',
+            'benchmark_label': None,
+            'benchmark_value': None,
+            'real_world_equivalent': total_emissions_equivalent,
+        },
+        {
+            'metric_name': 'Female Representation',
+            'field_key': 'female_representation_percent',
+            'value': female_rep,
+            'unit': '%',
+            'benchmark_label': 'Weighted sector peer benchmark',
+            'benchmark_value': weighted_diversity_benchmark,
+            'real_world_equivalent': None,
+        },
+        {
+            'metric_name': 'TRIFR',
+            'field_key': 'trifr',
+            'value': trifr,
+            'unit': 'rate',
+            'benchmark_label': 'Safety peer benchmark',
+            'benchmark_value': IMPACT_PORTFOLIO_TRIFR_BENCHMARK,
+            'real_world_equivalent': None,
+        },
+        {
+            'metric_name': 'Governance Adoption',
+            'field_key': 'esg_policy_in_place',
+            'value': governance_adoption,
+            'unit': '%',
+            'benchmark_label': 'Institutional peer benchmark',
+            'benchmark_value': IMPACT_PORTFOLIO_POLICY_BENCHMARK,
+            'real_world_equivalent': None,
+        },
+        {
+            'metric_name': 'Data Completeness',
+            'field_key': 'submission_notes',
+            'value': completeness,
+            'unit': '%',
+            'benchmark_label': 'Portfolio target',
+            'benchmark_value': 90.0,
+            'real_world_equivalent': None,
+        },
+    ]
+
+    cache_key = hashlib.sha256(
+        json.dumps(
+            {
+                'companies': sorted(
+                    company_rows,
+                    key=lambda row: (
+                        row['sector'],
+                        row['scope_1'],
+                        row['scope_2'],
+                        row['scope_3'],
+                        row['female_rep'],
+                        row['trifr'],
+                    ),
+                ),
+                'portfolio_esg_score': portfolio_esg_score,
+                'female_rep': female_rep,
+                'trifr': trifr,
+                'governance_adoption': governance_adoption,
+                'completeness': completeness,
+                'total_emissions': total_emissions,
+                'weighted_diversity_benchmark': weighted_diversity_benchmark,
+            },
+            sort_keys=True,
+            default=str,
+        ).encode('utf-8')
+    ).hexdigest()
+    cached_impact = _IMPACT_INTELLIGENCE_CACHE.get(cache_key)
+    if cached_impact:
+        return json.loads(json.dumps(cached_impact))
+
+    metric_tooltip_map: Dict[str, str] = {}
+    ai_payload = _call_openai_summary(_build_impact_tooltip_bundle_prompt(metric_specs))
+    if isinstance(ai_payload, dict):
+        tooltips = ai_payload.get('tooltips')
+        if isinstance(tooltips, dict):
+            metric_tooltip_map = {str(key): str(value).strip() for key, value in tooltips.items() if str(value).strip()}
+
+    metric_insights = []
+    for spec in metric_specs:
+        helper_text = _impact_field_helper(spec['field_key'])
+        benchmark_value = spec['benchmark_value']
+        benchmark_label = spec['benchmark_label']
+        tooltip = metric_tooltip_map.get(spec['metric_name'], '')
+        if not tooltip:
+            fallback_parts = [helper_text or f'{spec["metric_name"]} is a live portfolio metric.']
+            if benchmark_value is not None:
+                if spec['metric_name'] == 'TRIFR':
+                    comparison = 'lower than' if spec['value'] <= benchmark_value else 'higher than'
+                    fallback_parts.append(f'The portfolio is {comparison} the {benchmark_label.lower()} of {benchmark_value:.2f}.')
+                else:
+                    comparison = 'above' if spec['value'] >= benchmark_value else 'below'
+                    fallback_parts.append(f'The portfolio sits {comparison} the {benchmark_label.lower()} of {benchmark_value:.2f}.')
+            if spec['real_world_equivalent']:
+                fallback_parts.append(spec['real_world_equivalent'])
+            tooltip = ' '.join(part.strip() for part in fallback_parts if part).strip()
+        metric_insights.append(
+            {
+                'metric_name': spec['metric_name'],
+                'current_value': round(spec['value'], 2),
+                'unit': spec['unit'],
+                'tooltip': tooltip,
+                'benchmark_label': benchmark_label,
+                'benchmark_value': round(benchmark_value, 2) if benchmark_value is not None else None,
+                'benchmark_status': _impact_status(spec['value'], benchmark_value, direction='lower' if spec['metric_name'] == 'TRIFR' else 'higher') if benchmark_value is not None else None,
+                'real_world_equivalent': spec['real_world_equivalent'],
+                'sector': 'Portfolio',
+            }
+        )
+
+    top_gap_sector = None
+    if sector_gaps:
+        top_gap_sector = max(sector_gaps, key=lambda item: item[1])
+    bottom_gap_sector = None
+    if sector_gaps:
+        bottom_gap_sector = min(sector_gaps, key=lambda item: item[1])
+
+    highlights = [
+        f'Portfolio emissions total {total_emissions:,.0f} tCO2e.',
+        total_emissions_equivalent,
+        f'Female representation averages {female_rep:.1f}% versus a weighted sector benchmark of {weighted_diversity_benchmark:.1f}%.',
+        f'Data completeness sits at {completeness:.1f}% across {reporting_companies} reporting companies.',
+    ]
+    if top_gap_sector:
+        highlights.append(f'{top_gap_sector[0]} is the strongest diversity performer at {top_gap_sector[1]:+.1f} pts versus peer benchmark.')
+
+    watchouts = []
+    if bottom_gap_sector and bottom_gap_sector[1] < 0:
+        watchouts.append(f'{bottom_gap_sector[0]} trails its diversity peer benchmark by {abs(bottom_gap_sector[1]):.1f} pts.')
+    if trifr > IMPACT_PORTFOLIO_TRIFR_BENCHMARK:
+        watchouts.append(f'TRIFR remains above the {IMPACT_PORTFOLIO_TRIFR_BENCHMARK:.2f} safety peer benchmark.')
+
+    recommendations = [
+        'Use the strongest sectors as internal benchmarks for investor follow-up and company coaching.',
+        'Prioritise diversity uplift in the sectors lagging their peer benchmark and keep tightening data completeness.',
+    ]
+    if governance_adoption < IMPACT_PORTFOLIO_POLICY_BENCHMARK:
+        recommendations.insert(0, 'Lift policy adoption to close the gap with institutional peer benchmarks.')
+
+    benchmark_callouts = [
+        f'Weighted female representation benchmark: {weighted_diversity_benchmark:.1f}%.',
+    ]
+    for sector_name, gap in sorted(sector_gaps, key=lambda item: item[1], reverse=True)[:2]:
+        benchmark_callouts.append(
+            f'{sector_name} is {gap:+.1f} pts versus its peer benchmark for female representation.'
+        )
+
+    result = {
+        'headline': 'Portfolio impact story',
+        'summary': (
+            f'The portfolio records {total_emissions:,.0f} tCO2e across Scope 1, 2, and 3. '
+            f'{total_emissions_equivalent} '
+            f'Female representation averages {female_rep:.1f}% against a weighted sector peer benchmark of {weighted_diversity_benchmark:.1f}%.'
+        ),
+        'highlights': highlights[:4],
+        'watchouts': watchouts[:3] or ['No material watchouts were triggered in the current impact summary.'],
+        'recommendations': recommendations[:3],
+        'equivalents': [
+            {'label': 'Scope 1', 'value': scope_1_total, 'unit': 'tCO2e', 'narrative': scope_1_equivalent},
+            {'label': 'Scope 2', 'value': scope_2_total, 'unit': 'tCO2e', 'narrative': scope_2_equivalent},
+            {'label': 'Scope 3', 'value': scope_3_total, 'unit': 'tCO2e', 'narrative': scope_3_equivalent},
+            {'label': 'Total GHG', 'value': total_emissions, 'unit': 'tCO2e', 'narrative': total_emissions_equivalent},
+        ],
+        'benchmark_callouts': benchmark_callouts[:4],
+        'metric_insights': metric_insights,
+        'benchmark_comparisons': [
+            {
+                'metric_name': 'Overall ESG Score',
+                'portfolio_value': round(portfolio_esg_score, 2),
+                'benchmark_value': IMPACT_PORTFOLIO_ESG_BENCHMARK,
+                'status': _impact_status(portfolio_esg_score, IMPACT_PORTFOLIO_ESG_BENCHMARK, direction='higher'),
+                'industry': 'Multi-sector peer benchmark',
+                'tooltip': f'Portfolio ESG score sits at {portfolio_esg_score:.1f} versus the multi-sector benchmark of {IMPACT_PORTFOLIO_ESG_BENCHMARK:.1f}.',
+                'real_world_equivalent': None,
+                'direction': 'higher',
+            },
+            {
+                'metric_name': 'Emissions Intensity',
+                'portfolio_value': round(total_emissions / max(reporting_companies, 1), 2),
+                'benchmark_value': IMPACT_PORTFOLIO_EMISSIONS_INTENSITY_BENCHMARK,
+                'status': _impact_status(total_emissions / max(reporting_companies, 1), IMPACT_PORTFOLIO_EMISSIONS_INTENSITY_BENCHMARK, direction='lower'),
+                'industry': 'Energy & industrials peer benchmark',
+                'tooltip': f'Lower emissions intensity is better. The portfolio sits at {total_emissions / max(reporting_companies, 1):.2f} versus {IMPACT_PORTFOLIO_EMISSIONS_INTENSITY_BENCHMARK:.2f}.',
+                'real_world_equivalent': None,
+                'direction': 'lower',
+            },
+            {
+                'metric_name': 'Female Representation',
+                'portfolio_value': round(female_rep, 2),
+                'benchmark_value': round(weighted_diversity_benchmark, 2),
+                'status': _impact_status(female_rep, weighted_diversity_benchmark, direction='higher'),
+                'industry': 'Weighted sector peer benchmark',
+                'tooltip': 'This compares the portfolio average female representation against a weighted blend of sector peer benchmarks.',
+                'real_world_equivalent': None,
+                'direction': 'higher',
+            },
+            {
+                'metric_name': 'TRIFR',
+                'portfolio_value': round(trifr, 2),
+                'benchmark_value': IMPACT_PORTFOLIO_TRIFR_BENCHMARK,
+                'status': _impact_status(trifr, IMPACT_PORTFOLIO_TRIFR_BENCHMARK, direction='lower'),
+                'industry': 'Safety peer benchmark',
+                'tooltip': 'Lower TRIFR is better. The portfolio is benchmarked against a peer safety target.',
+                'real_world_equivalent': None,
+                'direction': 'lower',
+            },
+            {
+                'metric_name': 'Policy Compliance',
+                'portfolio_value': round(governance_adoption, 2),
+                'benchmark_value': IMPACT_PORTFOLIO_POLICY_BENCHMARK,
+                'status': _impact_status(governance_adoption, IMPACT_PORTFOLIO_POLICY_BENCHMARK, direction='higher'),
+                'industry': 'Institutional investment peer benchmark',
+                'tooltip': 'Policy adoption shows how much of the portfolio has core ESG and control policies in place.',
+                'real_world_equivalent': None,
+                'direction': 'higher',
+            },
+            *sector_benchmark_rows,
+        ],
+    }
+
+    _IMPACT_INTELLIGENCE_CACHE[cache_key] = json.loads(json.dumps(result, default=str))
+    return result
+
+
+SEARCH_SCORE_WEIGHTS = SEARCH_RANKING.get('weights') or {}
+SEARCH_MINIMUM_SCORE = float(SEARCH_RANKING.get('minimumScore', 0) or 0)
+
+
+def _search_weight(key: str, default: float) -> float:
+    try:
+        return float(SEARCH_SCORE_WEIGHTS.get(key, default))
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _search_boost(key: str, default: float = 0.0) -> float:
+    try:
+        return float(SEARCH_RANKING.get(key, default))
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _search_normalize(value: Any) -> str:
+    return re.sub(r'\s+', ' ', str(value or '').strip().lower())
+
+
+def _search_tokens(value: Any) -> List[str]:
+    return [token for token in re.findall(r'[a-z0-9]+', _search_normalize(value)) if token]
+
+
+def _search_score(query: str, text: str) -> float:
+    normalized_query = _search_normalize(query)
+    normalized_text = _search_normalize(text)
+    if not normalized_query or not normalized_text:
+        return 0.0
+
+    ratio = SequenceMatcher(None, normalized_query, normalized_text).ratio()
+    query_tokens = _search_tokens(normalized_query)
+    text_tokens = _search_tokens(normalized_text)
+    token_overlap = len(set(query_tokens) & set(text_tokens)) / max(len(set(query_tokens)), 1)
+    contains = 1.0 if normalized_query in normalized_text else 0.0
+    starts = 1.0 if normalized_text.startswith(normalized_query) else 0.0
+    weighted = (
+        (ratio * _search_weight('ratio', 0.55))
+        + (token_overlap * _search_weight('tokenOverlap', 0.25))
+        + (contains * _search_weight('contains', 0.15))
+        + (starts * _search_weight('starts', 0.05))
+    )
+    return round(weighted * 100, 2)
+
+
+def _search_result(
+    *,
+    result_type: str,
+    title: str,
+    subtitle: str,
+    path: str,
+    score: float,
+    company_id: int | None = None,
+    company_name: str | None = None,
+    sector: str | None = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> dict:
+    return {
+        'type': result_type,
+        'title': title,
+        'subtitle': subtitle,
+        'path': path,
+        'score': round(score, 2),
+        'company_id': company_id,
+        'company_name': company_name,
+        'sector': sector,
+        'metadata': metadata or {},
+    }
+
+
+def _search_page_text(page: dict) -> str:
+    metadata = page.get('metadata') or {}
+    aliases = metadata.get('aliases') or []
+    alias_text = ' '.join(str(alias).strip() for alias in aliases if str(alias).strip())
+    return ' '.join(
+        part
+        for part in [
+            str(page.get('title') or '').strip(),
+            str(page.get('subtitle') or '').strip(),
+            str(page.get('path') or '').strip(),
+            alias_text,
+        ]
+        if part
+    )
+
+
+def _search_aliases(page: dict) -> List[str]:
+    metadata = page.get('metadata') or {}
+    return [_search_normalize(alias) for alias in metadata.get('aliases') or [] if _search_normalize(alias)]
+
+
+def _search_page_score(query: str, page: dict) -> float:
+    normalized_query = _search_normalize(query)
+    if not normalized_query:
+        return 0.0
+
+    score = _search_score(normalized_query, _search_page_text(page))
+    normalized_title = _search_normalize(page.get('title'))
+    normalized_subtitle = _search_normalize(page.get('subtitle'))
+    normalized_path = _search_normalize(page.get('path'))
+    aliases = _search_aliases(page)
+
+    if normalized_query == normalized_title:
+        score += _search_boost('pageTitleExactBoost', 0.0)
+    elif normalized_title.startswith(normalized_query):
+        score += _search_boost('pageTitlePrefixBoost', 0.0)
+
+    if normalized_query == normalized_path or normalized_query in normalized_path:
+        score += _search_boost('pagePathBoost', 0.0)
+
+    if normalized_query in normalized_subtitle:
+        score += _search_boost('pageSubtitleBoost', 0.0)
+
+    if aliases:
+        if normalized_query in aliases:
+            score += _search_boost('pageAliasExactBoost', 0.0)
+        elif any(alias.startswith(normalized_query) for alias in aliases):
+            score += _search_boost('pageAliasPrefixBoost', 0.0)
+
+    return round(score, 2)
+
+
+def _search_page_catalog(role: str) -> List[dict]:
+    normalized_role = normalize_role(role)
+    page_catalog = PORTAL_SEARCH_PAGE_CATALOG.get(normalized_role) or PORTAL_SEARCH_PAGE_CATALOG['manager']
+    return [
+        _search_result(
+            result_type='Page',
+            title=page['title'],
+            subtitle=page['subtitle'],
+            path=page['path'],
+            score=0.0,
+            metadata=page.get('metadata', {}),
+        )
+        for page in page_catalog
+    ]
+
+
+def _search_company_results(db: Session, query: str, role: str, user: User | None) -> List[dict]:
+    normalized_role = normalize_role(role)
+    normalized_query = str(query or '').strip()
+    if not normalized_query:
+        return []
+
+    if normalized_role == 'company':
+        if not user:
+            return []
+        owned_company = db.query(Company).filter(Company.user_id == user.id).first()
+        if not owned_company:
+            return []
+        companies = [owned_company]
+    elif normalized_role == 'investor':
+        if not user:
+            companies = db.query(Company).order_by(Company.name.asc()).all()
+        else:
+            lp_type = user.lp_type.value if hasattr(user.lp_type, 'value') else str(user.lp_type or '').lower()
+            if lp_type == 'authorised':
+                accessible_ids = set(get_lp_accessible_company_ids(user))
+                companies = db.query(Company).filter(Company.id.in_(accessible_ids)).order_by(Company.name.asc()).all() if accessible_ids else []
+            else:
+                companies = []
+    else:
+        companies = db.query(Company).order_by(Company.name.asc()).all()
+
+    results: List[dict] = []
+    for company in companies:
+        latest_submission = company.submissions[-1] if company.submissions else None
+        latest_payload = parse_submission(latest_submission)
+        status_label = normalize_status_label(latest_submission.status if latest_submission else company.current_status)
+        haystack = ' '.join(
+            str(part or '').strip()
+            for part in [
+                company.name,
+                company.sector,
+                company.geography,
+                company.asset_class,
+                company.current_status,
+                status_label,
+                latest_payload.get('submission_notes'),
+            ]
+        )
+        search_score = _search_score(normalized_query, haystack)
+        normalized_company_name = _search_normalize(company.name)
+        normalized_sector = _search_normalize(company.sector)
+        normalized_geography = _search_normalize(company.geography)
+        normalized_status = _search_normalize(status_label)
+
+        if normalized_query == normalized_company_name:
+            search_score += _search_boost('companyNameExactBoost', 0.0)
+        elif normalized_company_name.startswith(normalized_query):
+            search_score += _search_boost('companyNamePrefixBoost', 0.0)
+
+        if normalized_query and normalized_query in normalized_sector:
+            search_score += _search_boost('companySectorBoost', 0.0)
+
+        if normalized_query and normalized_query in normalized_geography:
+            search_score += _search_boost('companyGeographyBoost', 0.0)
+
+        if normalized_query and normalized_query in normalized_status:
+            search_score += _search_boost('companyStatusBoost', 0.0)
+
+        action_plans = company.action_plans or []
+        for plan in action_plans:
+            plan_score = _search_score(normalized_query, f'{plan.initiative_name} {plan.status} {plan.assigned_owner} {plan.linked_metric or ""}')
+            if plan_score > 0:
+                results.append(
+                    _search_result(
+                        result_type='Action Plan',
+                        title=plan.initiative_name,
+                        subtitle=f'{company.name} - {plan.status} - {plan.assigned_owner}',
+                        path='/action-plans' if normalized_role == 'manager' else '/company/action-plans',
+                        score=plan_score + _search_boost('actionPlanBoost', 8.0),
+                        company_id=company.id,
+                        company_name=company.name,
+                        sector=company.sector,
+                        metadata={
+                            'status': plan.status,
+                            'owner': plan.assigned_owner,
+                            'linked_metric': plan.linked_metric,
+                        },
+                    )
+                )
+
+        if search_score < SEARCH_MINIMUM_SCORE:
+            continue
+
+        if normalized_role == 'company':
+            path = '/company/dashboard'
+        elif normalized_role == 'investor':
+            path = '/overview'
+        else:
+            company_param = quote_plus(company.name.strip())
+            path = f'/submissions?companyId={company.id}&company={company_param}'
+
+        results.append(
+            _search_result(
+                result_type='Company',
+                title=company.name,
+                subtitle=f'{company.sector} - {company.geography or "Unknown geography"} - {status_label}',
+                path=path,
+                score=search_score + (8 if company.name.lower().startswith(normalized_query.lower()) else 0),
+                company_id=company.id,
+                company_name=company.name,
+                sector=company.sector,
+                metadata={
+                    'status': status_label,
+                    'current_status': company.current_status,
+                    'latest_submission_id': latest_submission.id if latest_submission else None,
+                    'latest_year': latest_payload.get('reporting_year'),
+                },
+            )
+        )
+
+    return results
+
+
+def _build_global_search_results(db: Session, query: str, role: str, user: User | None) -> List[dict]:
+    normalized_query = str(query or '').strip()
+    if not normalized_query:
+        return []
+
+    page_results = []
+    for page in _search_page_catalog(role):
+        search_score = _search_page_score(normalized_query, page)
+        if search_score >= SEARCH_MINIMUM_SCORE:
+            page_results.append({**page, 'score': search_score})
+
+    company_results = _search_company_results(db, normalized_query, role, user)
+    combined = page_results + company_results
+    combined.sort(key=lambda item: (item['score'], item['type'] == 'Page', item['title']), reverse=True)
+    unique_results = []
+    seen = set()
+    for item in combined:
+        key = (item['type'], item['title'], item['path'])
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_results.append(item)
+    return unique_results
+
+
+@app.get('/search/global', response_model=GlobalSearchResponse)
+def search_global(
+    q: str = Query(default='', min_length=2, max_length=120),
+    limit: int = Query(default=6, ge=1, le=12),
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
+    normalized_role = normalize_role(role)
+    if normalized_role not in {'manager', 'company', 'investor'}:
+        raise HTTPException(status_code=403, detail='Access restricted to authenticated portal users')
+
+    user = find_request_user(db, email) if email else None
+    if not user:
+        raise HTTPException(status_code=401, detail='Search requires an authenticated portal user')
+    if normalize_role(user.role) != normalized_role:
+        raise HTTPException(status_code=403, detail='Search role does not match the authenticated user')
+
+    results = _build_global_search_results(db, q, normalized_role, user)
+    return GlobalSearchResponse(
+        query=q,
+        role=normalized_role,
+        results=results[:limit],
+    )
+
+
 @app.get('/analytics/portfolio', response_model=InvestorSummary, dependencies=[Depends(require_manager_or_investor)])
 def analytics_portfolio(db: Session = Depends(get_db)):
     analytics = build_investor_analytics(db)
@@ -4359,6 +5621,8 @@ def analytics_manager(db: Session = Depends(get_db)):
         },
     ]
 
+    impact_story = _build_impact_intelligence(db, analytics, companies)
+
     return ManagerAnalyticsResponse(
         summary_cards=summary_cards,
         status_distribution=status_distribution,
@@ -4395,13 +5659,17 @@ def analytics_manager(db: Session = Depends(get_db)):
             'submission_deadline': active_cycle.submission_deadline if active_cycle else None,
             'days_remaining': get_days_to_deadline(active_cycle.submission_deadline) if active_cycle else None,
         },
+        impact_story=impact_story,
     )
 
 
 @app.get('/dashboard/investor', response_model=InvestorDashboardResponse, dependencies=[Depends(require_manager_or_investor)])
 def investor_dashboard(db: Session = Depends(get_db)):
     # Investor receives portfolio-level analytics only (no raw company submissions).
-    return InvestorDashboardResponse(**build_investor_analytics(db))
+    analytics = build_investor_analytics(db)
+    companies = db.query(Company).order_by(Company.name.asc()).all()
+    impact_story = _build_impact_intelligence(db, analytics, companies)
+    return InvestorDashboardResponse(**analytics, impact_story=impact_story)
 
 
 # ==========================================
@@ -4682,6 +5950,7 @@ def lp_dashboard(db: Session = Depends(get_db)):
     }
     
     portfolio_companies = sorted(portfolio_rows, key=lambda item: item['esg_score'], reverse=True)[:5]
+    impact_story = _build_impact_intelligence(db, analytics, companies)
     
     return LPDashboardResponse(
         portfolio_scorecard=portfolio_scorecard,
@@ -4692,6 +5961,7 @@ def lp_dashboard(db: Session = Depends(get_db)):
         policy_adoption=policy_adoption,
         action_plan_status=action_plan_status,
         portfolio_companies=portfolio_companies,
+        impact_story=impact_story,
     )
 
 
@@ -4702,6 +5972,8 @@ def lp_metrics(db: Session = Depends(get_db)):
     Environmental, Social, Governance, Asset Class, Benchmarks
     """
     from schemas import LPMetricsPageResponse
+    analytics = build_investor_analytics(db)
+    companies = db.query(Company).order_by(Company.name.asc()).all()
     
     environmental = {
         'scope_1_emissions': [
@@ -4820,13 +6092,8 @@ def lp_metrics(db: Session = Depends(get_db)):
         {'asset_class': 'Infrastructure', 'company_count': 43, 'avg_esg_score': 73.9, 'avg_emission_intensity': 5.2, 'avg_female_representation': 41.5},
     ]
     
-    benchmark_comparisons = [
-        {'metric_name': 'Overall ESG Score', 'portfolio_value': 76.5, 'benchmark_value': 71.2, 'status': 'above', 'industry': 'Multi-Sector Average'},
-        {'metric_name': 'Emissions Intensity', 'portfolio_value': 4.2, 'benchmark_value': 5.1, 'status': 'below', 'industry': 'Energy & Industrials Peer Group'},
-        {'metric_name': 'Female Representation', 'portfolio_value': 43.2, 'benchmark_value': 39.8, 'status': 'above', 'industry': 'Multi-Sector Average'},
-        {'metric_name': 'TRIFR (Safety)', 'portfolio_value': 1.18, 'benchmark_value': 1.45, 'status': 'below', 'industry': 'Manufacturing & Energy'},
-        {'metric_name': 'Policy Compliance', 'portfolio_value': 90.2, 'benchmark_value': 83.1, 'status': 'above', 'industry': 'Institutional Investment Peer Group'},
-    ]
+    impact_story = _build_impact_intelligence(db, analytics, companies)
+    benchmark_comparisons = impact_story['benchmark_comparisons']
     
     return LPMetricsPageResponse(
         environmental=environmental,
@@ -4834,6 +6101,8 @@ def lp_metrics(db: Session = Depends(get_db)):
         governance=governance,
         asset_class_breakdown=asset_class_breakdown,
         benchmark_comparisons=benchmark_comparisons,
+        metric_insights=impact_story['metric_insights'],
+        impact_story=impact_story,
     )
 
 

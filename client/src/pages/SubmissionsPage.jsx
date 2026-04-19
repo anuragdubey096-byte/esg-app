@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, useRef } from 'react'
-import { useOutletContext } from 'react-router-dom'
+import { useOutletContext, useSearchParams } from 'react-router-dom'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts'
 import DataTable from '../components/DataTable'
 import SectionCard from '../components/SectionCard'
@@ -17,6 +17,17 @@ import useDashboardData, {
   parseSubmissionPayload,
 } from '../hooks/useDashboardData'
 import { API_BASE_URL } from '../lib/api'
+import { CHART_COLORS } from '../lib/foundation'
+import { REPORT_FRAMEWORK_OPTIONS } from '../lib/portalOptions'
+import {
+  createFilterPresetId,
+  loadLastFilterState,
+  loadSavedFilterPresets,
+  removeSavedFilterPreset,
+  sanitizeFilterPresetName,
+  saveLastFilterState,
+  upsertSavedFilterPreset,
+} from '../lib/experience'
 
 const numericFields = new Set(
   ESG_FORM_SECTIONS.flatMap((section) =>
@@ -92,17 +103,62 @@ function createPrefilledFormValues(company) {
 
 export default function SubmissionsPage() {
   const { user } = useOutletContext()
+  const [searchParams] = useSearchParams()
   const { companies, cycles, loading, error, refresh } = useDashboardData(user)
   const [status, setStatus] = useState('All')
   const [sector, setSector] = useState('All')
   const [geography, setGeography] = useState('All')
   const [search, setSearch] = useState('')
+  const [focusedCompanyId, setFocusedCompanyId] = useState(null)
+  const [savedFilterSets, setSavedFilterSets] = useState([])
+  const [activeFilterSetId, setActiveFilterSetId] = useState('')
   const [selectedCompanyId, setSelectedCompanyId] = useState(null)
   const [formValues, setFormValues] = useState(createInitialFormValues)
   const [formMessage, setFormMessage] = useState('')
+  const [evidenceExtraction, setEvidenceExtraction] = useState(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const formValuesRef = useRef(formValues)
+  const hydratedFiltersRef = useRef(false)
   const [activeTab, setActiveTab] = useState(ESG_FORM_SECTIONS.length ? ESG_FORM_SECTIONS[0].key : '')
+  const filterScope = useMemo(() => `submissions:${user?.role || 'guest'}:${user?.email || 'guest'}`, [user?.email, user?.role])
+  const queryFilters = useMemo(() => ({
+    status: searchParams.get('status') || '',
+    sector: searchParams.get('sector') || '',
+    geography: searchParams.get('geography') || '',
+    search: searchParams.get('search') || searchParams.get('company') || '',
+    companyId: searchParams.get('companyId') || '',
+  }), [searchParams.toString()])
+
+  useEffect(() => {
+    const persisted = loadLastFilterState(filterScope) || {}
+    const nextStatus = queryFilters.status || persisted.status || 'All'
+    const nextSector = queryFilters.sector || persisted.sector || 'All'
+    const nextGeography = queryFilters.geography || persisted.geography || 'All'
+    const nextSearch = queryFilters.search || persisted.search || ''
+    const nextFocusedCompanyId = queryFilters.companyId
+      ? Number(queryFilters.companyId)
+      : Number(persisted.focusedCompanyId)
+
+    setStatus(nextStatus)
+    setSector(nextSector)
+    setGeography(nextGeography)
+    setSearch(nextSearch)
+    setFocusedCompanyId(Number.isFinite(nextFocusedCompanyId) ? nextFocusedCompanyId : null)
+    setSavedFilterSets(loadSavedFilterPresets(filterScope))
+    setActiveFilterSetId('')
+    hydratedFiltersRef.current = true
+  }, [filterScope, queryFilters.companyId, queryFilters.geography, queryFilters.search, queryFilters.sector, queryFilters.status])
+
+  useEffect(() => {
+    if (!hydratedFiltersRef.current) return
+    saveLastFilterState(filterScope, {
+      status,
+      sector,
+      geography,
+      search,
+      focusedCompanyId,
+    })
+  }, [filterScope, focusedCompanyId, geography, search, sector, status])
 
   const investorChartData = useMemo(() => {
     if (user?.role !== 'investor') return [];
@@ -244,10 +300,17 @@ export default function SubmissionsPage() {
       const statusMatch = status === 'All' || row.status === status
       const sectorMatch = sector === 'All' || row.sector === sector
       const geoMatch = geography === 'All' || row.geography === geography
-      const searchMatch = !search.trim() || row.companyName.toLowerCase().includes(search.toLowerCase())
-      return statusMatch && sectorMatch && geoMatch && searchMatch
+      const searchTerm = search.trim().toLowerCase()
+      const searchMatch =
+        !searchTerm ||
+        [row.companyName, row.sector, row.geography, row.status, String(row.esgScore)]
+          .join(' ')
+          .toLowerCase()
+          .includes(searchTerm)
+      const focusedCompanyMatch = !focusedCompanyId || row.id === focusedCompanyId
+      return statusMatch && sectorMatch && geoMatch && searchMatch && focusedCompanyMatch
     })
-  }, [geography, rows, search, sector, status])
+  }, [focusedCompanyId, geography, rows, search, sector, status])
 
   const columns = [
     { key: 'companyName', label: 'Company Name', sortable: true },
@@ -307,6 +370,62 @@ export default function SubmissionsPage() {
     if (state === 'at-risk') return 'row-at-risk'
     if (state === 'complete') return 'row-complete'
     return ''
+  }
+
+  const activeSavedFilter = useMemo(
+    () => savedFilterSets.find((item) => item.id === activeFilterSetId) || null,
+    [activeFilterSetId, savedFilterSets],
+  )
+
+  const applySavedFilterSet = (preset) => {
+    if (!preset?.filters) return
+    setStatus(preset.filters.status || 'All')
+    setSector(preset.filters.sector || 'All')
+    setGeography(preset.filters.geography || 'All')
+    setSearch(preset.filters.search || '')
+    setFocusedCompanyId(preset.filters.focusedCompanyId ? Number(preset.filters.focusedCompanyId) : null)
+    setActiveFilterSetId(preset.id)
+  }
+
+  const handleSaveCurrentFilters = () => {
+    const suggestedName = activeSavedFilter?.name || 'Saved submission view'
+    const name = sanitizeFilterPresetName(window.prompt('Name this saved view', suggestedName))
+    if (!name) return
+
+    const preset = {
+      id: activeSavedFilter?.id || createFilterPresetId('submissions'),
+      name,
+      filters: {
+        status,
+        sector,
+        geography,
+        search,
+        focusedCompanyId,
+      },
+      createdAt: activeSavedFilter?.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }
+    const nextPresets = upsertSavedFilterPreset(filterScope, preset)
+    setSavedFilterSets(nextPresets)
+    setActiveFilterSetId(preset.id)
+  }
+
+  const handleDeleteSavedFilter = () => {
+    if (!activeSavedFilter) return
+    const confirmed = window.confirm(`Delete saved view "${activeSavedFilter.name}"?`)
+    if (!confirmed) return
+    const nextPresets = removeSavedFilterPreset(filterScope, activeSavedFilter.id)
+    setSavedFilterSets(nextPresets)
+    setActiveFilterSetId('')
+  }
+
+  const clearFilters = () => {
+    setStatus('All')
+    setSector('All')
+    setGeography('All')
+    setSearch('')
+    setFocusedCompanyId(null)
+    setActiveFilterSetId('')
   }
 
   useEffect(() => {
@@ -581,14 +700,55 @@ export default function SubmissionsPage() {
                       const formData = new FormData();
                       formData.append('file', fileInput.files[0]);
                       try {
-      const res = await fetch(`${API_BASE_URL}/company/${selectedCompany.id}/upload-evidence`, {
+                        const res = await fetch(`${API_BASE_URL}/company/${selectedCompany.id}/upload-evidence`, {
                           method: 'POST', body: formData
                         });
-                        if (res.ok) alert('Evidence uploaded successfully');
-                        else alert('Upload failed');
+                        const payload = await res.json().catch(() => ({}));
+                        if (res.ok) {
+                          setEvidenceExtraction(payload);
+                          setFormMessage(payload?.message || 'Evidence uploaded successfully');
+                          alert('Evidence uploaded successfully');
+                        } else {
+                          alert(payload?.detail || 'Upload failed');
+                        }
                       } catch(e) { alert(e.message) }
                     }}>Upload File</Button>
                   </div>
+                  {evidenceExtraction?.extraction_suggestions?.length > 0 ? (
+                    <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                      <h5 className="mb-2 text-sm ui-text-strong text-slate-800">Document extraction suggestions</h5>
+                      <div className="space-y-3">
+                        {evidenceExtraction.extraction_suggestions.map((suggestion) => (
+                          <div key={`${suggestion.field_key}-${suggestion.suggested_value}`} className="rounded-lg border border-slate-200 bg-white p-3 text-sm">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <strong className="text-slate-800">{suggestion.field_key}</strong>
+                              <span className="text-xs uppercase tracking-wide text-slate-500">{suggestion.confidence_level}</span>
+                            </div>
+                            <p className="mt-1 text-slate-600">{suggestion.explanation}</p>
+                            {suggestion.source_excerpt ? <p className="mt-1 text-xs text-slate-500">Source: {suggestion.source_excerpt}</p> : null}
+                            <div className="mt-3 flex flex-wrap items-center gap-2">
+                              <Button
+                                type="button"
+                                className="button"
+                                onClick={() => {
+                                  setFormValues((current) => ({
+                                    ...current,
+                                    [suggestion.field_key]: suggestion.suggested_value || '',
+                                  }))
+                                  setFormMessage(`Applied suggestion for ${suggestion.field_key}.`)
+                                }}
+                              >
+                                Apply suggestion
+                              </Button>
+                              <span className="text-xs text-slate-500">
+                                Suggested value: {suggestion.suggested_value || 'Review manually'}
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
               )}
 
@@ -665,6 +825,47 @@ export default function SubmissionsPage() {
   return (
     <div className="page-grid">
       <SectionCard title="Submission Tracking" subtitle="Filter and review submission progress by company">
+        <div className="saved-filter-toolbar">
+          <label>
+            <span>Saved views</span>
+            <select
+              value={activeFilterSetId}
+              onChange={(event) => {
+                const nextId = event.target.value
+                setActiveFilterSetId(nextId)
+                if (!nextId) return
+                const preset = savedFilterSets.find((item) => item.id === nextId)
+                applySavedFilterSet(preset)
+              }}
+            >
+              <option value="">Last used</option>
+              {savedFilterSets.map((preset) => (
+                <option key={preset.id} value={preset.id}>
+                  {preset.name}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <div className="action-row">
+            <Button type="button" variant="secondary" onClick={handleSaveCurrentFilters}>
+              Save current view
+            </Button>
+            <Button type="button" variant="secondary" onClick={handleDeleteSavedFilter} disabled={!activeSavedFilter}>
+              Delete saved view
+            </Button>
+            <Button type="button" variant="ghost" onClick={clearFilters}>
+              Clear filters
+            </Button>
+          </div>
+        </div>
+
+        {focusedCompanyId ? (
+          <div className="saved-filter-note">
+            Focusing search on company ID {focusedCompanyId}. Clear filters to see the full submission table.
+          </div>
+        ) : null}
+
         <div className="filter-bar sticky">
           <label>
             <span>Status</span>
@@ -699,8 +900,15 @@ export default function SubmissionsPage() {
 
         {user?.role === 'investor' && (
           <div className="flex gap-4 mb-6">
-             <Button className="button bg-emerald-600 text-white" onClick={() => handleDownloadReport('edci')}>Generate EDCI Report</Button>
-             <Button className="button bg-blue-600 text-white" onClick={() => handleDownloadReport('sfdr')}>Generate SFDR Report</Button>
+             {REPORT_FRAMEWORK_OPTIONS.map((framework) => (
+               <Button
+                 key={framework.id}
+                 className="button"
+                 onClick={() => handleDownloadReport(framework.id)}
+               >
+                 Generate {framework.label} Report
+               </Button>
+             ))}
           </div>
         )}
 
@@ -715,9 +923,9 @@ export default function SubmissionsPage() {
                   <YAxis tick={{fontSize: 12}} />
                   <Tooltip />
                   <Legend verticalAlign="top" height={36} />
-                  <Bar dataKey="scope1" stackId="a" fill="#3b82f6" name="Scope 1" />
-                  <Bar dataKey="scope2" stackId="a" fill="#10b981" name="Scope 2" />
-                  <Bar dataKey="scope3" stackId="a" fill="#6366f1" name="Scope 3" />
+                  <Bar dataKey="scope1" stackId="a" fill={CHART_COLORS.scope1} name="Scope 1" />
+                  <Bar dataKey="scope2" stackId="a" fill={CHART_COLORS.scope2} name="Scope 2" />
+                  <Bar dataKey="scope3" stackId="a" fill={CHART_COLORS.scope3} name="Scope 3" />
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -730,7 +938,7 @@ export default function SubmissionsPage() {
                   <YAxis tick={{fontSize: 12}} domain={[0, 100]} />
                   <Tooltip />
                   <Legend verticalAlign="top" height={36} />
-                  <Bar dataKey="femaleLeadership" fill="#ec4899" name="% Female Leadership" />
+                  <Bar dataKey="femaleLeadership" fill={CHART_COLORS.pink} name="% Female Leadership" />
                 </BarChart>
               </ResponsiveContainer>
             </div>

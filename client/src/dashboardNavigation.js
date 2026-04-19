@@ -1,61 +1,101 @@
-const NAV_ITEMS = [
-  {
-    to: '/overview',
-    label: 'Overview',
-    icon: 'O',
-    title: 'Overview Dashboard',
-    roles: ['manager', 'investor', 'company'],
-  },
-  {
-    to: '/review-hub',
-    label: 'Review Hub',
-    icon: 'R',
-    title: 'Review Hub',
-    roles: ['manager'],
-  },
-  {
-    to: '/submissions',
-    label: 'Submissions',
-    icon: 'S',
-    title: 'Submission Tracking',
-    roles: ['manager', 'company'],
-  },
-  {
-    to: '/analytics',
-    label: 'Analytics',
-    icon: 'A',
-    title: 'ESG Analytics',
-    roles: ['manager', 'investor'],
-  },
-  {
-    to: '/alerts-risks',
-    label: 'Alerts & Risks',
-    icon: '!',
-    title: 'Alerts & Risks',
-    roles: ['manager'],
-  },
-  {
-    to: '/action-plans',
-    label: 'Action Plans',
-    icon: 'P',
-    title: 'Action Plan Tracker',
-    roles: ['manager', 'company'],
-  },
-  {
-    to: '/reports',
-    label: 'Reports',
-    icon: 'D',
-    title: 'Reports',
-    roles: ['manager', 'investor', 'company'],
-  },
-  {
-    to: '/admin-settings',
-    label: 'Cycle Config',
-    icon: 'T',
-    title: 'Reporting Cycle Configuration',
-    roles: ['manager'],
-  },
-]
+const PORTAL_NAV_CONFIG = {
+  manager: [
+    {
+      to: '/overview',
+      label: 'Overview',
+      icon: 'O',
+      title: 'Overview Dashboard',
+    },
+    {
+      to: '/review-hub',
+      label: 'Review Hub',
+      icon: 'R',
+      title: 'Review Hub',
+    },
+    {
+      to: '/submissions',
+      label: 'Submissions',
+      icon: 'S',
+      title: 'Submission Tracking',
+    },
+    {
+      to: '/analytics',
+      label: 'Analytics',
+      icon: 'A',
+      title: 'ESG Analytics',
+    },
+    {
+      to: '/alerts-risks',
+      label: 'Alerts & Risks',
+      icon: '!',
+      title: 'Alerts & Risks',
+    },
+    {
+      to: '/action-plans',
+      label: 'Action Plans',
+      icon: 'P',
+      title: 'Action Plan Tracker',
+    },
+    {
+      to: '/reports',
+      label: 'Reports',
+      icon: 'D',
+      title: 'Reports',
+    },
+    {
+      to: '/admin-settings',
+      label: 'Cycle Config',
+      icon: 'T',
+      title: 'Reporting Cycle Configuration',
+    },
+  ],
+  investor: [
+    {
+      to: '/overview',
+      label: 'Portfolio Dashboard',
+      icon: 'P',
+      title: 'Portfolio ESG Dashboard',
+    },
+    {
+      to: '/analytics',
+      label: 'ESG Metrics',
+      icon: 'M',
+      title: 'Detailed ESG Metrics',
+    },
+    {
+      to: '/reports',
+      label: 'Reports',
+      icon: 'R',
+      title: 'ESG Reports Library',
+    },
+  ],
+  company: [
+    {
+      to: '/company/dashboard',
+      label: 'Dashboard',
+      icon: 'D',
+      title: 'Submission Status & Progress',
+    },
+    {
+      to: '/company/submission',
+      label: 'ESG Data',
+      icon: 'E',
+      title: 'Complete ESG Data Entry',
+    },
+    {
+      to: '/company/action-plans',
+      label: 'Action Plans',
+      icon: 'A',
+      title: 'ESG Improvement Initiatives',
+    },
+    {
+      to: '/company/historical',
+      label: 'Historical Data',
+      icon: 'H',
+      title: 'Historical Submissions & YoY Reference',
+    },
+  ],
+}
 
 export function normalizeDashboardRole(role) {
   const value = String(role || '').toLowerCase()
@@ -65,7 +105,7 @@ export function normalizeDashboardRole(role) {
 
 export function getAllowedNavItems(role) {
   const normalizedRole = normalizeDashboardRole(role)
-  return NAV_ITEMS.filter((item) => item.roles.includes(normalizedRole))
+  return PORTAL_NAV_CONFIG[normalizedRole] || PORTAL_NAV_CONFIG.manager
 }
 
 export function getDefaultDashboardPath(role) {
@@ -77,8 +117,11 @@ export function getDashboardTitle(pathname, role) {
   const matched = navItems.find((item) => pathname.startsWith(item.to))
   if (matched) return matched.title
 
-  const fallback = NAV_ITEMS.find((item) => pathname.startsWith(item.to))
+  const fallback = Object.values(PORTAL_NAV_CONFIG)
+    .flat()
+    .find((item) => pathname.startsWith(item.to))
   return fallback?.title || 'Overview Dashboard'
 }
 
-export { NAV_ITEMS }
+export const NAV_ITEMS = PORTAL_NAV_CONFIG.manager
+export { PORTAL_NAV_CONFIG }

@@ -12,8 +12,10 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
+import ImpactStoryCard from '../components/ImpactStoryCard'
 import KpiCard from '../components/KpiCard'
 import SectionCard from '../components/SectionCard'
+import { CHART_COLORS, STATUS_COLORS } from '../lib/foundation'
 import useDashboardData from '../hooks/useDashboardData'
 
 function formatTrend(value) {
@@ -29,15 +31,16 @@ export default function InvestorAnalyticsPage() {
   const scoreBreakdown = analytics.score_breakdown || { E: 0, S: 0, G: 0 }
   const emissionsTotals = analytics.emissions_totals || { scope_1: 0, scope_2: 0, scope_3: 0, total: 0 }
   const dataQuality = analytics.data_quality || { completeness: 0, accuracy: 0, confidence: 0 }
+  const impactStory = analytics.impact_story || null
 
   const submissionFunnelData = useMemo(() => {
     const funnel = analytics.submission_funnel || {}
     return [
-      { name: 'Not Started', value: Number(funnel['Not Started'] || 0), color: '#94a3b8' },
-      { name: 'In Progress', value: Number(funnel['In Progress'] || 0), color: '#0ea5e9' },
-      { name: 'Submitted', value: Number(funnel.Submitted || 0), color: '#f59e0b' },
-      { name: 'Approved', value: Number(funnel.Approved || 0), color: '#10b981' },
-      { name: 'Rejected', value: Number(funnel.Rejected || 0), color: '#f97316' },
+      { name: 'Not Started', value: Number(funnel['Not Started'] || 0), color: STATUS_COLORS['Not Started'] },
+      { name: 'In Progress', value: Number(funnel['In Progress'] || 0), color: STATUS_COLORS['In Progress'] },
+      { name: 'Submitted', value: Number(funnel.Submitted || 0), color: STATUS_COLORS.Submitted },
+      { name: 'Approved', value: Number(funnel.Approved || 0), color: STATUS_COLORS.Approved },
+      { name: 'Rejected', value: Number(funnel.Rejected || 0), color: STATUS_COLORS.Rejected },
     ]
   }, [analytics.submission_funnel])
 
@@ -134,6 +137,13 @@ export default function InvestorAnalyticsPage() {
         />
       </section>
 
+      <ImpactStoryCard
+        title="Investor Impact Intelligence"
+        subtitle="Plain-English portfolio context for LPs"
+        story={impactStory}
+        maxInsights={4}
+      />
+
       <section className="two-col-grid">
         <SectionCard title="Submission Funnel" subtitle="Portfolio reporting lifecycle">
           <div className="chart-wrap">
@@ -144,7 +154,7 @@ export default function InvestorAnalyticsPage() {
                 <YAxis />
                 <Tooltip />
                 <Legend />
-                <Line type="monotone" dataKey="value" stroke="#0f766e" strokeWidth={3} dot={{ r: 4 }} />
+                <Line type="monotone" dataKey="value" stroke={CHART_COLORS.brandDark} strokeWidth={3} dot={{ r: 4 }} />
               </LineChart>
             </ResponsiveContainer>
           </div>
@@ -164,7 +174,7 @@ export default function InvestorAnalyticsPage() {
                 <XAxis dataKey="name" />
                 <YAxis />
                 <Tooltip />
-                <Bar dataKey="value" fill="#2563eb" radius={[8, 8, 0, 0]} />
+                <Bar dataKey="value" fill={CHART_COLORS.brand} radius={[8, 8, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </div>
@@ -186,7 +196,7 @@ export default function InvestorAnalyticsPage() {
                 <XAxis dataKey="metric" />
                 <YAxis domain={[0, 100]} />
                 <Tooltip />
-                <Bar dataKey="score" fill="#0f766e" radius={[8, 8, 0, 0]} />
+                <Bar dataKey="score" fill={CHART_COLORS.brandDark} radius={[8, 8, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </div>
@@ -201,7 +211,7 @@ export default function InvestorAnalyticsPage() {
                 <YAxis />
                 <Tooltip />
                 <Legend />
-                <Bar dataKey="score" fill="#7c3aed" radius={[8, 8, 0, 0]} />
+                <Bar dataKey="score" fill={CHART_COLORS.purple} radius={[8, 8, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </div>

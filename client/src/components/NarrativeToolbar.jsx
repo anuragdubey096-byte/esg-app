@@ -1,13 +1,8 @@
 import { Button, SelectInput } from './ui'
-
-const TONES = [
-  { value: 'board-ready', label: 'Board-ready' },
-  { value: 'lp-letter', label: 'LP letter' },
-  { value: 'exec-summary', label: 'Exec summary' },
-]
+import { DEFAULT_REPORT_VIEW, NARRATIVE_TONE_OPTIONS } from '../lib/portalOptions'
 
 export default function NarrativeToolbar({
-  tone = 'board-ready',
+  tone = DEFAULT_REPORT_VIEW.narrativeTone,
   onToneChange,
   onGenerate,
   onSave,
@@ -19,7 +14,7 @@ export default function NarrativeToolbar({
   return (
     <div className="flex flex-wrap items-end gap-3">
       <SelectInput label="Tone" value={tone} onChange={(event) => onToneChange?.(event.target.value)}>
-        {TONES.map((item) => (
+        {NARRATIVE_TONE_OPTIONS.map((item) => (
           <option key={item.value} value={item.value}>
             {item.label}
           </option>

@@ -26,7 +26,7 @@ export default function NarrativeEditor({ value, onChange, disabled = false }) {
   }
 
   return (
-    <div className="space-y-4 rounded-lg border border-slate-200 bg-white p-4">
+    <div className="space-y-4 rounded-lg border border-[color:var(--ui-panel-border)] bg-[color:var(--ui-surface)] p-4">
       <TextInput
         label="Headline"
         value={draft.headline || ''}

@@ -1,0 +1,85 @@
+export const UI_LABELS = {
+  common: {
+    loadingDataFromBackend: 'Loading data from backend.',
+    backendApiReachable: 'Make sure the backend API is reachable.',
+    backendServerRunning: 'Make sure the backend server is running.',
+    noDataAvailable: 'No data available',
+  },
+  pages: {
+    managerOverview: {
+      title: 'Overview Dashboard',
+      loadingSubtitle: 'Loading ESG overview from database...',
+      errorSubtitle: 'Live data unavailable',
+      noDataSubtitle: 'No data available',
+      noDataMessage: 'Unable to load overview data.',
+    },
+    investorOverview: {
+      title: 'Investor Portfolio Dashboard',
+      loadingSubtitle: 'Loading portfolio analytics...',
+      errorSubtitle: 'Live data unavailable',
+      noDataSubtitle: 'No data available',
+      noDataMessage: 'Unable to load portfolio data.',
+    },
+    companyDashboard: {
+      title: 'Submission Dashboard',
+      loadingSubtitle: 'Loading...',
+      errorSubtitle: 'Error loading data',
+      noDataSubtitle: 'No data available',
+      noDataMessage: 'Unable to load dashboard data.',
+    },
+    lpDashboard: {
+      title: 'Portfolio ESG Dashboard',
+      loadingSubtitle: 'Loading data...',
+      errorSubtitle: 'Error loading data',
+      noDataSubtitle: 'No data available',
+      noDataMessage: 'Unable to load portfolio data.',
+    },
+    lpMetrics: {
+      title: 'ESG Metrics',
+      loadingSubtitle: 'Loading data...',
+      errorSubtitle: 'Error loading data',
+      noDataSubtitle: 'No data available',
+      noDataMessage: 'Unable to load metrics data.',
+    },
+    companySubmission: {
+      title: 'ESG Data Entry Form',
+      loadingSubtitle: 'Loading',
+      errorSubtitle: 'Error loading data',
+      noDataSubtitle: 'No data available',
+      noDataMessage: 'Unable to load submission form.',
+    },
+    companyHistorical: {
+      title: 'Historical Data',
+      loadingSubtitle: 'Loading previous submissions...',
+      errorSubtitle: 'Unable to load history',
+      noDataSubtitle: 'No company data found',
+      noDataMessage: 'No historical submissions available yet.',
+    },
+    analytics: {
+      title: 'ESG Analytics',
+      loadingSubtitle: 'Loading live analytics from the backend...',
+      errorSubtitle: 'Live data unavailable',
+      noDataSubtitle: 'No data available',
+      noDataMessage: 'Unable to load analytics data.',
+    },
+    lpReports: {
+      title: 'Reports & Downloads',
+      loadingSubtitle: 'Loading data...',
+      errorSubtitle: 'Error loading data',
+      noDataSubtitle: 'No data available',
+      noDataMessage: 'Unable to load reports data.',
+    },
+    actionPlans: {
+      title: 'Action Plan Tracker',
+      subtitle: 'Track improvement actions and owner accountability',
+    },
+    alertsRisks: {
+      title: 'Risk Register',
+      subtitle: 'Operational risk and compliance alerts requiring follow-up',
+    },
+    adminSettings: {
+      title: 'Admin Settings',
+      subtitle: 'Manage access, templates, rules, and data governance controls',
+    },
+  },
+}

@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { API_BASE_URL } from '../lib/api'
+import { DEFAULT_REPORT_VIEW } from '../lib/portalOptions'
 
-export default function useNarrativeSummary({ user, audience, companyId, tone = 'board-ready', enabled = true } = {}) {
+export default function useNarrativeSummary({ user, audience, companyId, tone = DEFAULT_REPORT_VIEW.narrativeTone, enabled = true } = {}) {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')

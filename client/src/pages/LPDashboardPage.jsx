@@ -2,11 +2,15 @@ import { useEffect, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import { LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts'
 import KpiCard from '../components/KpiCard'
+import ImpactStoryCard from '../components/ImpactStoryCard'
 import NarrativeSummaryCard from '../components/NarrativeSummaryCard'
 import SectionCard from '../components/SectionCard'
 import useNarrativeSummary from '../hooks/useNarrativeSummary'
 import { API_BASE_URL } from '../lib/api'
-const COLORS = ['#10b981', '#0ea5e9', '#f59e0b', '#ef4444']
+import { CHART_COLORS } from '../lib/foundation'
+import { NARRATIVE_UI_COPY } from '../lib/portalOptions'
+import { UI_LABELS } from '../lib/uiLabels'
+const COLORS = [CHART_COLORS.success, CHART_COLORS.info, CHART_COLORS.warning, CHART_COLORS.danger]
 
 export default function LPDashboardPage() {
   const { user } = useOutletContext()
@@ -53,7 +57,7 @@ export default function LPDashboardPage() {
   if (loading) {
     return (
       <div className="page-grid">
-        <SectionCard title="Portfolio ESG Dashboard" subtitle="Loading data...">
+        <SectionCard title={UI_LABELS.pages.lpDashboard.title} subtitle={UI_LABELS.pages.lpDashboard.loadingSubtitle}>
           <div className="flex items-center justify-center py-12">
             <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
           </div>
@@ -65,10 +69,10 @@ export default function LPDashboardPage() {
   if (error) {
     return (
       <div className="page-grid">
-        <SectionCard title="Portfolio ESG Dashboard" subtitle="Error loading data">
+        <SectionCard title={UI_LABELS.pages.lpDashboard.title} subtitle={UI_LABELS.pages.lpDashboard.errorSubtitle}>
           <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-800">
             <p className="ui-text-strong">Error: {error}</p>
-            <p className="text-sm mt-2">Make sure the backend API is reachable.</p>
+            <p className="text-sm mt-2">{UI_LABELS.common.backendApiReachable}</p>
           </div>
         </SectionCard>
       </div>
@@ -78,8 +82,8 @@ export default function LPDashboardPage() {
   if (!data) {
     return (
       <div className="page-grid">
-        <SectionCard title="Portfolio ESG Dashboard" subtitle="No data available">
-          <p className="text-gray-600">Unable to load portfolio data.</p>
+        <SectionCard title={UI_LABELS.pages.lpDashboard.title} subtitle={UI_LABELS.pages.lpDashboard.noDataSubtitle}>
+          <p className="text-gray-600">{UI_LABELS.pages.lpDashboard.noDataMessage}</p>
         </SectionCard>
       </div>
     )
@@ -101,6 +105,7 @@ export default function LPDashboardPage() {
   const diversityMetrics = Array.isArray(data.diversity_metrics) ? data.diversity_metrics : []
   const policyAdoption = Array.isArray(data.policy_adoption) ? data.policy_adoption : []
   const actionPlanStatus = data.action_plan_status ?? { in_progress: 0, completed: 0 }
+  const impactStory = data.impact_story || null
 
   const completionPercent = Number(completion.total_companies)
     ? ((Number(completion.companies_with_approved_submission) / Number(completion.total_companies)) * 100).toFixed(1)
@@ -155,12 +160,19 @@ export default function LPDashboardPage() {
   return (
     <div className="page-grid">
       <NarrativeSummaryCard
-        title="LP Narrative Summary"
-        subtitle="Board-ready portfolio narrative for investors"
+        title="Investor Narrative Summary"
+        subtitle={NARRATIVE_UI_COPY.pages.lpDashboardNarrativeSubtitle}
         data={narrative.data}
         loading={narrative.loading}
         error={narrative.error}
         onRefresh={narrative.refresh}
+      />
+
+      <ImpactStoryCard
+        title="Impact Intelligence"
+        subtitle={NARRATIVE_UI_COPY.pages.lpDashboardImpactSubtitle}
+        story={impactStory}
+        maxInsights={4}
       />
 
       <SectionCard title="Portfolio ESG Scorecard" subtitle="Live backend snapshot">
@@ -237,9 +249,9 @@ export default function LPDashboardPage() {
             <YAxis />
             <Tooltip formatter={(value) => `${value.toFixed(0)}k tCO2e`} />
             <Legend />
-            <Line type="monotone" dataKey="Scope 1" stroke="#ef4444" strokeWidth={2} />
-            <Line type="monotone" dataKey="Scope 2" stroke="#0ea5e9" strokeWidth={2} />
-            <Line type="monotone" dataKey="Scope 3" stroke="#f59e0b" strokeWidth={2} />
+            <Line type="monotone" dataKey="Scope 1" stroke={CHART_COLORS.scope1} strokeWidth={2} />
+            <Line type="monotone" dataKey="Scope 2" stroke={CHART_COLORS.scope2} strokeWidth={2} />
+            <Line type="monotone" dataKey="Scope 3" stroke={CHART_COLORS.scope3} strokeWidth={2} />
           </LineChart>
         </ResponsiveContainer>
       </SectionCard>

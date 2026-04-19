@@ -283,6 +283,7 @@ class InvestorDashboardResponse(InvestorSummary):
     top_performers: List[InvestorPerformer] = []
     bottom_performers: List[InvestorPerformer] = []
     data_quality: Dict[str, float]
+    impact_story: Dict[str, Any]
 
 
 class ManagerAnalyticsResponse(BaseModel):
@@ -295,6 +296,7 @@ class ManagerAnalyticsResponse(BaseModel):
     bottom_performers: List[Dict[str, Any]]
     data_quality: Dict[str, float]
     cycle_snapshot: Dict[str, Any]
+    impact_story: Dict[str, Any]
 
 
 class SubmissionStatusUpdateRequest(BaseModel):
@@ -395,6 +397,11 @@ class ReportExportResponse(BaseModel):
     download_url: str
     content_type: str
     rows_exported: int
+    context_summary: List[str] = []
+    impact_headline: Optional[str] = None
+    narrative_headline: Optional[str] = None
+    narrative_included: bool = False
+    benchmark_callouts: List[str] = []
 
 
 class NarrativeSummaryResponse(BaseModel):
@@ -508,6 +515,25 @@ class ManagerDashboardSummary(BaseModel):
 class ManagerDashboardResponse(BaseModel):
     companies: List[CompanyDetail]
     summary: ManagerDashboardSummary
+    impact_story: Dict[str, Any]
+
+
+class GlobalSearchResult(BaseModel):
+    type: str
+    title: str
+    subtitle: str
+    path: str
+    score: float = 0.0
+    company_id: Optional[int] = None
+    company_name: Optional[str] = None
+    sector: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class GlobalSearchResponse(BaseModel):
+    query: str
+    role: str
+    results: List[GlobalSearchResult] = Field(default_factory=list)
 
 
 # ==========================================
@@ -594,6 +620,7 @@ class LPDashboardResponse(BaseModel):
     policy_adoption: List[LPPolicyAdoption]
     action_plan_status: LPActionPlanStatus
     portfolio_companies: List[LPCompanyMetrics]  # For authorised LPs only
+    impact_story: Dict[str, Any]
 
 
 class LPEnvironmentalMetrics(BaseModel):
@@ -640,6 +667,9 @@ class LPBenchmarkComparison(BaseModel):
     benchmark_value: float
     status: str  # "above", "at", "below"
     industry: str
+    tooltip: Optional[str] = None
+    real_world_equivalent: Optional[str] = None
+    direction: Literal['higher', 'lower'] = 'higher'
 
 
 class LPMetricsPageResponse(BaseModel):
@@ -648,6 +678,8 @@ class LPMetricsPageResponse(BaseModel):
     governance: LPGovernanceMetrics
     asset_class_breakdown: List[LPAssetClassBreakdown]
     benchmark_comparisons: List[LPBenchmarkComparison]
+    metric_insights: List[Dict[str, Any]] = []
+    impact_story: Dict[str, Any] = {}
 
 
 class LPReportMetadata(BaseModel):
@@ -819,3 +851,18 @@ class SupportingDocumentResponse(BaseModel):
     file_type: str
     uploaded_at: str
     uploaded_by_email: Optional[str] = None
+
+
+class DocumentExtractionSuggestion(BaseModel):
+    field_key: str
+    suggested_value: Optional[str] = None
+    confidence_level: str
+    explanation: Optional[str] = None
+    source_excerpt: Optional[str] = None
+    needs_confirmation: bool = True
+
+
+class SupportingDocumentUploadResponse(BaseModel):
+    message: str
+    document: SupportingDocumentResponse
+    extraction_suggestions: List[DocumentExtractionSuggestion] = Field(default_factory=list)

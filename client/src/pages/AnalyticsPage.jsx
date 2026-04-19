@@ -15,18 +15,12 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
+import ImpactStoryCard from '../components/ImpactStoryCard'
 import KpiCard from '../components/KpiCard'
 import SectionCard from '../components/SectionCard'
 import { API_BASE_URL } from '../lib/api'
-
-const CHART_COLORS = {
-  'Not Started': '#94a3b8',
-  'In Progress': '#0ea5e9',
-  Submitted: '#f59e0b',
-  'Under Review': '#8b5cf6',
-  Approved: '#10b981',
-  'Resubmission Requested': '#ef4444',
-}
+import { CHART_COLORS, STATUS_COLORS } from '../lib/foundation'
+import { UI_LABELS } from '../lib/uiLabels'
 
 function formatWindowDate(value) {
   if (!value) return 'N/A'
@@ -107,12 +101,13 @@ export default function AnalyticsPage() {
   const topPerformers = useMemo(() => data?.top_performers || [], [data])
   const bottomPerformers = useMemo(() => data?.bottom_performers || [], [data])
   const cycleSnapshot = data?.cycle_snapshot || {}
+  const impactStory = data?.impact_story || null
 
   if (loading) {
     return (
       <div className="page-grid">
-        <SectionCard title="ESG Analytics" subtitle="Loading live analytics from the backend...">
-          <p>Loading data from backend.</p>
+        <SectionCard title={UI_LABELS.pages.analytics.title} subtitle={UI_LABELS.pages.analytics.loadingSubtitle}>
+          <p>{UI_LABELS.common.loadingDataFromBackend}</p>
         </SectionCard>
       </div>
     )
@@ -121,7 +116,7 @@ export default function AnalyticsPage() {
   if (error) {
     return (
       <div className="page-grid">
-        <SectionCard title="ESG Analytics" subtitle="Live data unavailable">
+        <SectionCard title={UI_LABELS.pages.analytics.title} subtitle={UI_LABELS.pages.analytics.errorSubtitle}>
           <p>{error}</p>
         </SectionCard>
       </div>
@@ -170,6 +165,13 @@ export default function AnalyticsPage() {
         ))}
       </section>
 
+      <ImpactStoryCard
+        title="Manager Impact Intelligence"
+        subtitle="Translated signals for admin review"
+        story={impactStory}
+        maxInsights={4}
+      />
+
       <SectionCard title="Cycle Snapshot" subtitle="Live collection window and portfolio context">
         <div className="summary-grid three">
           <article className="summary-box">
@@ -204,7 +206,7 @@ export default function AnalyticsPage() {
                   paddingAngle={3}
                 >
                   {statusDistribution.map((entry) => (
-                    <Cell key={entry.name} fill={CHART_COLORS[entry.name] || entry.color || '#64748b'} />
+                    <Cell key={entry.name} fill={STATUS_COLORS[entry.name] || entry.color || CHART_COLORS.neutral} />
                   ))}
                 </Pie>
                 <Tooltip />
@@ -222,7 +224,7 @@ export default function AnalyticsPage() {
                 <XAxis dataKey="period" />
                 <YAxis />
                 <Tooltip formatter={(value) => `${Number(value || 0).toLocaleString()} tCO2e`} />
-                <Line type="monotone" dataKey="total_emissions" stroke="#0f766e" strokeWidth={3} dot={{ r: 4 }} />
+                <Line type="monotone" dataKey="total_emissions" stroke={CHART_COLORS.brandDark} strokeWidth={3} dot={{ r: 4 }} />
               </LineChart>
             </ResponsiveContainer>
           </div>
@@ -239,7 +241,7 @@ export default function AnalyticsPage() {
                 <YAxis domain={[0, 100]} />
                 <Tooltip content={<SectorTooltip />} />
                 <Legend />
-                <Bar dataKey="avg_esg_score" name="Avg ESG Score" fill="#2563eb" radius={[8, 8, 0, 0]} />
+                <Bar dataKey="avg_esg_score" name="Avg ESG Score" fill={CHART_COLORS.brand} radius={[8, 8, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </div>
@@ -256,7 +258,7 @@ export default function AnalyticsPage() {
                 <XAxis type="number" domain={[0, 100]} />
                 <YAxis type="category" dataKey="policy_name" width={160} />
                 <Tooltip formatter={(value) => `${Number(value || 0).toFixed(1)}%`} />
-                <Bar dataKey="adoption_percentage" fill="#7c3aed" radius={[0, 8, 8, 0]} />
+                <Bar dataKey="adoption_percentage" fill={CHART_COLORS.purple} radius={[0, 8, 8, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </div>

@@ -3,38 +3,18 @@ import { Outlet, useLocation } from 'react-router-dom'
 import Sidebar from '../components/Sidebar'
 import TopNavbar from '../components/TopNavbar'
 import { Button } from '../components/ui'
-
-// LP-specific navigation
-const LP_NAV_ITEMS = [
-  {
-    to: '/lp/dashboard',
-    label: 'Portfolio Dashboard',
-    icon: 'P',
-    title: 'Portfolio ESG Dashboard',
-  },
-  {
-    to: '/lp/metrics',
-    label: 'ESG Metrics',
-    icon: 'M',
-    title: 'Detailed ESG Metrics',
-  },
-  {
-    to: '/lp/reports',
-    label: 'Reports',
-    icon: 'R',
-    title: 'ESG Reports Library',
-  },
-]
+import { getAllowedNavItems } from '../dashboardNavigation'
 
 export default function LPLayout({ user, onLogout }) {
   const [collapsed, setCollapsed] = useState(false)
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const location = useLocation()
+  const navItems = useMemo(() => getAllowedNavItems('investor'), [])
 
   const pageTitle = useMemo(() => {
-    const matched = LP_NAV_ITEMS.find((item) => location.pathname.startsWith(item.to))
-    return matched?.title || 'Limited Partner Portal'
-  }, [location.pathname])
+    const matched = navItems.find((item) => location.pathname.startsWith(item.to))
+    return matched?.title || 'Investor Portal'
+  }, [location.pathname, navItems])
 
   useEffect(() => {
     setMobileNavOpen(false)
@@ -62,7 +42,7 @@ export default function LPLayout({ user, onLogout }) {
     <div className={`admin-shell ${collapsed ? 'collapsed' : ''}`}>
       <Sidebar
         collapsed={collapsed}
-        items={LP_NAV_ITEMS}
+        items={navItems}
         mobileOpen={mobileNavOpen}
         onToggle={toggleSidebar}
         onNavigate={() => setMobileNavOpen(false)}

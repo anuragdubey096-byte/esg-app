@@ -4,6 +4,7 @@ import SectionCard from '../components/SectionCard'
 import KpiCard from '../components/KpiCard'
 import { Button } from '../components/ui'
 import { API_BASE_URL } from '../lib/api'
+import { UI_LABELS } from '../lib/uiLabels'
 
 export default function CompanyDashboardPage() {
   const { user } = useOutletContext()
@@ -45,7 +46,7 @@ export default function CompanyDashboardPage() {
   if (loading) {
     return (
       <div className="page-grid">
-        <SectionCard title="Submission Dashboard" subtitle="Loading...">
+        <SectionCard title={UI_LABELS.pages.companyDashboard.title} subtitle={UI_LABELS.pages.companyDashboard.loadingSubtitle}>
           <div className="flex items-center justify-center py-12">
             <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
           </div>
@@ -57,10 +58,10 @@ export default function CompanyDashboardPage() {
   if (error) {
     return (
       <div className="page-grid">
-        <SectionCard title="Submission Dashboard" subtitle="Error loading data">
+        <SectionCard title={UI_LABELS.pages.companyDashboard.title} subtitle={UI_LABELS.pages.companyDashboard.errorSubtitle}>
           <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-800">
             <p className="ui-text-strong">Error: {error}</p>
-            <p className="text-sm mt-2">Make sure the backend API is reachable.</p>
+            <p className="text-sm mt-2">{UI_LABELS.common.backendApiReachable}</p>
           </div>
         </SectionCard>
       </div>
@@ -70,8 +71,8 @@ export default function CompanyDashboardPage() {
   if (!data) {
     return (
       <div className="page-grid">
-        <SectionCard title="Submission Dashboard" subtitle="No data available">
-          <p className="text-gray-600">Unable to load dashboard data.</p>
+        <SectionCard title={UI_LABELS.pages.companyDashboard.title} subtitle={UI_LABELS.pages.companyDashboard.noDataSubtitle}>
+          <p className="text-gray-600">{UI_LABELS.pages.companyDashboard.noDataMessage}</p>
         </SectionCard>
       </div>
     )

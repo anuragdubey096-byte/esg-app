@@ -16,15 +16,9 @@ import {
 import DataTable from '../components/DataTable'
 import KpiCard from '../components/KpiCard'
 import SectionCard from '../components/SectionCard'
+import { CHART_COLORS, STATUS_COLORS } from '../lib/foundation'
+import { UI_LABELS } from '../lib/uiLabels'
 import useDashboardData from '../hooks/useDashboardData'
-
-const funnelColors = {
-  'Not Started': '#ef4444',
-  'In Progress': '#f59e0b',
-  Submitted: '#0ea5e9',
-  Approved: '#10b981',
-  Rejected: '#f97316',
-}
 
 export default function InvestorOverviewPage() {
   const { user } = useOutletContext()
@@ -37,10 +31,10 @@ export default function InvestorOverviewPage() {
 
   const submissionFunnelData = useMemo(() => {
     const funnel = analytics.submission_funnel || {}
-    return Object.keys(funnelColors).map((key) => ({
+    return Object.keys(STATUS_COLORS).filter((key) => key !== 'Under Review' && key !== 'Resubmission Requested').map((key) => ({
       name: key,
       value: Number(funnel[key] || 0),
-      color: funnelColors[key],
+      color: STATUS_COLORS[key],
     }))
   }, [analytics.submission_funnel])
 
@@ -65,8 +59,8 @@ export default function InvestorOverviewPage() {
   if (loading) {
     return (
       <div className="page-grid">
-        <SectionCard title="Investor Portfolio Dashboard" subtitle="Loading portfolio analytics...">
-          <p>Loading data from backend.</p>
+        <SectionCard title={UI_LABELS.pages.investorOverview.title} subtitle={UI_LABELS.pages.investorOverview.loadingSubtitle}>
+          <p>{UI_LABELS.common.loadingDataFromBackend}</p>
         </SectionCard>
       </div>
     )
@@ -75,7 +69,7 @@ export default function InvestorOverviewPage() {
   if (error) {
     return (
       <div className="page-grid">
-        <SectionCard title="Investor Portfolio Dashboard" subtitle="Live data unavailable">
+        <SectionCard title={UI_LABELS.pages.investorOverview.title} subtitle={UI_LABELS.pages.investorOverview.errorSubtitle}>
           <p>{error}</p>
         </SectionCard>
       </div>
@@ -129,7 +123,7 @@ export default function InvestorOverviewPage() {
                 <XAxis dataKey="name" />
                 <YAxis />
                 <Tooltip />
-                <Bar dataKey="value" fill="#2563eb" radius={[8, 8, 0, 0]} />
+                <Bar dataKey="value" fill={CHART_COLORS.brand} radius={[8, 8, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </div>
@@ -151,7 +145,7 @@ export default function InvestorOverviewPage() {
                 <XAxis dataKey="metric" />
                 <YAxis domain={[0, 100]} />
                 <Tooltip />
-                <Bar dataKey="score" fill="#0f766e" radius={[8, 8, 0, 0]} />
+                <Bar dataKey="score" fill={CHART_COLORS.brandDark} radius={[8, 8, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </div>

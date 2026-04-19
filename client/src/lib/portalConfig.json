@@ -1,0 +1,515 @@
+{
+  "experience": {
+    "defaultBrandId": "greenledger",
+    "defaultAppearance": "light",
+    "brandProfiles": [
+      {
+        "id": "greenledger",
+        "label": "GreenLedger",
+        "shortName": "GL",
+        "tagline": "ESG Intelligence",
+        "description": "Default operating brand for the ESG platform.",
+        "highlights": [
+          "Real-time ESG dashboards",
+          "Data validation & audit trails",
+          "Investor-ready reporting"
+        ],
+        "themeTokens": {
+          "light": {
+            "--ui-page-background": "#eef2f7",
+            "--ui-surface": "#ffffff",
+            "--ui-surface-muted": "#f7f9fc",
+            "--ui-border": "#d7e0ea",
+            "--ui-text": "#0f172a",
+            "--ui-text-muted": "#5b6b7f",
+            "--ui-brand-primary": "#0f6d63",
+            "--ui-brand-primary-hover": "#0c5e55",
+            "--ui-brand-secondary": "#2563eb",
+            "--ui-brand-accent": "#0ea5e9",
+            "--ui-brand-success": "#10b981",
+            "--ui-brand-warning": "#d97706",
+            "--ui-brand-warning-strong": "#f59e0b",
+            "--ui-brand-danger": "#ef4444",
+            "--ui-brand-danger-strong": "#f97316",
+            "--ui-neutral-bg": "#e5e7eb",
+            "--ui-neutral-fg": "#4b5563",
+            "--ui-info-bg": "#dbeafe",
+            "--ui-info-fg": "#1d4ed8",
+            "--ui-warning-bg": "#fef3c7",
+            "--ui-warning-fg": "#92400e",
+            "--ui-success-bg": "#dcfce7",
+            "--ui-success-fg": "#166534",
+            "--ui-danger-bg": "#fee2e2",
+            "--ui-danger-fg": "#b91c1c",
+            "--ui-caution-bg": "#ffedd5",
+            "--ui-caution-fg": "#c2410c",
+            "--ui-navbar-bg": "rgba(255, 255, 255, 0.96)",
+            "--ui-navbar-border": "#d7e0ea",
+            "--ui-sidebar-bg": "#ffffff",
+            "--ui-sidebar-hover": "#e0ecff",
+            "--ui-sidebar-active-bg": "#dbeafe",
+            "--ui-sidebar-active-text": "#0f172a",
+            "--ui-panel-border": "#dbe7f3",
+            "--ui-login-backdrop": "linear-gradient(180deg, #eef2f7, #e6edf5)",
+            "--ui-hero-start": "#06253a",
+            "--ui-hero-mid": "#0b3a50",
+            "--ui-hero-end": "#0f5f63",
+            "--ui-logo-start": "#0ea5e9",
+            "--ui-logo-end": "#14b8a6"
+          },
+          "dark": {
+            "--ui-page-background": "#08111d",
+            "--ui-surface": "#0f172a",
+            "--ui-surface-muted": "#111c30",
+            "--ui-border": "#253246",
+            "--ui-text": "#e2e8f0",
+            "--ui-text-muted": "#94a3b8",
+            "--ui-brand-primary": "#0f6d63",
+            "--ui-brand-primary-hover": "#0c5e55",
+            "--ui-brand-secondary": "#2563eb",
+            "--ui-brand-accent": "#0ea5e9",
+            "--ui-brand-success": "#10b981",
+            "--ui-brand-warning": "#d97706",
+            "--ui-brand-warning-strong": "#f59e0b",
+            "--ui-brand-danger": "#ef4444",
+            "--ui-brand-danger-strong": "#f97316",
+            "--ui-neutral-bg": "#243246",
+            "--ui-neutral-fg": "#cbd5e1",
+            "--ui-info-bg": "#1e3a8a",
+            "--ui-info-fg": "#bfdbfe",
+            "--ui-warning-bg": "#4c2a04",
+            "--ui-warning-fg": "#fcd34d",
+            "--ui-success-bg": "#0f3d2e",
+            "--ui-success-fg": "#86efac",
+            "--ui-danger-bg": "#4c1d1d",
+            "--ui-danger-fg": "#fecaca",
+            "--ui-caution-bg": "#4a2c0b",
+            "--ui-caution-fg": "#fdba74",
+            "--ui-navbar-bg": "rgba(9, 16, 29, 0.94)",
+            "--ui-navbar-border": "#223043",
+            "--ui-sidebar-bg": "#0b1424",
+            "--ui-sidebar-hover": "#18243a",
+            "--ui-sidebar-active-bg": "#16324f",
+            "--ui-sidebar-active-text": "#f8fafc",
+            "--ui-panel-border": "#223043",
+            "--ui-login-backdrop": "linear-gradient(180deg, #08111d, #0f172a)",
+            "--ui-hero-start": "#08111d",
+            "--ui-hero-mid": "#132138",
+            "--ui-hero-end": "#164e63",
+            "--ui-logo-start": "#0ea5e9",
+            "--ui-logo-end": "#10b981"
+          }
+        }
+      },
+      {
+        "id": "harbor",
+        "label": "Harbor Capital",
+        "shortName": "HC",
+        "tagline": "Portfolio stewardship",
+        "description": "A calmer fund profile for investor-facing portals.",
+        "highlights": [
+          "Board-ready reporting",
+          "Portfolio oversight",
+          "Audit-friendly workflows"
+        ],
+        "themeTokens": {
+          "light": {
+            "--ui-page-background": "#edf3f8",
+            "--ui-surface": "#ffffff",
+            "--ui-surface-muted": "#f5f8fb",
+            "--ui-border": "#d2dde7",
+            "--ui-text": "#102236",
+            "--ui-text-muted": "#5c6f82",
+            "--ui-brand-primary": "#0f766e",
+            "--ui-brand-primary-hover": "#115e59",
+            "--ui-brand-secondary": "#2563eb",
+            "--ui-brand-accent": "#0ea5e9",
+            "--ui-brand-success": "#10b981",
+            "--ui-brand-warning": "#d97706",
+            "--ui-brand-warning-strong": "#f59e0b",
+            "--ui-brand-danger": "#ef4444",
+            "--ui-brand-danger-strong": "#f97316",
+            "--ui-neutral-bg": "#e5e7eb",
+            "--ui-neutral-fg": "#4b5563",
+            "--ui-info-bg": "#dbeafe",
+            "--ui-info-fg": "#1d4ed8",
+            "--ui-warning-bg": "#fef3c7",
+            "--ui-warning-fg": "#92400e",
+            "--ui-success-bg": "#dcfce7",
+            "--ui-success-fg": "#166534",
+            "--ui-danger-bg": "#fee2e2",
+            "--ui-danger-fg": "#b91c1c",
+            "--ui-caution-bg": "#ffedd5",
+            "--ui-caution-fg": "#c2410c",
+            "--ui-navbar-bg": "rgba(255, 255, 255, 0.96)",
+            "--ui-navbar-border": "#d2dde7",
+            "--ui-sidebar-bg": "#ffffff",
+            "--ui-sidebar-hover": "#eaf2f7",
+            "--ui-sidebar-active-bg": "#d7e8f7",
+            "--ui-sidebar-active-text": "#102236",
+            "--ui-panel-border": "#dbe4ec",
+            "--ui-login-backdrop": "linear-gradient(180deg, #edf3f8, #dce8f1)",
+            "--ui-hero-start": "#091f34",
+            "--ui-hero-mid": "#12324f",
+            "--ui-hero-end": "#1d6b7b",
+            "--ui-logo-start": "#1d4ed8",
+            "--ui-logo-end": "#0ea5e9"
+          },
+          "dark": {
+            "--ui-page-background": "#07111a",
+            "--ui-surface": "#0d1a28",
+            "--ui-surface-muted": "#111f2f",
+            "--ui-border": "#203043",
+            "--ui-text": "#e5edf6",
+            "--ui-text-muted": "#91a4b7",
+            "--ui-brand-primary": "#0f766e",
+            "--ui-brand-primary-hover": "#115e59",
+            "--ui-brand-secondary": "#2563eb",
+            "--ui-brand-accent": "#0ea5e9",
+            "--ui-brand-success": "#10b981",
+            "--ui-brand-warning": "#d97706",
+            "--ui-brand-warning-strong": "#f59e0b",
+            "--ui-brand-danger": "#ef4444",
+            "--ui-brand-danger-strong": "#f97316",
+            "--ui-neutral-bg": "#243246",
+            "--ui-neutral-fg": "#cbd5e1",
+            "--ui-info-bg": "#1e3a8a",
+            "--ui-info-fg": "#bfdbfe",
+            "--ui-warning-bg": "#4c2a04",
+            "--ui-warning-fg": "#fcd34d",
+            "--ui-success-bg": "#0f3d2e",
+            "--ui-success-fg": "#86efac",
+            "--ui-danger-bg": "#4c1d1d",
+            "--ui-danger-fg": "#fecaca",
+            "--ui-caution-bg": "#4a2c0b",
+            "--ui-caution-fg": "#fdba74",
+            "--ui-navbar-bg": "rgba(7, 15, 24, 0.94)",
+            "--ui-navbar-border": "#203043",
+            "--ui-sidebar-bg": "#0a1622",
+            "--ui-sidebar-hover": "#132538",
+            "--ui-sidebar-active-bg": "#17324a",
+            "--ui-sidebar-active-text": "#f8fafc",
+            "--ui-panel-border": "#203043",
+            "--ui-login-backdrop": "linear-gradient(180deg, #07111a, #0d1a28)",
+            "--ui-hero-start": "#07111a",
+            "--ui-hero-mid": "#102235",
+            "--ui-hero-end": "#0f766e",
+            "--ui-logo-start": "#1d4ed8",
+            "--ui-logo-end": "#14b8a6"
+          }
+        }
+      },
+      {
+        "id": "summit",
+        "label": "Summit Partners",
+        "shortName": "SP",
+        "tagline": "Impact oversight",
+        "description": "A high-contrast white-label profile for premium investor views.",
+        "highlights": [
+          "Portfolio narratives",
+          "Impact intelligence",
+          "Actionable benchmarks"
+        ],
+        "themeTokens": {
+          "light": {
+            "--ui-page-background": "#f2f4f7",
+            "--ui-surface": "#ffffff",
+            "--ui-surface-muted": "#f8fafc",
+            "--ui-border": "#d6dde5",
+            "--ui-text": "#111827",
+            "--ui-text-muted": "#5f6b7a",
+            "--ui-brand-primary": "#7c3aed",
+            "--ui-brand-primary-hover": "#6d28d9",
+            "--ui-brand-secondary": "#ec4899",
+            "--ui-brand-accent": "#a855f7",
+            "--ui-brand-success": "#10b981",
+            "--ui-brand-warning": "#d97706",
+            "--ui-brand-warning-strong": "#f59e0b",
+            "--ui-brand-danger": "#ef4444",
+            "--ui-brand-danger-strong": "#f97316",
+            "--ui-neutral-bg": "#e5e7eb",
+            "--ui-neutral-fg": "#4b5563",
+            "--ui-info-bg": "#dbeafe",
+            "--ui-info-fg": "#1d4ed8",
+            "--ui-warning-bg": "#fef3c7",
+            "--ui-warning-fg": "#92400e",
+            "--ui-success-bg": "#dcfce7",
+            "--ui-success-fg": "#166534",
+            "--ui-danger-bg": "#fee2e2",
+            "--ui-danger-fg": "#b91c1c",
+            "--ui-caution-bg": "#ffedd5",
+            "--ui-caution-fg": "#c2410c",
+            "--ui-navbar-bg": "rgba(255, 255, 255, 0.96)",
+            "--ui-navbar-border": "#d6dde5",
+            "--ui-sidebar-bg": "#ffffff",
+            "--ui-sidebar-hover": "#edf2f7",
+            "--ui-sidebar-active-bg": "#e2e8f0",
+            "--ui-sidebar-active-text": "#111827",
+            "--ui-panel-border": "#d6dde5",
+            "--ui-login-backdrop": "linear-gradient(180deg, #f2f4f7, #e7ecf2)",
+            "--ui-hero-start": "#231942",
+            "--ui-hero-mid": "#3d2e6d",
+            "--ui-hero-end": "#7353ba",
+            "--ui-logo-start": "#7c3aed",
+            "--ui-logo-end": "#ec4899"
+          },
+          "dark": {
+            "--ui-page-background": "#090b16",
+            "--ui-surface": "#121827",
+            "--ui-surface-muted": "#182235",
+            "--ui-border": "#2a3448",
+            "--ui-text": "#e5e7eb",
+            "--ui-text-muted": "#9aa7b8",
+            "--ui-brand-primary": "#7c3aed",
+            "--ui-brand-primary-hover": "#6d28d9",
+            "--ui-brand-secondary": "#ec4899",
+            "--ui-brand-accent": "#a855f7",
+            "--ui-brand-success": "#10b981",
+            "--ui-brand-warning": "#d97706",
+            "--ui-brand-warning-strong": "#f59e0b",
+            "--ui-brand-danger": "#ef4444",
+            "--ui-brand-danger-strong": "#f97316",
+            "--ui-neutral-bg": "#243246",
+            "--ui-neutral-fg": "#cbd5e1",
+            "--ui-info-bg": "#1e3a8a",
+            "--ui-info-fg": "#bfdbfe",
+            "--ui-warning-bg": "#4c2a04",
+            "--ui-warning-fg": "#fcd34d",
+            "--ui-success-bg": "#0f3d2e",
+            "--ui-success-fg": "#86efac",
+            "--ui-danger-bg": "#4c1d1d",
+            "--ui-danger-fg": "#fecaca",
+            "--ui-caution-bg": "#4a2c0b",
+            "--ui-caution-fg": "#fdba74",
+            "--ui-navbar-bg": "rgba(10, 12, 22, 0.94)",
+            "--ui-navbar-border": "#2a3448",
+            "--ui-sidebar-bg": "#0d1320",
+            "--ui-sidebar-hover": "#1c2537",
+            "--ui-sidebar-active-bg": "#2b3250",
+            "--ui-sidebar-active-text": "#f8fafc",
+            "--ui-panel-border": "#2a3448",
+            "--ui-login-backdrop": "linear-gradient(180deg, #090b16, #121827)",
+            "--ui-hero-start": "#090b16",
+            "--ui-hero-mid": "#1d1740",
+            "--ui-hero-end": "#4c1d95",
+            "--ui-logo-start": "#7c3aed",
+            "--ui-logo-end": "#ec4899"
+          }
+        }
+      }
+    ]
+  },
+  "search": {
+    "pageCatalog": {
+      "manager": [
+        {
+          "title": "Overview",
+          "subtitle": "Portfolio performance and submission status",
+          "path": "/overview",
+          "metadata": {
+            "section": "manager",
+            "aliases": [
+              "dashboard",
+              "portfolio dashboard",
+              "overview"
+            ]
+          }
+        },
+        {
+          "title": "Submissions",
+          "subtitle": "Review company data and progress",
+          "path": "/submissions",
+          "metadata": {
+            "section": "manager",
+            "aliases": [
+              "submission tracking",
+              "company data",
+              "records"
+            ]
+          }
+        },
+        {
+          "title": "Review Hub",
+          "subtitle": "Resolve validation issues and review exceptions",
+          "path": "/review-hub",
+          "metadata": {
+            "section": "manager",
+            "aliases": [
+              "validation",
+              "exceptions",
+              "review"
+            ]
+          }
+        },
+        {
+          "title": "Analytics",
+          "subtitle": "Portfolio charts and impact story",
+          "path": "/analytics",
+          "metadata": {
+            "section": "manager",
+            "aliases": [
+              "dashboard",
+              "impact story",
+              "benchmarks"
+            ]
+          }
+        },
+        {
+          "title": "Action Plans",
+          "subtitle": "Track remediation work",
+          "path": "/action-plans",
+          "metadata": {
+            "section": "manager",
+            "aliases": [
+              "initiatives",
+              "remediation",
+              "tracker"
+            ]
+          }
+        },
+        {
+          "title": "Reports",
+          "subtitle": "Export board-ready outputs",
+          "path": "/reports",
+          "metadata": {
+            "section": "manager",
+            "aliases": [
+              "exports",
+              "downloads",
+              "board pack"
+            ]
+          }
+        },
+        {
+          "title": "Cycle Config",
+          "subtitle": "Manage reporting windows and reminders",
+          "path": "/admin-settings",
+          "metadata": {
+            "section": "manager",
+            "aliases": [
+              "settings",
+              "configuration",
+              "reminders"
+            ]
+          }
+        }
+      ],
+      "investor": [
+        {
+          "title": "Investor Overview",
+          "subtitle": "Portfolio summary and KPIs",
+          "path": "/overview",
+          "metadata": {
+            "section": "investor",
+            "aliases": [
+              "dashboard",
+              "portfolio dashboard",
+              "overview"
+            ]
+          }
+        },
+        {
+          "title": "Investor Analytics",
+          "subtitle": "Live portfolio analysis and benchmarks",
+          "path": "/analytics",
+          "metadata": {
+            "section": "investor",
+            "aliases": [
+              "dashboard",
+              "portfolio charts",
+              "impact story",
+              "benchmarks"
+            ]
+          }
+        },
+        {
+          "title": "Reports",
+          "subtitle": "Download portfolio exports",
+          "path": "/reports",
+          "metadata": {
+            "section": "investor",
+            "aliases": [
+              "exports",
+              "downloads",
+              "report library"
+            ]
+          }
+        }
+      ],
+      "company": [
+        {
+          "title": "Company Dashboard",
+          "subtitle": "Open submission status and progress",
+          "path": "/company/dashboard",
+          "metadata": {
+            "section": "company",
+            "aliases": [
+              "dashboard",
+              "portfolio dashboard"
+            ]
+          }
+        },
+        {
+          "title": "ESG Data Entry",
+          "subtitle": "Complete the current submission",
+          "path": "/company/submission",
+          "metadata": {
+            "section": "company",
+            "aliases": [
+              "submission",
+              "data entry",
+              "esg data"
+            ]
+          }
+        },
+        {
+          "title": "Action Plans",
+          "subtitle": "Track improvement initiatives",
+          "path": "/company/action-plans",
+          "metadata": {
+            "section": "company",
+            "aliases": [
+              "initiatives",
+              "improvement",
+              "remediation"
+            ]
+          }
+        },
+        {
+          "title": "Historical Data",
+          "subtitle": "Review prior-year submissions",
+          "path": "/company/historical",
+          "metadata": {
+            "section": "company",
+            "aliases": [
+              "prior-year",
+              "history",
+              "historical submissions"
+            ]
+          }
+        }
+      ]
+    },
+    "ranking": {
+      "weights": {
+        "ratio": 0.45,
+        "tokenOverlap": 0.3,
+        "contains": 0.15,
+        "starts": 0.1
+      },
+      "minimumScore": 12,
+      "pageTitleExactBoost": 28,
+      "pageTitlePrefixBoost": 16,
+      "pageAliasExactBoost": 22,
+      "pageAliasPrefixBoost": 14,
+      "pageSubtitleBoost": 6,
+      "pagePathBoost": 4,
+      "companyNameExactBoost": 22,
+      "companyNamePrefixBoost": 12,
+      "companySectorBoost": 5,
+      "companyGeographyBoost": 3,
+      "companyStatusBoost": 4,
+      "actionPlanBoost": 8
+    }
+  }
+}

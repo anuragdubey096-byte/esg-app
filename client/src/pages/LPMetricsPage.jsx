@@ -1,9 +1,12 @@
 import { useEffect, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts'
+import ImpactStoryCard from '../components/ImpactStoryCard'
 import SectionCard from '../components/SectionCard'
 import { Button } from '../components/ui'
+import { CHART_COLORS } from '../lib/foundation'
 import { API_BASE_URL } from '../lib/api'
+import { UI_LABELS } from '../lib/uiLabels'
 const TAB_CATEGORIES = ['Environmental', 'Social', 'Governance', 'Asset Classes', 'Benchmarks']
 
 export default function LPMetricsPage() {
@@ -46,7 +49,7 @@ export default function LPMetricsPage() {
   if (loading) {
     return (
       <div className="page-grid">
-        <SectionCard title="ESG Metrics" subtitle="Loading data...">
+        <SectionCard title={UI_LABELS.pages.lpMetrics.title} subtitle={UI_LABELS.pages.lpMetrics.loadingSubtitle}>
           <div className="flex items-center justify-center py-12">
             <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
           </div>
@@ -58,10 +61,10 @@ export default function LPMetricsPage() {
   if (error) {
     return (
       <div className="page-grid">
-        <SectionCard title="ESG Metrics" subtitle="Error loading data">
+        <SectionCard title={UI_LABELS.pages.lpMetrics.title} subtitle={UI_LABELS.pages.lpMetrics.errorSubtitle}>
           <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-800">
             <p className="ui-text-strong">Error: {error}</p>
-            <p className="text-sm mt-2">Make sure the backend API is reachable.</p>
+            <p className="text-sm mt-2">{UI_LABELS.common.backendApiReachable}</p>
           </div>
         </SectionCard>
       </div>
@@ -71,8 +74,8 @@ export default function LPMetricsPage() {
   if (!data) {
     return (
       <div className="page-grid">
-        <SectionCard title="ESG Metrics" subtitle="No data available">
-          <p className="text-gray-600">Unable to load metrics data.</p>
+        <SectionCard title={UI_LABELS.pages.lpMetrics.title} subtitle={UI_LABELS.pages.lpMetrics.noDataSubtitle}>
+          <p className="text-gray-600">{UI_LABELS.pages.lpMetrics.noDataMessage}</p>
         </SectionCard>
       </div>
     )
@@ -83,15 +86,16 @@ export default function LPMetricsPage() {
   const governance = data.governance
   const assetClassBreakdown = data.asset_class_breakdown
   const benchmarkComparisons = data.benchmark_comparisons
+  const impactStory = data.impact_story || null
 
   const renderEnvironmental = () => (
     <div className="space-y-6">
       <SectionCard title="Greenhouse Gas Emissions" subtitle="Scope 1, 2, and 3 Trends">
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
           {[
-            { title: 'Scope 1 Emissions', data: environmental.scope_1_emissions, color: '#ef4444' },
-            { title: 'Scope 2 Emissions', data: environmental.scope_2_emissions, color: '#0ea5e9' },
-            { title: 'Scope 3 Emissions', data: environmental.scope_3_emissions, color: '#f59e0b' },
+            { title: 'Scope 1 Emissions', data: environmental.scope_1_emissions, color: CHART_COLORS.scope1 },
+            { title: 'Scope 2 Emissions', data: environmental.scope_2_emissions, color: CHART_COLORS.scope2 },
+            { title: 'Scope 3 Emissions', data: environmental.scope_3_emissions, color: CHART_COLORS.scope3 },
           ].map((scope) => (
             <div key={scope.title}>
               <p className="text-sm ui-text-strong text-gray-700 mb-3">{scope.title}</p>
@@ -123,7 +127,7 @@ export default function LPMetricsPage() {
                   <XAxis dataKey="period" style={{ fontSize: '12px' }} />
                   <YAxis style={{ fontSize: '12px' }} />
                   <Tooltip />
-                  <Bar dataKey="value" fill="#0ea5e9" />
+                  <Bar dataKey="value" fill={CHART_COLORS.scope2} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -142,7 +146,7 @@ export default function LPMetricsPage() {
                 <YAxis style={{ fontSize: '12px' }} />
                 <Tooltip />
                 <Legend />
-                <Bar dataKey="value" fill="#0ea5e9" name="Total Usage" />
+                <Bar dataKey="value" fill={CHART_COLORS.scope2} name="Total Usage" />
               </BarChart>
             </ResponsiveContainer>
           </div>
@@ -155,7 +159,7 @@ export default function LPMetricsPage() {
                 <YAxis style={{ fontSize: '12px' }} />
                 <Tooltip />
                 <Legend />
-                <Line type="monotone" dataKey="value" stroke="#10b981" strokeWidth={2} name="Generated" />
+                <Line type="monotone" dataKey="value" stroke={CHART_COLORS.success} strokeWidth={2} name="Generated" />
               </LineChart>
             </ResponsiveContainer>
           </div>
@@ -180,7 +184,7 @@ export default function LPMetricsPage() {
                   <XAxis dataKey="period" style={{ fontSize: '12px' }} />
                   <YAxis style={{ fontSize: '12px' }} />
                   <Tooltip />
-                  <Line type="monotone" dataKey="value" stroke="#ef4444" strokeWidth={2} dot={{ r: 4 }} />
+                  <Line type="monotone" dataKey="value" stroke={CHART_COLORS.scope1} strokeWidth={2} dot={{ r: 4 }} />
                 </LineChart>
               </ResponsiveContainer>
             </div>
@@ -191,9 +195,9 @@ export default function LPMetricsPage() {
       <SectionCard title="Workforce Metrics" subtitle="Employment, Turnover, and Diversity">
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {[
-            { title: 'Total Employees (FTE)', data: social.total_employees, color: '#0ea5e9' },
-            { title: 'Female Workforce %', data: social.female_workforce_percent, color: '#ec4899' },
-            { title: 'Female Leadership %', data: social.female_leadership_percent, color: '#a855f7' },
+            { title: 'Total Employees (FTE)', data: social.total_employees, color: CHART_COLORS.scope2 },
+            { title: 'Female Workforce %', data: social.female_workforce_percent, color: CHART_COLORS.pink },
+            { title: 'Female Leadership %', data: social.female_leadership_percent, color: CHART_COLORS.violet },
           ].map((metric) => (
             <div key={metric.title}>
               <p className="text-sm ui-text-strong text-gray-700 mb-3">{metric.title}</p>
@@ -218,7 +222,7 @@ export default function LPMetricsPage() {
             <XAxis dataKey="period" />
             <YAxis />
             <Tooltip formatter={(value) => `$${(value / 1000000).toFixed(1)}M`} />
-            <Line type="monotone" dataKey="value" stroke="#10b981" strokeWidth={2} dot={{ r: 5 }} name="Investment" />
+            <Line type="monotone" dataKey="value" stroke={CHART_COLORS.success} strokeWidth={2} dot={{ r: 5 }} name="Investment" />
           </LineChart>
         </ResponsiveContainer>
       </SectionCard>
@@ -261,7 +265,7 @@ export default function LPMetricsPage() {
             <XAxis dataKey="period" />
             <YAxis />
             <Tooltip />
-            <Bar dataKey="value" fill="#ef4444" name="Incidents" />
+            <Bar dataKey="value" fill={CHART_COLORS.scope1} name="Incidents" />
           </BarChart>
         </ResponsiveContainer>
       </SectionCard>
@@ -320,6 +324,7 @@ export default function LPMetricsPage() {
                   <p className="text-xs text-gray-600 mt-1">Portfolio vs Benchmark</p>
                 </div>
               </div>
+              {benchmark.tooltip ? <p className="text-xs text-slate-600 mt-2 leading-6">{benchmark.tooltip}</p> : null}
               <div className="mt-3 flex justify-between text-sm">
                 <div>
                   <p className="text-gray-600">Portfolio</p>
@@ -375,6 +380,13 @@ export default function LPMetricsPage() {
           </Button>
         ))}
       </div>
+
+      <ImpactStoryCard
+        title="Metric Explanations"
+        subtitle="Plain-English context for the most important portfolio signals"
+        story={impactStory}
+        maxInsights={6}
+      />
 
       {renderContent()}
 

@@ -4,6 +4,7 @@ import DataTable from '../components/DataTable'
 import SectionCard from '../components/SectionCard'
 import StatusBadge from '../components/StatusBadge'
 import useDashboardData from '../hooks/useDashboardData'
+import { UI_LABELS } from '../lib/uiLabels'
 
 export default function ActionPlansPage() {
   const { user } = useOutletContext()
@@ -51,7 +52,7 @@ export default function ActionPlansPage() {
 
   return (
     <div className="page-grid">
-      <SectionCard title="Action Plan Tracker" subtitle="Track improvement actions and owner accountability">
+      <SectionCard title={UI_LABELS.pages.actionPlans.title} subtitle={UI_LABELS.pages.actionPlans.subtitle}>
         <div className="filter-bar sticky">
           <label>
             <span>Status</span>

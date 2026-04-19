@@ -1,3 +1,5 @@
+import { useExperience } from '../../contexts/ExperienceContext'
+
 const highlights = [
   { icon: 'D', title: 'Real-time ESG dashboards' },
   { icon: 'V', title: 'Data validation & audit trails' },
@@ -5,26 +7,27 @@ const highlights = [
 ]
 
 export default function BrandingPanel() {
-  return (
-    <aside className="relative overflow-hidden bg-gradient-to-br from-brand-700 via-brand-600 to-esg-600 p-8 text-white md:p-10">
-      <div className="absolute -right-24 -top-24 h-64 w-64 rounded-full bg-white/10 blur-xl" />
-      <div className="absolute -bottom-24 -left-24 h-64 w-64 rounded-full bg-emerald-200/20 blur-xl" />
+  const { activeBrand, appearance } = useExperience()
 
-      <div className="relative z-10 flex h-full flex-col">
-        <div className="mb-10 flex items-center gap-3">
-          <div className="grid h-11 w-11 place-items-center rounded-xl bg-white/15 text-sm ui-text-strong tracking-wide">
-            GL
+  return (
+    <aside className="login-brand-panel">
+      <div className="login-brand-panel-glow login-brand-panel-glow-a" />
+      <div className="login-brand-panel-glow login-brand-panel-glow-b" />
+
+      <div className="login-brand-panel-body">
+        <div className="login-brand-mark-row">
+          <div className="login-brand-mark">
+            {activeBrand.shortName}
           </div>
           <div>
-            <p className="ui-text-display ui-text-strong">GreenLedger</p>
-            <p className="text-sm text-white/80">ESG Intelligence</p>
+            <p className="ui-text-display ui-text-strong">{activeBrand.label}</p>
+            <p className="text-sm text-white/80">{activeBrand.tagline}</p>
           </div>
+          <span className="login-brand-mode-pill">{appearance === 'dark' ? 'Dark mode' : 'Light mode'}</span>
         </div>
 
         <div className="space-y-5">
-          <h1 className="ui-text-display leading-tight">
-            Unified ESG Intelligence Platform
-          </h1>
+          <h1 className="ui-text-display leading-tight">{activeBrand.description}</h1>
           <p className="max-w-md text-sm leading-relaxed text-white/90 md:text-base">
             Collect, validate, and analyze ESG data across your portfolio in real time.
           </p>

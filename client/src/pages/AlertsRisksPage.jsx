@@ -5,6 +5,7 @@ import SectionCard from '../components/SectionCard'
 import StatusBadge from '../components/StatusBadge'
 import useDashboardData from '../hooks/useDashboardData'
 import { Button } from '../components/ui'
+import { UI_LABELS } from '../lib/uiLabels'
 
 export default function AlertsRisksPage() {
   const { user } = useOutletContext()
@@ -69,7 +70,7 @@ export default function AlertsRisksPage() {
         ))}
       </section>
 
-      <SectionCard title="Risk Register" subtitle="Operational risk and compliance alerts requiring follow-up">
+      <SectionCard title={UI_LABELS.pages.alertsRisks.title} subtitle={UI_LABELS.pages.alertsRisks.subtitle}>
         <DataTable columns={columns} rows={riskIssueRows} pageSize={10} />
       </SectionCard>
     </div>

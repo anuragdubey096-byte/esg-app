@@ -118,7 +118,7 @@ export default function LoginForm({ authenticate, onForgotPassword, onSsoSignIn,
   }
 
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-soft md:p-8">
+    <div className="login-form-card">
       {step === 'credentials' ? (
         <>
           <div className="mb-6 space-y-1">
@@ -230,7 +230,7 @@ export default function LoginForm({ authenticate, onForgotPassword, onSsoSignIn,
         </>
       )}
 
-      <footer className="mt-6 text-center text-xs text-slate-500">
+      <footer className="login-form-footer">
         <a href="#" className="hover:text-slate-700">Privacy Policy</a>
         <span className="mx-2">|</span>
         <a href="#" className="hover:text-slate-700">Terms of Service</a>

@@ -22,6 +22,18 @@ Notes:
 - JSON strings are accepted for array/object columns
 - It validates the table and column names before updating
 
+If you want to seed just the login accounts from CSV, use:
+
+```bash
+python server/seed_login_users.py
+```
+
+If you want to seed the full dataset, including companies, cycles, reviews, validation flags, and submissions, use:
+
+```bash
+python server/seed_full_dataset.py
+```
+
 ## 2. Update a record through the app API
 
 If the app already has an endpoint for the record you want to change, use that instead of raw SQL.

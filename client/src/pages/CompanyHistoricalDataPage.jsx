@@ -3,6 +3,7 @@ import { useOutletContext } from 'react-router-dom'
 import DataTable from '../components/DataTable'
 import SectionCard from '../components/SectionCard'
 import { API_BASE_URL } from '../lib/api'
+import { UI_LABELS } from '../lib/uiLabels'
 
 function parseSubmissionPayload(submission) {
   if (!submission?.esg_data) return null
@@ -87,8 +88,8 @@ export default function CompanyHistoricalDataPage() {
   if (loading) {
     return (
       <div className="page-grid">
-        <SectionCard title="Historical Data" subtitle="Loading previous submissions...">
-          <p>Loading data.</p>
+        <SectionCard title={UI_LABELS.pages.companyHistorical.title} subtitle={UI_LABELS.pages.companyHistorical.loadingSubtitle}>
+          <p>{UI_LABELS.common.loadingDataFromBackend}</p>
         </SectionCard>
       </div>
     )
@@ -97,7 +98,7 @@ export default function CompanyHistoricalDataPage() {
   if (error) {
     return (
       <div className="page-grid">
-        <SectionCard title="Historical Data" subtitle="Unable to load history">
+        <SectionCard title={UI_LABELS.pages.companyHistorical.title} subtitle={UI_LABELS.pages.companyHistorical.errorSubtitle}>
           <p>{error}</p>
         </SectionCard>
       </div>
@@ -107,8 +108,8 @@ export default function CompanyHistoricalDataPage() {
   return (
     <div className="page-grid">
       <SectionCard
-        title="Historical Data"
-        subtitle={company ? `${company.name} - previous submissions and year-on-year reference` : 'No company data found'}
+        title={UI_LABELS.pages.companyHistorical.title}
+        subtitle={company ? `${company.name} - previous submissions and year-on-year reference` : UI_LABELS.pages.companyHistorical.noDataSubtitle}
       >
         <DataTable
           columns={[
