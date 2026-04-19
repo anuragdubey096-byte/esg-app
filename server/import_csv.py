@@ -15,8 +15,10 @@ from models import (
     ReviewAction,
     ValidationFlag,
 )
+from login_users import seed_login_users_from_csv
 
 EXPECTED_FILES = {
+    'users': 'users.csv',
     'companies': 'companies.csv',
     'cycles': 'cycles.csv',
     'review_actions': 'review_actions.csv',
@@ -71,23 +73,6 @@ def clear_database(db):
     db.query(CollectionCycle).delete()
     db.query(Company).delete()
     db.query(User).delete()
-    db.commit()
-
-
-def import_default_personas(db):
-    personas = [
-        {'name': 'System Manager', 'email': 'manager@example.com', 'role': 'manager'},
-        {'name': 'Global Investor', 'email': 'investor@example.com', 'role': 'investor'}
-    ]
-    for p in personas:
-        user = db.query(User).filter(User.email == p['email']).first()
-        if not user:
-            db.add(User(
-                name=p['name'],
-                email=p['email'],
-                password='password123',
-                role=p['role']
-            ))
     db.commit()
 
 
@@ -240,7 +225,7 @@ def import_all(data_dir: Path):
     db = SessionLocal()
     try:
         clear_database(db)
-        import_default_personas(db)
+        seed_login_users_from_csv(db, data_dir / EXPECTED_FILES['users'])
         import_companies(db, data_dir)
         import_cycles(db, data_dir)
         import_review_actions(db, data_dir)
@@ -256,7 +241,7 @@ def main():
         'data_dir',
         nargs='?',
         default=str(get_default_data_dir()),
-        help='Directory containing cycles.csv, review_actions.csv, validation_flags.csv, companies.csv, esg_submissions_previous_year.csv, and esg_submissions_current_year.csv. Defaults to server/fixtures when present.',
+        help='Directory containing users.csv, cycles.csv, review_actions.csv, validation_flags.csv, companies.csv, esg_submissions_previous_year.csv, and esg_submissions_current_year.csv. Defaults to server/fixtures when present.',
     )
     args = parser.parse_args()
 

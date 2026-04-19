@@ -703,6 +703,21 @@ def parse_json_or_default(value: str | None, default: Any) -> Any:
         return default
 
 
+def normalize_reminder_days(value: Any) -> List[int]:
+    if not isinstance(value, list):
+        return []
+    normalized: List[int] = []
+    for item in value:
+        if isinstance(item, int):
+            normalized.append(item)
+            continue
+        if isinstance(item, str):
+            match = re.search(r'\d+', item)
+            if match:
+                normalized.append(int(match.group(0)))
+    return normalized
+
+
 def normalize_cycle_status(value: Any) -> str:
     normalized = str(value or '').strip().lower()
     if normalized in ALLOWED_CYCLE_STATUSES:
@@ -713,14 +728,14 @@ def normalize_cycle_status(value: Any) -> str:
 def serialize_cycle(cycle: CollectionCycle):
     template_config = parse_json_or_default(cycle.template_config, {})
     prefill_summary = parse_json_or_default(cycle.prefill_summary, {})
-    reminder_schedule = parse_json_or_default(cycle.reminder_schedule, [])
+    reminder_schedule = normalize_reminder_days(parse_json_or_default(cycle.reminder_schedule, []))
     return CycleInfo(
         id=cycle.id,
         cycle_year=cycle.cycle_year,
         submission_open_date=cycle.submission_open_date,
         submission_deadline=cycle.submission_deadline,
         extension_date=cycle.extension_date,
-        reminder_days_before_deadline=reminder_schedule if isinstance(reminder_schedule, list) else [],
+        reminder_days_before_deadline=reminder_schedule,
         private_equity_template=template_config.get('private_equity', ''),
         real_estate_template=template_config.get('real_estate', ''),
         debt_template=template_config.get('debt', ''),

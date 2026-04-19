@@ -1,7 +1,8 @@
 import json
 
 from database import IS_SQLITE, SQLITE_DB_PATH, SessionLocal, engine
-from models import Base, CollectionCycle, Company, Submission, User, ReviewAction, ValidationFlag, UserRole
+from models import Base, CollectionCycle, Company, Submission, User, ReviewAction, ValidationFlag
+from login_users import seed_login_users_from_csv
 
 
 def build_sample_submission(
@@ -105,24 +106,11 @@ def build_sample_submission(
         'female_board_members_percent': female_board,
         'female_board_members_percent_confidence': 'Measured',
         'submission_notes': notes,
-    }
+}
 
 
 def seed_sample_data(db):
-    sample_users = [
-        ('Portfolio Contact', 'company@example.com', 'password123', UserRole.COMPANY),
-        ('Manager Alice', 'manager@example.com', 'password123', UserRole.MANAGER),
-        ('Admin Alias', 'admin@example.com', 'password123', UserRole.MANAGER),
-        ('Investor Bob', 'investor@example.com', 'password123', UserRole.INVESTOR),
-        ('Healthy Foods Contact', 'healthyfoods@example.com', 'password123', UserRole.COMPANY),
-        ('Acme Target Contact', 'target@example.com', 'password123', UserRole.COMPANY),
-    ]
-
-    for name, email, password, role in sample_users:
-        existing_user = db.query(User).filter(User.email == email).first()
-        if not existing_user:
-            db.add(User(name=name, email=email, password=password, role=role))
-    db.commit()
+    seed_login_users_from_csv(db)
 
     # Create collection cycles
     from datetime import datetime, timedelta

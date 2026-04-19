@@ -1,5 +1,6 @@
 .env
 .env.local
+.vercel/
 server/.env
 server/.env.local
 client/.env

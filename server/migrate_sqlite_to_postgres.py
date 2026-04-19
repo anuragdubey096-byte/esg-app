@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from sqlalchemy import create_engine, text
+from sqlalchemy.orm import sessionmaker
 
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_SQLITE_PATH = BASE_DIR / 'db.sqlite'
@@ -15,6 +16,7 @@ if str(BASE_DIR) not in sys.path:
 
 from env import load_local_env
 from models import Base
+from login_users import seed_login_users_from_csv
 
 load_local_env()
 
@@ -58,6 +60,7 @@ def reset_postgres_sequence(connection, table_name: str):
 def migrate(sqlite_path: Path, database_url: str):
     source_engine = build_source_engine(sqlite_path)
     target_engine = build_target_engine(database_url)
+    target_session = sessionmaker(autocommit=False, autoflush=False, bind=target_engine)
 
     reset_target_schema(target_engine)
 
@@ -71,6 +74,12 @@ def migrate(sqlite_path: Path, database_url: str):
             target_conn.execute(table.insert(), [dict(row) for row in rows])
             reset_postgres_sequence(target_conn, table.name)
             copied_tables.append((table.name, len(rows)))
+
+    db = target_session()
+    try:
+        seed_login_users_from_csv(db)
+    finally:
+        db.close()
 
     return copied_tables
 

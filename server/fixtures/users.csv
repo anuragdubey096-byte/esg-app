@@ -1,0 +1,7 @@
+name,email,password,role
+Portfolio Contact,company@example.com,password123,company
+Manager Alice,manager@example.com,password123,manager
+Admin Alias,admin@example.com,password123,manager
+Investor Bob,investor@example.com,password123,investor
+Healthy Foods Contact,healthyfoods@example.com,password123,company
+Acme Target Contact,target@example.com,password123,company
