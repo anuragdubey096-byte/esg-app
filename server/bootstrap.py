@@ -1,7 +1,7 @@
 import json
 
 from database import IS_SQLITE, SQLITE_DB_PATH, SessionLocal, engine
-from models import Base, CollectionCycle, Company, Submission, User, ReviewAction, ValidationFlag
+from models import Base, CollectionCycle, Company, Submission, User, ReviewAction, ValidationFlag, ActionPlan
 from login_users import seed_login_users_from_csv
 
 
@@ -273,6 +273,25 @@ def seed_sample_data(db):
                 )
             )
         db.commit()
+
+    healthy_company = db.query(Company).filter(Company.name == 'Healthy Foods').first()
+    if healthy_company:
+        existing_plan = db.query(ActionPlan).filter(
+            ActionPlan.company_id == healthy_company.id,
+            ActionPlan.initiative_name == 'Green procurement roadmap',
+        ).first()
+        if not existing_plan:
+            db.add(
+                ActionPlan(
+                    company_id=healthy_company.id,
+                    initiative_name='Green procurement roadmap',
+                    target_completion_date='2026-09-30',
+                    assigned_owner='ESG Lead',
+                    status='planned',
+                    linked_metric='Renewable energy',
+                )
+            )
+            db.commit()
 
 
 def reset_database():

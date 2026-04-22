@@ -9,7 +9,21 @@ export default function LPLayout({ user, onLogout }) {
   const [collapsed, setCollapsed] = useState(false)
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const location = useLocation()
-  const navItems = useMemo(() => getAllowedNavItems('investor'), [])
+  const navItems = useMemo(
+    () =>
+      getAllowedNavItems('investor').map((item) => ({
+        ...item,
+        to:
+          item.to === '/overview'
+            ? '/lp/dashboard'
+            : item.to === '/analytics'
+              ? '/lp/metrics'
+              : item.to === '/reports'
+                ? '/lp/reports'
+                : item.to,
+      })),
+    []
+  )
 
   const pageTitle = useMemo(() => {
     const matched = navItems.find((item) => location.pathname.startsWith(item.to))

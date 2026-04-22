@@ -83,6 +83,7 @@ export default function CompanyDashboardPage() {
   const companyName = data.company_name || 'Portfolio Company'
   const deadlineUrgency = data.deadline_urgency || 'green'
   const deadline = data.deadline || 'n/a'
+  const hasEditableCycle = Boolean(data.current_cycle_id)
   const daysRemaining = Number(data.days_remaining || 0)
   const overallCompletionPercent = Number(data.overall_completion_percent || 0)
   const completedDataPoints = Number(data.completed_data_points || 0)
@@ -131,14 +132,25 @@ export default function CompanyDashboardPage() {
               <p className="text-sm mt-3 opacity-80">For: {companyName}</p>
             </div>
             <Button
-              onClick={() => navigate('/company/submission')}
+              onClick={() => {
+                if (!hasEditableCycle) return
+                navigate(`/company/submission?cycleId=${data.current_cycle_id}`)
+              }}
+              disabled={!hasEditableCycle}
               className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 ui-text-strong transition-colors"
             >
-              {submissionStatus === 'NOT STARTED' || submissionStatus === 'IN PROGRESS'
+              {hasEditableCycle && (submissionStatus === 'NOT STARTED' || submissionStatus === 'IN PROGRESS')
                 ? 'Continue Submission'
-                : 'View Submission'}
+                : hasEditableCycle
+                  ? 'View Submission'
+                  : 'Await Active Cycle'}
             </Button>
           </div>
+          {!hasEditableCycle ? (
+            <p className="mt-4 text-sm opacity-80">
+              No active reporting cycle is open for edits right now.
+            </p>
+          ) : null}
         </div>
       </SectionCard>
 

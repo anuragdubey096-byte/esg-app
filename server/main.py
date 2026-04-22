@@ -2,20 +2,24 @@ import csv
 import io
 import json
 import hashlib
+import html as html_lib
 import os
 import re
+import smtplib
+import time
 import zipfile
 from difflib import SequenceMatcher
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote_plus
+from email.message import EmailMessage
 from xml.etree import ElementTree as ET
 from typing import Any, Dict, List, Optional, Tuple
 from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Header, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, text, inspect
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 try:
     from openai import OpenAI
@@ -52,6 +56,7 @@ from models import (
     SubmissionDataField,
     SupportingDocument,
     ValidationError,
+    NewsletterDispatchLog,
 )
 from schemas import (
     ActionPlanCreateRequest,
@@ -79,7 +84,13 @@ from schemas import (
     ReminderRequest,
     ReminderInfo,
     ReportExportResponse,
+    NewsletterGenerateRequest,
+    NewsletterExportResponse,
+    NewsletterSendResponse,
+    NewsletterSummaryResponse,
     NarrativeSummaryResponse,
+    NarrativeHistoryItem,
+    NarrativeHistoryResponse,
     NarrativeGenerateRequest,
     NarrativeUpdateRequest,
     NarrativeApproveRequest,
@@ -140,9 +151,11 @@ NARRATIVE_TONE_LABELS = {
     'exec-summary': 'Executive summary',
 }
 OPENAI_DEFAULT_MODEL = os.getenv('OPENAI_MODEL', 'gpt-4o-mini')
+ANALYTICS_CACHE_TTL_SECONDS = 20
 
 CONFIDENCE_OPTIONS = ['High', 'Medium', 'Low', 'Estimated', 'Not Available', 'Measured']
 POLICY_STATUS_OPTIONS = ['Yes', 'No', 'In Progress', 'Not Applicable']
+_TIMED_COMPUTE_CACHE: Dict[str, dict] = {}
 
 # Legacy field aliases -> canonical keys (for old drafts/backward compatibility)
 LEGACY_FIELD_ALIASES = {
@@ -1080,6 +1093,10 @@ def resolve_submission_cycle(db: Session) -> CollectionCycle:
     return get_active_cycle(db) or get_latest_cycle(db) or get_or_create_reserved_cycle(db)
 
 
+def get_company_reporting_field_count() -> int:
+    return sum(1 for meta in FIELD_META_BY_KEY.values() if meta.get('supports_reporting'))
+
+
 def has_active_unlock(db: Session, submission_id: int, company_id: int, cycle_id: int) -> bool:
     deactivate_expired_unlocks(db)
     now = datetime.utcnow()
@@ -1757,12 +1774,105 @@ def create_action_plan(
 
 @app.post('/calculator/ghg', response_model=GHGCalculatorResponse)
 def calculate_ghg(payload: GHGCalculatorRequest):
-    scope_1 = payload.fuel_liters * 0.00268
-    scope_2 = payload.electricity_kwh * 0.0005
+    fuel_factor = safe_number(getattr(payload, 'fuel_emission_factor', 0.00268), 0.00268)
+    electricity_factor = safe_number(getattr(payload, 'electricity_emission_factor', 0.0005), 0.0005)
+    diesel_factor = safe_number(getattr(payload, 'diesel_emission_factor', 0.00268), 0.00268)
+    natural_gas_factor = safe_number(getattr(payload, 'natural_gas_emission_factor', 0.0053), 0.0053)
+    vehicle_factor = safe_number(getattr(payload, 'vehicle_emission_factor', 0.00018), 0.00018)
+    flight_factor = safe_number(getattr(payload, 'flight_emission_factor', 0.00015), 0.00015)
+
+    fuel_scope_1 = payload.fuel_liters * fuel_factor
+    diesel_scope_1 = payload.diesel_liters * diesel_factor
+    gas_scope_1 = payload.natural_gas_therms * natural_gas_factor
+    scope_1 = fuel_scope_1 + diesel_scope_1 + gas_scope_1
+    scope_2 = payload.electricity_kwh * electricity_factor
+    scope_3 = (payload.vehicle_km * vehicle_factor) + (payload.flight_km * flight_factor)
+    total = scope_1 + scope_2 + scope_3
+
+    def equivalent_text(value_tco2e: float) -> str:
+        if value_tco2e <= 0:
+            return 'No material emissions recorded.'
+        vehicle_years = value_tco2e / IMPACT_TCO2E_PER_PASSENGER_VEHICLE_YEAR
+        return f'Equivalent to roughly {vehicle_years:,.0f} passenger vehicles driven for a year.'
+
+    activity_breakdown = []
+    activity_rows = [
+        ('fuel_liters', 'Fuel combustion', payload.fuel_liters, fuel_factor, 'Scope 1'),
+        ('diesel_liters', 'Diesel combustion', payload.diesel_liters, diesel_factor, 'Scope 1'),
+        ('natural_gas_therms', 'Natural gas', payload.natural_gas_therms, natural_gas_factor, 'Scope 1'),
+        ('electricity_kwh', 'Electricity', payload.electricity_kwh, electricity_factor, 'Scope 2'),
+        ('vehicle_km', 'Vehicle travel', payload.vehicle_km, vehicle_factor, 'Scope 3'),
+        ('flight_km', 'Air travel', payload.flight_km, flight_factor, 'Scope 3'),
+    ]
+    for field_key, label, input_value, factor, scope_label in activity_rows:
+        if input_value <= 0:
+            continue
+        emissions = round(input_value * factor, 4)
+        activity_breakdown.append(
+            {
+                'field_key': field_key,
+                'activity': label,
+                'scope': scope_label,
+                'input_value': round(input_value, 4),
+                'unit': 'km' if 'km' in field_key else 'kWh' if field_key == 'electricity_kwh' else 'liters' if 'liters' in field_key else 'therms',
+                'emissions_tco2e': emissions,
+            }
+        )
+
+    scope_1_activities = [row for row in activity_breakdown if row['scope'] == 'Scope 1']
+    scope_2_activities = [row for row in activity_breakdown if row['scope'] == 'Scope 2']
+    scope_3_activities = [row for row in activity_breakdown if row['scope'] == 'Scope 3']
+
+    if total <= 0:
+        recommendation = 'Enter at least one activity input to calculate the carbon footprint.'
+    elif scope_1 >= scope_2 and scope_1 >= scope_3:
+        recommendation = 'Scope 1 is the largest source, so prioritize on-site fuel and process efficiency.'
+    elif scope_2 >= scope_1 and scope_2 >= scope_3:
+        recommendation = 'Scope 2 is the largest source, so prioritize electricity sourcing and efficiency.'
+    else:
+        recommendation = 'Scope 3 is the largest source, so prioritize travel and supplier reduction opportunities.'
+
     return GHGCalculatorResponse(
         scope_1_tco2e=round(scope_1, 4),
         scope_2_tco2e=round(scope_2, 4),
-        total_tco2e=round(scope_1 + scope_2, 4)
+        scope_3_tco2e=round(scope_3, 4),
+        total_tco2e=round(total, 4),
+        scope_1_equivalent=equivalent_text(scope_1),
+        scope_2_equivalent=equivalent_text(scope_2),
+        scope_3_equivalent=equivalent_text(scope_3),
+        total_equivalent=equivalent_text(total),
+        summary=(
+            f'Scope 1 totals {round(scope_1, 4)} tCO2e, Scope 2 totals {round(scope_2, 4)} tCO2e, '
+            f'and Scope 3 totals {round(scope_3, 4)} tCO2e. The combined carbon footprint is {round(total, 4)} tCO2e.'
+        ),
+        fuel_emission_factor=round(fuel_factor, 5),
+        electricity_emission_factor=round(electricity_factor, 5),
+        diesel_emission_factor=round(diesel_factor, 5),
+        natural_gas_emission_factor=round(natural_gas_factor, 5),
+        vehicle_emission_factor=round(vehicle_factor, 5),
+        flight_emission_factor=round(flight_factor, 5),
+        activity_breakdown=activity_breakdown,
+        scope_breakdown={
+            'scope_1': {
+                'total_tco2e': round(scope_1, 4),
+                'activities': scope_1_activities,
+            },
+            'scope_2': {
+                'total_tco2e': round(scope_2, 4),
+                'activities': scope_2_activities,
+            },
+            'scope_3': {
+                'total_tco2e': round(scope_3, 4),
+                'activities': scope_3_activities,
+            },
+            'total': {
+                'total_tco2e': round(total, 4),
+                'scope_1_share_percent': round((scope_1 / total) * 100, 2) if total else 0.0,
+                'scope_2_share_percent': round((scope_2 / total) * 100, 2) if total else 0.0,
+                'scope_3_share_percent': round((scope_3 / total) * 100, 2) if total else 0.0,
+            },
+        },
+        recommendation=recommendation,
     )
 
 DOCUMENT_EXTRACTION_RULES = [
@@ -1786,6 +1896,38 @@ DOCUMENT_EXTRACTION_RULES = [
         'keywords': ['cyber', 'information security', 'security policy', 'incident response'],
         'confidence_level': 'High',
         'explanation': 'The file appears to support the cybersecurity policy field.',
+    },
+    {
+        'field_key': 'whs_policy_in_place',
+        'kind': 'boolean',
+        'keywords': ['work health safety policy', 'whs policy', 'health and safety policy', 'safety policy'],
+        'negative_keywords': ['no whs policy', 'without whs policy', 'not have a whs policy'],
+        'confidence_level': 'High',
+        'explanation': 'The file appears to confirm whether a work health and safety policy is in place.',
+    },
+    {
+        'field_key': 'esg_policy_in_place',
+        'kind': 'boolean',
+        'keywords': ['esg policy', 'sustainability policy', 'environmental social governance policy'],
+        'negative_keywords': ['no esg policy', 'without esg policy', 'not have an esg policy'],
+        'confidence_level': 'High',
+        'explanation': 'The file appears to confirm whether an ESG policy is in place.',
+    },
+    {
+        'field_key': 'cybersecurity_policy_in_place',
+        'kind': 'boolean',
+        'keywords': ['cybersecurity policy', 'information security policy', 'security policy', 'incident response policy'],
+        'negative_keywords': ['no cybersecurity policy', 'without cybersecurity policy', 'not have a cybersecurity policy'],
+        'confidence_level': 'High',
+        'explanation': 'The file appears to confirm whether a cybersecurity policy is in place.',
+    },
+    {
+        'field_key': 'anti_bribery_corruption_policy',
+        'kind': 'boolean',
+        'keywords': ['anti-bribery', 'anti bribery', 'anti-corruption', 'bribery and corruption policy'],
+        'negative_keywords': ['no anti-bribery', 'without anti-bribery', 'not have an anti-bribery policy'],
+        'confidence_level': 'High',
+        'explanation': 'The file appears to confirm whether an anti-bribery / anti-corruption policy is in place.',
     },
     {
         'field_key': 'scope_1_emissions',
@@ -1936,6 +2078,203 @@ DOCUMENT_EXTRACTION_RULES = [
     },
 ]
 
+DOCUMENT_PROFILE_RULES = [
+    {
+        'document_type': 'policy',
+        'keywords': [
+            'policy',
+            'policies',
+            'code of conduct',
+            'governance framework',
+            'compliance manual',
+            'procedures manual',
+            'work health and safety',
+            'cybersecurity policy',
+            'esg policy',
+        ],
+        'topics': ['policy', 'governance', 'compliance'],
+    },
+    {
+        'document_type': 'report',
+        'keywords': [
+            'report',
+            'sustainability report',
+            'annual report',
+            'esg report',
+            'impact report',
+            'emissions inventory',
+            'ghg inventory',
+            'environmental report',
+            'social report',
+            'emissions',
+            'scope 1',
+            'scope 2',
+            'scope 3',
+            'energy',
+            'water',
+            'waste',
+            'trifr',
+        ],
+        'topics': ['report', 'emissions', 'energy', 'water', 'waste', 'social'],
+    },
+    {
+        'document_type': 'governance',
+        'keywords': [
+            'board',
+            'committee',
+            'oversight',
+            'remuneration',
+            'governance',
+            'minutes',
+            'charter',
+        ],
+        'topics': ['governance', 'board'],
+    },
+    {
+        'document_type': 'certificate',
+        'keywords': [
+            'certificate',
+            'certification',
+            'assurance',
+            'attestation',
+            'iso',
+            'accreditation',
+            'audit report',
+        ],
+        'topics': ['assurance', 'certificate', 'audit'],
+    },
+    {
+        'document_type': 'incident_log',
+        'keywords': [
+            'incident',
+            'incident log',
+            'incident register',
+            'security incident',
+            'safety incident',
+            'breach',
+            'near miss',
+        ],
+        'topics': ['incident', 'safety', 'cybersecurity'],
+    },
+]
+
+
+def _promote_confidence(base_confidence: str, target_confidence: str) -> str:
+    confidence_order = {'Low': 0, 'Medium': 1, 'High': 2}
+    base_rank = confidence_order.get(base_confidence, 1)
+    target_rank = confidence_order.get(target_confidence, base_rank)
+    if target_rank > base_rank:
+        return target_confidence
+    return base_confidence
+
+
+def _detect_document_profile(file_name: str, content_text: str) -> dict:
+    normalized_name = _search_normalize(file_name)
+    normalized_content = _search_normalize(content_text)
+    combined = f'{normalized_name} {normalized_content}'.strip()
+    matched_types: List[str] = []
+    matched_topics: List[str] = []
+    matched_keywords: List[str] = []
+
+    for family in DOCUMENT_PROFILE_RULES:
+        matched_keyword = next(
+            (
+                keyword
+                for keyword in family['keywords']
+                if _search_normalize(keyword) in combined
+            ),
+            None,
+        )
+        if not matched_keyword:
+            continue
+        matched_types.append(family['document_type'])
+        matched_topics.extend(family['topics'])
+        matched_keywords.append(matched_keyword)
+
+    suffix = Path(file_name or '').suffix.lower()
+    if suffix in {'.csv', '.tsv', '.xlsx', '.xlsm'}:
+        matched_types.append('spreadsheet')
+        matched_topics.append('tabular data')
+
+    unique_types = list(dict.fromkeys(matched_types)) or ['document']
+    unique_topics = list(dict.fromkeys(topic for topic in matched_topics if topic))
+    if len(unique_types) == 1:
+        document_type = unique_types[0]
+    elif unique_types == ['spreadsheet']:
+        document_type = 'spreadsheet'
+    else:
+        document_type = 'mixed'
+
+    if not unique_topics:
+        if document_type == 'spreadsheet':
+            unique_topics = ['tabular data']
+        elif document_type == 'document':
+            unique_topics = ['general']
+
+    return {
+        'document_type': document_type,
+        'document_types': unique_types,
+        'document_topics': unique_topics,
+        'matched_keywords': matched_keywords,
+    }
+
+
+def _rule_document_types(rule: dict) -> set[str]:
+    field_key = rule.get('field_key', '')
+    kind = rule.get('kind')
+    if field_key in {'board_level_esg_oversight', 'esg_kpis_linked_to_remuneration'}:
+        return {'governance', 'report', 'mixed'}
+    if field_key.endswith('_policy_document_reference') or field_key.endswith('_policy_in_place'):
+        return {'policy', 'certificate', 'mixed'}
+    if 'anti_bribery' in field_key:
+        return {'policy', 'report', 'mixed'}
+    if field_key in {
+        'scope_1_emissions',
+        'scope_2_location_based',
+        'scope_3_emissions',
+        'total_ghg_emissions',
+        'total_energy_consumption',
+        'renewable_energy_consumption',
+        'total_water_withdrawal',
+        'water_recycled_reused',
+        'total_waste_generated',
+        'waste_diverted_from_landfill',
+        'trifr',
+        'total_incidents_reported',
+        'employee_turnover_rate',
+        'female_representation_percent',
+        'female_leadership_representation_percent',
+        'community_investment_spend',
+        'reduction_target_percent',
+        'reduction_target_year',
+        'cyber_incidents_in_reporting_period',
+    }:
+        return {'report', 'spreadsheet', 'mixed'}
+    if kind == 'numeric':
+        return {'report', 'spreadsheet', 'mixed'}
+    if kind == 'boolean':
+        return {'policy', 'report', 'mixed'}
+    return {'document', 'mixed'}
+
+
+def _format_document_type_label(document_type: str) -> str:
+    if not document_type:
+        return 'Document'
+    return document_type.replace('_', ' ').title()
+
+
+def _build_extraction_summary(profile: dict, suggestions: List[dict]) -> str:
+    suggestion_count = len(suggestions)
+    document_label = _format_document_type_label(profile.get('document_type', 'document'))
+    topics = profile.get('document_topics') or []
+    if suggestion_count:
+        topic_fragment = f" covering {', '.join(topics[:4])}" if topics else ''
+        plural = 'suggestion' if suggestion_count == 1 else 'suggestions'
+        return f"Detected {document_label.lower()} with {suggestion_count} extraction {plural}{topic_fragment}."
+    if topics:
+        return f"Detected {document_label.lower()} covering {', '.join(topics[:4])}."
+    return f"Detected {document_label.lower()} with no extraction suggestions."
+
 
 def _extract_plain_text(content: bytes) -> str:
     for encoding in ('utf-8', 'utf-16', 'cp1252', 'latin-1'):
@@ -2019,14 +2358,40 @@ def _extract_document_text(file_name: str, content: bytes, content_type: str | N
     return _extract_plain_text(content)
 
 
-def _extract_document_reference(file_name: str, content_text: str) -> str:
+def _extract_document_reference(file_name: str, content_text: str, keywords: Optional[List[str]] = None) -> str:
     normalized_file_name = _search_normalize(file_name)
+    reference_patterns = [
+        r'\b(?:POL|WHS|ESG|CYBER)[-_][A-Z0-9]+(?:[-_/][A-Z0-9]+)*\b',
+        r'\b[A-Z]{2,}(?:[-_/][A-Z0-9]+){1,}\b',
+        r'\b[A-Z]{2,}\d{2,}(?:[-_/][A-Z0-9]+)*\b',
+    ]
+
+    search_terms = sorted(
+        {_search_normalize(keyword) for keyword in (keywords or []) if _search_normalize(keyword)},
+        key=len,
+        reverse=True,
+    )
+    if content_text and search_terms:
+        lowered_content = str(content_text or '').lower()
+        for keyword in search_terms:
+            index = lowered_content.find(keyword)
+            if index < 0:
+                continue
+            forward_window_end = min(len(content_text), index + len(keyword) + 160)
+            source_excerpt = content_text[index:forward_window_end]
+            for pattern in reference_patterns:
+                match = re.search(pattern, source_excerpt or '')
+                if match:
+                    return match.group(0)
+            window_start = max(0, index - 24)
+            source_excerpt = content_text[window_start:forward_window_end]
+            for pattern in reference_patterns:
+                match = re.search(pattern, source_excerpt or '')
+                if match:
+                    return match.group(0)
+
     for source in (content_text, file_name):
-        for pattern in [
-            r'\b[A-Z]{2,}(?:[-_/][A-Z0-9]+){1,}\b',
-            r'\b[A-Z]{2,}\d{2,}(?:[-_/][A-Z0-9]+)*\b',
-            r'\b(?:POL|WHS|ESG|CYBER)[-_][A-Z0-9]+(?:[-_/][A-Z0-9]+)*\b',
-        ]:
+        for pattern in reference_patterns:
             match = re.search(pattern, source or '')
             if match:
                 return match.group(0)
@@ -2085,6 +2450,7 @@ def _detect_document_suggestions(file_name: str, content_text: str) -> List[dict
     normalized_name = _search_normalize(file_name)
     normalized_content = _search_normalize(content_text)
     combined = f'{normalized_name} {normalized_content}'.strip()
+    document_profile = _detect_document_profile(file_name, content_text)
     suggestions: List[dict] = []
     seen_fields: set[str] = set()
 
@@ -2111,11 +2477,19 @@ def _detect_document_suggestions(file_name: str, content_text: str) -> List[dict
         elif normalized_content or normalized_name:
             confidence = 'Low'
 
+        rule_document_types = _rule_document_types(rule)
+        profile_document_types = set(document_profile.get('document_types', []))
+        matched_document_types = profile_document_types.intersection(rule_document_types)
+        if matched_document_types:
+            confidence = _promote_confidence(confidence, 'High')
+        elif document_profile.get('document_type') == 'mixed' and rule_document_types.intersection({'policy', 'report', 'governance', 'certificate', 'incident_log'}):
+            confidence = _promote_confidence(confidence, 'Medium')
+
         suggested_value = None
         source_excerpt = _extract_excerpt(content_text, matched_keyword) or file_name
 
         if rule['kind'] == 'reference':
-            suggested_value = _extract_document_reference(file_name, content_text)
+            suggested_value = _extract_document_reference(file_name, content_text, rule.get('keywords'))
         elif rule['kind'] == 'numeric':
             suggested_value, numeric_excerpt = _extract_numeric_value(content_text, rule['keywords'])
             if numeric_excerpt:
@@ -2137,6 +2511,8 @@ def _detect_document_suggestions(file_name: str, content_text: str) -> List[dict
                 'explanation': rule['explanation'],
                 'source_excerpt': source_excerpt,
                 'needs_confirmation': True,
+                'document_type': document_profile.get('document_type', 'document'),
+                'document_topics': document_profile.get('document_topics', []),
             }
         )
 
@@ -2184,6 +2560,7 @@ def upload_evidence(
 
     content_text = _extract_document_text(file_name, content, file.content_type)
 
+    document_profile = _detect_document_profile(file_name, content_text)
     suggestions = _detect_document_suggestions(file_name, content_text)
     return SupportingDocumentUploadResponse(
         message='Evidence uploaded successfully',
@@ -2196,6 +2573,11 @@ def upload_evidence(
             uploaded_at=document.uploaded_at.isoformat(),
             uploaded_by_email=document.uploaded_by_email,
         ),
+        document_type=document_profile.get('document_type', 'document'),
+        document_topics=document_profile.get('document_topics', []),
+        matched_keywords=document_profile.get('matched_keywords', []),
+        extraction_summary=_build_extraction_summary(document_profile, suggestions),
+        suggestion_count=len(suggestions),
         extraction_suggestions=[
             DocumentExtractionSuggestion(**suggestion)
             for suggestion in suggestions
@@ -2543,6 +2925,11 @@ def get_progress_from_bucket(bucket: str) -> int:
 
 
 def build_manager_summary(db: Session, companies: List[Company]) -> dict:
+    cache_key = 'build_manager_summary'
+    cached = _get_timed_cache(cache_key)
+    if cached is not None:
+        return cached
+
     cycle = get_active_cycle(db) or get_latest_cycle(db) or get_or_create_reserved_cycle(db)
     cycle_deadline = cycle.submission_deadline if cycle else None
     cycle_days_remaining = get_days_to_deadline(cycle_deadline)
@@ -2593,7 +2980,7 @@ def build_manager_summary(db: Session, companies: List[Company]) -> dict:
             })
 
     upcoming_deadlines.sort(key=lambda row: row['days_remaining'] if row['days_remaining'] is not None else 99999)
-    return {
+    result = {
         'status_breakdown': status_breakdown,
         'cycle_banner': {
             'active_cycle_year': cycle.cycle_year if cycle else None,
@@ -2605,6 +2992,7 @@ def build_manager_summary(db: Session, companies: List[Company]) -> dict:
         'upcoming_deadlines': upcoming_deadlines,
         'progress_rows': progress_rows,
     }
+    return _set_timed_cache(cache_key, result)
 
 
 def slugify(value: str) -> str:
@@ -2693,36 +3081,458 @@ def wrap_pdf_lines(lines: List[str], max_length: int = 92) -> List[str]:
     return wrapped_lines or ['No data']
 
 
+PDF_PAGE_WIDTH = 612
+PDF_PAGE_HEIGHT = 792
+PDF_MARGIN_X = 44
+PDF_HEADER_HEIGHT = 52
+PDF_CONTENT_TOP = 708
+PDF_CONTENT_BOTTOM = 52
+PDF_CONTENT_WIDTH = PDF_PAGE_WIDTH - (PDF_MARGIN_X * 2)
+
+
+def _truncate_pdf_text(text: str, max_chars: int) -> str:
+    clean = str(text or '').strip()
+    if len(clean) <= max_chars:
+        return clean
+    if max_chars <= 3:
+        return clean[:max_chars]
+    return clean[: max_chars - 3].rstrip() + '...'
+
+
+def _pdf_escape_text(text_value: str) -> str:
+    return escape_pdf_text(text_value)
+
+
+def _format_pdf_metric(value: Any, *, decimals: int = 1, prefix: str = '', suffix: str = '') -> str:
+    if value is None or value == '':
+        return 'N/A'
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return f'{prefix}{value}{suffix}'
+    if abs(number - round(number)) < 1e-9:
+        formatted = f'{int(round(number)):,}'
+    else:
+        formatted = f'{number:,.{decimals}f}'
+    return f'{prefix}{formatted}{suffix}'
+
+
+def _pdf_row_value(row: dict, extractor) -> str:
+    if callable(extractor):
+        value = extractor(row)
+    else:
+        value = row.get(extractor)
+    if value is None or value == '':
+        return 'N/A'
+    return str(value)
+
+
+class _PdfReportBuilder:
+    def __init__(self, title: str, subtitle: str, generated_at: str):
+        self.title = str(title or '').strip() or 'ESG Report Export'
+        self.subtitle = str(subtitle or '').strip()
+        self.generated_at = str(generated_at or '').strip()
+        self.pages: List[dict] = []
+        self._new_page()
+
+    def _new_page(self):
+        self.pages.append(
+            {
+                'commands': [],
+                'cursor_y': PDF_CONTENT_TOP,
+            }
+        )
+        self._draw_page_banner()
+
+    def _page(self) -> dict:
+        return self.pages[-1]
+
+    def _append(self, command: str):
+        self._page()['commands'].append(command)
+
+    def _draw_page_banner(self):
+        self._append('q')
+        self._append('0.10 0.18 0.34 rg')
+        self._append(f'0 {PDF_PAGE_HEIGHT - 52} {PDF_PAGE_WIDTH} 52 re f')
+        self._append('0.18 0.52 0.86 rg')
+        self._append(f'0 {PDF_PAGE_HEIGHT - 58} {PDF_PAGE_WIDTH} 6 re f')
+        self._append('BT')
+        self._append('/F2 18 Tf')
+        self._append('1 1 1 rg')
+        self._append(f'{PDF_MARGIN_X} {PDF_PAGE_HEIGHT - 28} Td')
+        self._append(f'({_pdf_escape_text(self.title)}) Tj')
+        self._append('ET')
+        if self.subtitle:
+            self._append('BT')
+            self._append('/F1 9 Tf')
+            self._append('0.90 0.95 1 rg')
+            self._append(f'{PDF_MARGIN_X} {PDF_PAGE_HEIGHT - 42} Td')
+            self._append(f'({_pdf_escape_text(self.subtitle)}) Tj')
+            self._append('ET')
+        if self.generated_at:
+            self._append('BT')
+            self._append('/F1 8 Tf')
+            self._append('0.92 0.95 1 rg')
+            self._append(f'{PDF_PAGE_WIDTH - 168} {PDF_PAGE_HEIGHT - 28} Td')
+            self._append(f'({_pdf_escape_text(self.generated_at)}) Tj')
+            self._append('ET')
+        self._append('Q')
+
+    def _ensure_space(self, required_height: float):
+        if self._page()['cursor_y'] - required_height < PDF_CONTENT_BOTTOM:
+            self._new_page()
+
+    def _draw_text_line(
+        self,
+        text: str,
+        *,
+        x: float | None = None,
+        font: str = 'F1',
+        size: int = 10,
+        color: tuple[float, float, float] = (0.14, 0.16, 0.19),
+        gap_after: float = 0,
+        max_chars: int = 92,
+        indent: float = 0,
+    ):
+        lines = wrap_pdf_lines([text], max_length=max_chars)
+        line_height = max(size + 4, 12)
+        for line in lines:
+            self._ensure_space(line_height)
+            current_y = self._page()['cursor_y']
+            current_x = PDF_MARGIN_X + indent if x is None else x
+            self._append('BT')
+            self._append(f'/{font} {size} Tf')
+            self._append(f'{color[0]:.3f} {color[1]:.3f} {color[2]:.3f} rg')
+            self._append(f'{current_x:.1f} {current_y:.1f} Td')
+            self._append(f'({_pdf_escape_text(line)}) Tj')
+            self._append('ET')
+            self._page()['cursor_y'] -= line_height
+        if gap_after:
+            self._page()['cursor_y'] -= gap_after
+
+    def _write_text_at(
+        self,
+        text: str,
+        *,
+        x: float,
+        y: float,
+        font: str = 'F1',
+        size: int = 10,
+        color: tuple[float, float, float] = (0.14, 0.16, 0.19),
+        max_chars: int = 42,
+    ):
+        self._append('BT')
+        self._append(f'/{font} {size} Tf')
+        self._append(f'{color[0]:.3f} {color[1]:.3f} {color[2]:.3f} rg')
+        self._append(f'{x:.1f} {y:.1f} Td')
+        self._append(f'({_pdf_escape_text(_truncate_pdf_text(text, max_chars))}) Tj')
+        self._append('ET')
+
+    def add_heading(self, text: str, *, level: int = 2):
+        level_map = {
+            1: ('F2', 16, (0.08, 0.13, 0.22), 6),
+            2: ('F2', 13, (0.10, 0.18, 0.34), 5),
+            3: ('F2', 11, (0.15, 0.22, 0.35), 4),
+        }
+        font, size, color, gap_after = level_map.get(level, level_map[2])
+        self._draw_text_line(text, font=font, size=size, color=color, max_chars=88, gap_after=gap_after)
+        self._append('0.82 0.86 0.92 RG')
+        self._append(f'{PDF_MARGIN_X:.1f} {self._page()["cursor_y"]:.1f} m {PDF_PAGE_WIDTH - PDF_MARGIN_X:.1f} {self._page()["cursor_y"]:.1f} l S')
+        self._page()['cursor_y'] -= 8
+
+    def add_paragraph(self, text: str, *, size: int = 10, color: tuple[float, float, float] = (0.16, 0.18, 0.21), indent: float = 0):
+        if not str(text or '').strip():
+            self._page()['cursor_y'] -= 6
+            return
+        max_chars = 94 if size <= 10 else 84
+        self._draw_text_line(text, font='F1', size=size, color=color, max_chars=max_chars, indent=indent, gap_after=4)
+
+    def add_bullets(self, items: List[str], *, size: int = 10, color: tuple[float, float, float] = (0.16, 0.18, 0.21), indent: float = 12):
+        bullet_items = [str(item or '').strip() for item in items if str(item or '').strip()]
+        if not bullet_items:
+            self.add_paragraph('No highlights were available for this section.', size=size, color=color, indent=indent)
+            return
+        for item in bullet_items:
+            wrapped = wrap_pdf_lines([item], max_length=86)
+            first = True
+            for line in wrapped:
+                prefix = '- ' if first else '  '
+                self._draw_text_line(
+                    f'{prefix}{line}',
+                    size=size,
+                    color=color,
+                    max_chars=90,
+                    indent=indent,
+                    gap_after=1,
+                )
+                first = False
+            self._page()['cursor_y'] -= 2
+
+    def add_callout(self, label: str, value: str, note: str = '', *, accent: tuple[float, float, float] = (0.10, 0.18, 0.34)):
+        self._ensure_space(56)
+        x = PDF_MARGIN_X
+        y = self._page()['cursor_y']
+        width = PDF_CONTENT_WIDTH
+        height = 50
+        self._append('q')
+        self._append('0.96 0.98 1 rg')
+        self._append(f'{x} {y - height} {width} {height} re f')
+        self._append(f'{accent[0]:.3f} {accent[1]:.3f} {accent[2]:.3f} RG')
+        self._append('1.2 w')
+        self._append(f'{x} {y - height} {width} {height} re S')
+        self._append('Q')
+        self._write_text_at(label, x=x + 12, y=y - 16, font='F1', size=8, color=(0.30, 0.36, 0.42), max_chars=54)
+        self._write_text_at(value, x=x + 12, y=y - 31, font='F2', size=12, color=accent, max_chars=54)
+        if note:
+            self._write_text_at(note, x=x + 12, y=y - 44, font='F1', size=8, color=(0.32, 0.35, 0.40), max_chars=54)
+        self._page()['cursor_y'] -= height + 8
+
+    def add_card_grid(self, cards: List[dict], *, columns: int = 2):
+        if not cards:
+            return
+        gap = 12
+        card_width = (PDF_CONTENT_WIDTH - gap * (columns - 1)) / columns
+        card_height = 74
+        card_count = len(cards)
+        idx = 0
+        while idx < card_count:
+            row_cards = cards[idx: idx + columns]
+            self._ensure_space(card_height + 8)
+            y = self._page()['cursor_y']
+            for col_index, card in enumerate(row_cards):
+                x = PDF_MARGIN_X + (card_width + gap) * col_index
+                label = str(card.get('label') or '').strip()
+                value = str(card.get('value') or '').strip()
+                note = str(card.get('note') or '').strip()
+                self._append('q')
+                self._append('0.97 0.98 1 rg')
+                self._append(f'{x:.1f} {y - card_height:.1f} {card_width:.1f} {card_height:.1f} re f')
+                self._append('0.78 0.84 0.92 RG')
+                self._append('1 w')
+                self._append(f'{x:.1f} {y - card_height:.1f} {card_width:.1f} {card_height:.1f} re S')
+                self._append('Q')
+                self._write_text_at(label, x=x + 10, y=y - 18, font='F1', size=8, color=(0.31, 0.35, 0.42), max_chars=24)
+                self._write_text_at(value, x=x + 10, y=y - 36, font='F2', size=13, color=(0.11, 0.20, 0.36), max_chars=24)
+                if note:
+                    self._write_text_at(note, x=x + 10, y=y - 52, font='F1', size=8, color=(0.35, 0.39, 0.44), max_chars=28)
+            self._page()['cursor_y'] -= card_height + 10
+            idx += columns
+
+    def add_bar_chart(self, title: str, series: List[dict], *, note: str = '', accent: tuple[float, float, float] = (0.10, 0.18, 0.34)):
+        if title:
+            self.add_heading(title, level=2)
+        if not series:
+            self.add_paragraph('No chart data was available for this section.', size=10)
+            return
+
+        clean_series = [
+            {
+                'label': str(item.get('label') or '').strip(),
+                'value': safe_number(item.get('value')),
+                'note': str(item.get('note') or '').strip(),
+            }
+            for item in series
+            if str(item.get('label') or '').strip()
+        ]
+        if not clean_series:
+            self.add_paragraph('No chart data was available for this section.', size=10)
+            return
+
+        visible_series = clean_series[:5]
+        chart_height = 24 + (len(visible_series) * 18) + (16 if note else 0)
+        self._ensure_space(chart_height + 12)
+        x = PDF_MARGIN_X
+        y = self._page()['cursor_y']
+        width = PDF_CONTENT_WIDTH
+        self._append('q')
+        self._append('0.97 0.98 1 rg')
+        self._append(f'{x} {y - chart_height} {width} {chart_height} re f')
+        self._append('0.78 0.84 0.92 RG')
+        self._append('1 w')
+        self._append(f'{x} {y - chart_height} {width} {chart_height} re S')
+        self._append('Q')
+
+        self._write_text_at(title, x=x + 10, y=y - 16, font='F2', size=11, color=accent, max_chars=60)
+        if note:
+            self._write_text_at(note, x=x + 10, y=y - 28, font='F1', size=8, color=(0.34, 0.38, 0.43), max_chars=88)
+
+        max_value = max((float(item['value']) for item in visible_series), default=0.0)
+        bar_left = x + 126
+        bar_area_width = width - 172
+        row_y = y - 42
+        for item in visible_series:
+            value = float(item['value'])
+            label = _truncate_pdf_text(item['label'], 24)
+            bar_width = (bar_area_width * (value / max_value)) if max_value > 0 else 0
+            self._write_text_at(label, x=x + 10, y=row_y, font='F1', size=8, color=(0.24, 0.28, 0.34), max_chars=24)
+            self._append('q')
+            self._append('0.91 0.94 0.98 rg')
+            self._append(f'{bar_left:.1f} {row_y - 4:.1f} {bar_area_width:.1f} 10 re f')
+            self._append(f'{accent[0]:.3f} {accent[1]:.3f} {accent[2]:.3f} rg')
+            self._append(f'{bar_left:.1f} {row_y - 4:.1f} {bar_width:.1f} 10 re f')
+            self._append('Q')
+            value_text = f"{_format_pdf_metric(value, decimals=1)}"
+            self._write_text_at(value_text, x=bar_left + bar_area_width + 6, y=row_y, font='F2', size=8, color=accent, max_chars=12)
+            if item['note']:
+                self._write_text_at(_truncate_pdf_text(item['note'], 30), x=bar_left, y=row_y - 10, font='F1', size=7, color=(0.38, 0.42, 0.47), max_chars=30)
+            row_y -= 18
+        self._page()['cursor_y'] -= chart_height + 6
+
+    def add_attachment_list(self, title: str, attachments: List[str]):
+        if title:
+            self.add_heading(title, level=2)
+        if not attachments:
+            self.add_paragraph('No supporting attachments were found for this export.', size=10)
+            return
+        self.add_bullets(attachments[:8], size=10)
+
+    def add_table(self, title: str, columns: List[dict], rows: List[dict]):
+        if title:
+            self.add_heading(title, level=2)
+
+        if not rows:
+            self.add_paragraph('No companies were available for this portfolio snapshot.', size=10)
+            return
+
+        row_height = 18
+        header_height = 20
+
+        def draw_header():
+            self._ensure_space(header_height + 6)
+            y = self._page()['cursor_y']
+            x = PDF_MARGIN_X
+            self._append('q')
+            self._append('0.89 0.93 0.98 rg')
+            self._append(f'{x:.1f} {y - header_height:.1f} {PDF_CONTENT_WIDTH:.1f} {header_height:.1f} re f')
+            self._append('0.72 0.79 0.88 RG')
+            self._append('1 w')
+            self._append(f'{x:.1f} {y - header_height:.1f} {PDF_CONTENT_WIDTH:.1f} {header_height:.1f} re S')
+            self._append('Q')
+
+            current_x = x
+            for col in columns:
+                width = float(col['width'])
+                label = str(col['label'])
+                self._write_text_at(
+                    label,
+                    x=current_x + 4,
+                    y=y - 13,
+                    font='F2',
+                    size=8,
+                    color=(0.14, 0.21, 0.34),
+                    max_chars=max(6, int(width / 5.5)),
+                )
+                current_x += width
+            self._page()['cursor_y'] -= header_height
+
+        draw_header()
+
+        for index, row in enumerate(rows):
+            if self._page()['cursor_y'] - row_height < PDF_CONTENT_BOTTOM + 4:
+                self._new_page()
+                if title:
+                    self.add_heading(f'{title} (continued)', level=3)
+                draw_header()
+
+            y = self._page()['cursor_y']
+            x = PDF_MARGIN_X
+            fill = '0.98 0.99 1 rg' if index % 2 == 0 else '1 1 1 rg'
+            self._append('q')
+            self._append(fill)
+            self._append(f'{x:.1f} {y - row_height:.1f} {PDF_CONTENT_WIDTH:.1f} {row_height:.1f} re f')
+            self._append('0.88 0.90 0.94 RG')
+            self._append('0.8 w')
+            self._append(f'{x:.1f} {y - row_height:.1f} {PDF_CONTENT_WIDTH:.1f} {row_height:.1f} re S')
+            self._append('Q')
+
+            current_x = x
+            for col in columns:
+                width = float(col['width'])
+                extractor = col.get('value')
+                raw_value = _pdf_row_value(row, extractor)
+                cell_text = _truncate_pdf_text(raw_value, max(6, int(width / 5.3)))
+                self._write_text_at(
+                    cell_text,
+                    x=current_x + 4,
+                    y=y - 13,
+                    font='F1',
+                    size=8,
+                    color=(0.15, 0.18, 0.22),
+                    max_chars=max(6, int(width / 5.5)),
+                )
+                current_x += width
+            self._page()['cursor_y'] -= row_height
+
+    def add_footer_page_number(self, page_number: int, total_pages: int):
+        footer = f'Page {page_number} of {total_pages}'
+        self._append('BT')
+        self._append('/F1 8 Tf')
+        self._append('0.45 0.49 0.55 rg')
+        self._append(f'{PDF_PAGE_WIDTH - 110} 24 Td')
+        self._append(f'({_pdf_escape_text(footer)}) Tj')
+        self._append('ET')
+
+    def finalize(self) -> bytes:
+        pages_count = len(self.pages)
+        for index, page in enumerate(self.pages, start=1):
+            page['commands'].append(
+                f'BT /F1 8 Tf 0.40 0.43 0.48 rg {PDF_MARGIN_X} 24 Td ({_pdf_escape_text("Generated for internal reporting use only")}) Tj ET'
+            )
+            self.add_footer_page_number(index, pages_count)
+
+        content_start = 3
+        page_start = content_start + pages_count
+        font1_id = page_start + pages_count
+        font2_id = font1_id + 1
+
+        objects = [
+            b'1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n',
+        ]
+
+        page_obj_ids = [page_start + index for index in range(pages_count)]
+        objects.append(
+            ('2 0 obj << /Type /Pages /Kids [' + ' '.join(f'{page_id} 0 R' for page_id in page_obj_ids) + f'] /Count {pages_count} >> endobj\n').encode('ascii')
+        )
+
+        for index, page in enumerate(self.pages):
+            content_obj_id = content_start + index
+            page_obj_id = page_start + index
+            stream = '\n'.join(page['commands']).encode('utf-8')
+            objects.append(
+                f'{content_obj_id} 0 obj << /Length {len(stream)} >> stream\n'.encode('ascii') + stream + b'\nendstream endobj\n'
+            )
+            objects.append(
+                (
+                    f'{page_obj_id} 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 {PDF_PAGE_WIDTH} {PDF_PAGE_HEIGHT}] '
+                    f'/Contents {content_obj_id} 0 R /Resources << /Font << /F1 {font1_id} 0 R /F2 {font2_id} 0 R >> >> >> endobj\n'
+                ).encode('ascii')
+            )
+
+        objects.append(f'{font1_id} 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n'.encode('ascii'))
+        objects.append(f'{font2_id} 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >> endobj\n'.encode('ascii'))
+
+        output = bytearray(b'%PDF-1.4\n')
+        offsets = [0]
+        for obj in objects:
+            offsets.append(len(output))
+            output.extend(obj)
+        xref_offset = len(output)
+        output.extend(f'xref\n0 {len(objects) + 1}\n'.encode('ascii'))
+        output.extend(b'0000000000 65535 f \n')
+        for offset in offsets[1:]:
+            output.extend(f'{offset:010d} 00000 n \n'.encode('ascii'))
+        output.extend((f'trailer << /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n').encode('ascii'))
+        return bytes(output)
+
+
 def build_simple_pdf(lines: List[str]) -> bytes:
-    lines = wrap_pdf_lines(lines)
-    content_lines = ['BT', '/F1 12 Tf', '50 780 Td', '16 TL']
-    for index, line in enumerate(lines):
-        escaped = escape_pdf_text(line)
-        if index == 0:
-            content_lines.append(f'({escaped}) Tj')
-        else:
-            content_lines.append(f'T* ({escaped}) Tj')
-    content_lines.append('ET')
-    stream = '\n'.join(content_lines).encode('utf-8')
-    objects = [
-        b'1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n',
-        b'2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n',
-        b'3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj\n',
-        b'4 0 obj << /Length ' + str(len(stream)).encode('ascii') + b' >> stream\n' + stream + b'\nendstream endobj\n',
-        b'5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n',
-    ]
-    output = bytearray(b'%PDF-1.4\n')
-    offsets = [0]
-    for obj in objects:
-        offsets.append(len(output))
-        output.extend(obj)
-    xref_offset = len(output)
-    output.extend(f'xref\n0 {len(objects) + 1}\n'.encode('ascii'))
-    output.extend(b'0000000000 65535 f \n')
-    for offset in offsets[1:]:
-        output.extend(f'{offset:010d} 00000 n \n'.encode('ascii'))
-    output.extend((f'trailer << /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n').encode('ascii'))
-    return bytes(output)
+    builder = _PdfReportBuilder(
+        title='ESG Report Export',
+        subtitle='Simple text export view',
+        generated_at=datetime.now(timezone.utc).isoformat(),
+    )
+    builder.add_paragraph('\n'.join(lines or ['No data']))
+    return builder.finalize()
 
 
 def build_pdf_export_bytes(
@@ -2732,29 +3542,146 @@ def build_pdf_export_bytes(
     rows: List[dict],
     context_lines: Optional[List[str]] = None,
     narrative_lines: Optional[List[str]] = None,
+    attachment_lines: Optional[List[str]] = None,
 ) -> bytes:
-    status_counts = {}
+    status_counts: Dict[str, int] = {}
     for row in rows:
         status_counts[row['status']] = status_counts.get(row['status'], 0) + 1
 
-    lines = [
-        f'{report_type.upper()} Report Export',
-        f'Generated At: {datetime.now(timezone.utc).isoformat()}',
-        f'Period: {period}',
-        f'Cycle Year: {cycle.cycle_year}',
-        f'Total Rows: {len(rows)}',
-        f'Status Distribution: {json.dumps(status_counts)}',
-        '--- Company Snapshot ---',
+    def _avg(values: List[Any]) -> float | None:
+        numeric_values = [safe_number(value) for value in values if value is not None and str(value).strip() != '']
+        numeric_values = [value for value in numeric_values if value is not None]
+        if not numeric_values:
+            return None
+        return sum(numeric_values) / len(numeric_values)
+
+    total_rows = len(rows)
+    approved_count = status_counts.get('Approved', 0)
+    in_progress_count = status_counts.get('In Progress', 0)
+    submitted_count = status_counts.get('Submitted', 0)
+    under_review_count = status_counts.get('Under Review', 0)
+    resubmission_count = status_counts.get('Resubmission Requested', 0)
+    active_count = approved_count + in_progress_count + submitted_count + under_review_count
+    coverage_percent = round((active_count / total_rows) * 100, 1) if total_rows else 0.0
+
+    avg_esg = _avg([row.get('esg_score') for row in rows])
+    avg_ghg = _avg([row.get('total_ghg_emissions') for row in rows])
+    avg_female = _avg([row.get('female_representation_percent') for row in rows])
+    avg_completion = _avg([row.get('completion_percent') for row in rows])
+
+    sorted_rows = sorted(
+        rows,
+        key=lambda row: (
+            -safe_number(row.get('esg_score')),
+            str(row.get('company_name') or ''),
+        ),
+    )
+
+    title = f'{report_type.upper()} Smart PDF Report'
+    subtitle_bits = [f'Period: {period}', f'Cycle Year: {cycle.cycle_year}', f'Portfolio rows: {total_rows}']
+    subtitle = ' | '.join(subtitle_bits)
+    generated_at = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
+    builder = _PdfReportBuilder(title=title, subtitle=subtitle, generated_at=generated_at)
+
+    builder.add_heading('Executive Summary', level=1)
+    cards = [
+        {'label': 'Companies in scope', 'value': f'{total_rows}', 'note': f'{coverage_percent:.1f}% active coverage'},
+        {'label': 'Approved', 'value': f'{approved_count}', 'note': 'fully reviewed'},
+        {'label': 'In progress', 'value': f'{in_progress_count + submitted_count + under_review_count}', 'note': f'{resubmission_count} need follow-up'},
+        {'label': 'Average ESG score', 'value': _format_pdf_metric(avg_esg, decimals=1), 'note': 'portfolio average'},
+        {'label': 'Average total GHG', 'value': _format_pdf_metric(avg_ghg, decimals=1, suffix=' tCO2e'), 'note': 'reported emissions'},
+        {'label': 'Female representation', 'value': _format_pdf_metric(avg_female, decimals=1, suffix='%'), 'note': 'workforce average'},
     ]
-    if context_lines:
-        lines.append('--- Report Context ---')
-        lines.extend(context_lines)
-    for row in rows[:25]:
-        lines.append(f"{row['company_name']} | {row['sector']} | {row['status']} | ESG {row['esg_score']}")
+    builder.add_card_grid(cards, columns=2)
+
+    if sorted_rows:
+        leader = sorted_rows[0]
+        laggard = sorted_rows[-1]
+        builder.add_callout(
+            'Top performing company',
+            f"{leader['company_name']} - ESG {_format_pdf_metric(leader.get('esg_score'), decimals=1)}",
+            f"Sector: {leader.get('sector') or 'Unknown'} | Status: {leader.get('status') or 'Unknown'}",
+        )
+        if laggard.get('company_name') != leader.get('company_name'):
+            builder.add_callout(
+                'Lowest ESG company',
+                f"{laggard['company_name']} - ESG {_format_pdf_metric(laggard.get('esg_score'), decimals=1)}",
+                f"Sector: {laggard.get('sector') or 'Unknown'} | Status: {laggard.get('status') or 'Unknown'}",
+                accent=(0.46, 0.16, 0.18),
+            )
+
+    if report_type.strip().lower() in {'edci', 'sfdr'}:
+        builder.add_heading('Impact Intelligence', level=2)
+        impact_summary = (context_lines or [])[0] if context_lines else ''
+        if impact_summary:
+            builder.add_paragraph(impact_summary, size=10)
+        if context_lines and len(context_lines) > 1:
+            builder.add_bullets(context_lines[1:4], size=10)
+        if narrative_lines:
+            builder.add_paragraph('An approved narrative insert is attached to this PDF package.', size=10)
+    else:
+        builder.add_heading('Report Context', level=2)
+        if context_lines:
+            builder.add_bullets(context_lines[:4], size=10)
+        else:
+            builder.add_paragraph('No additional context lines were supplied for this export.', size=10)
+
+    builder.add_heading('Portfolio Snapshot', level=2)
+    table_columns = [
+        {'label': 'Company', 'value': 'company_name', 'width': 154},
+        {'label': 'Sector', 'value': 'sector', 'width': 96},
+        {'label': 'Status', 'value': 'status', 'width': 76},
+        {'label': 'ESG', 'value': lambda row: _format_pdf_metric(row.get('esg_score'), decimals=1), 'width': 58},
+        {'label': 'GHG', 'value': lambda row: _format_pdf_metric(row.get('total_ghg_emissions'), decimals=1), 'width': 70},
+        {'label': 'Female %', 'value': lambda row: _format_pdf_metric(row.get('female_representation_percent'), decimals=1), 'width': 70},
+    ]
+    builder.add_table('Company performance table', table_columns, sorted_rows)
+
+    builder.add_heading('Benchmark Callouts', level=2)
+    benchmark_lines = list(dict.fromkeys((context_lines or [])[:6]))
+    if benchmark_lines:
+        builder.add_bullets(benchmark_lines, size=10)
+    else:
+        builder.add_paragraph('No benchmark callouts were generated for this report type.', size=10)
+
     if narrative_lines:
-        lines.append('--- Narrative Insert ---')
-        lines.extend(narrative_lines)
-    return build_simple_pdf(lines)
+        builder.add_heading('Narrative Appendix', level=2)
+        for line in narrative_lines:
+            builder.add_paragraph(line, size=10)
+
+    chart_status_series = [
+        {'label': 'Approved', 'value': approved_count, 'note': 'Reviewed and approved submissions'},
+        {'label': 'In progress', 'value': in_progress_count + submitted_count + under_review_count, 'note': 'Open items and review queue'},
+        {'label': 'Follow-up', 'value': resubmission_count, 'note': 'Resubmission requests'},
+    ]
+    builder.add_bar_chart(
+        'Submission Status Mix',
+        chart_status_series,
+        note='Shows the current reporting posture of the portfolio in the selected cycle.',
+    )
+
+    score_series = [
+        {'label': row['company_name'], 'value': row.get('esg_score'), 'note': row.get('sector') or 'Unknown sector'}
+        for row in sorted_rows[:5]
+    ]
+    builder.add_bar_chart(
+        'Top ESG Scores',
+        score_series,
+        note='Leaders in the selected report period, ranked by ESG score.',
+        accent=(0.07, 0.44, 0.31),
+    )
+
+    builder.add_attachment_list('Supporting Attachments', attachment_lines or [])
+
+    builder.add_heading('Report Notes', level=2)
+    notes = [
+        f'Status distribution: {json.dumps(status_counts, sort_keys=True)}',
+        f'Average completion: {_format_pdf_metric(avg_completion, decimals=1, suffix="%")}',
+        'CSV export remains available for a machine-readable version of the same portfolio data.',
+    ]
+    builder.add_bullets(notes, size=10)
+
+    return builder.finalize()
 
 
 def _build_report_export_context(
@@ -2785,6 +3712,8 @@ def _build_report_export_context(
 
     impact_headline = None
     benchmark_callouts: List[str] = []
+    comparison_rows: List[dict] = []
+    attachment_lines: List[str] = []
     if report_name in {'edci', 'sfdr'}:
         analytics = build_investor_analytics(db)
         companies = db.query(Company).order_by(Company.name.asc()).all()
@@ -2792,10 +3721,39 @@ def _build_report_export_context(
         impact_headline = impact_story.get('headline')
         context_lines.append(impact_story.get('summary', ''))
         context_lines.extend((impact_story.get('highlights') or [])[:2])
+        context_lines.append(impact_story.get('trend_summary', ''))
         benchmark_callouts = (impact_story.get('benchmark_callouts') or [])[:3]
+        comparison_rows = impact_story.get('comparison_rows') or []
     elif rows:
         top_row = rows[0]
         context_lines.append(f"Top row: {top_row['company_name']} | {top_row['sector']} | ESG {top_row['esg_score']}")
+
+    row_company_names = {str(row.get('company_name') or '').strip() for row in rows if str(row.get('company_name') or '').strip()}
+    attachment_company_ids: set[int] = set()
+    if narrative_id is not None:
+        narrative_record = _get_narrative_record_or_404(db, narrative_id)
+        if narrative_record.company_id:
+            attachment_company_ids.add(narrative_record.company_id)
+    if row_company_names:
+        for company in db.query(Company).filter(Company.name.in_(sorted(row_company_names))).all():
+            attachment_company_ids.add(company.id)
+
+    if attachment_company_ids:
+        attachment_rows = (
+            db.query(SupportingDocument, Company.name)
+            .join(Company, SupportingDocument.company_id == Company.id)
+            .filter(SupportingDocument.company_id.in_(sorted(attachment_company_ids)))
+            .order_by(SupportingDocument.uploaded_at.desc())
+            .all()
+        )
+        for document, company_name in attachment_rows[:8]:
+            size_kb = max(float(document.file_size or 0) / 1024, 0.1)
+            attachment_lines.append(
+                f'{company_name} - {document.file_name} ({document.field_key}, {size_kb:.0f} KB)'
+            )
+
+    if not attachment_lines:
+        attachment_lines.append('No supporting attachments were found for this report.')
 
     context_lines = [line for line in context_lines if str(line or '').strip()]
 
@@ -2806,6 +3764,8 @@ def _build_report_export_context(
         'narrative_included': narrative_included,
         'impact_headline': impact_headline,
         'benchmark_callouts': benchmark_callouts,
+        'comparison_rows': comparison_rows,
+        'attachment_lines': attachment_lines,
     }
 
 
@@ -3013,16 +3973,17 @@ def export_report(
     else:
         artifact = save_export_artifact(
             file_name,
-            build_pdf_export_bytes(
-                report_name,
-                period,
-                cycle,
-                rows,
-                context_lines=report_context['context_lines'],
-                narrative_lines=report_context['narrative_lines'],
-            ),
-            'application/pdf',
-        )
+              build_pdf_export_bytes(
+                  report_name,
+                  period,
+                  cycle,
+                  rows,
+                  context_lines=report_context['context_lines'],
+                  narrative_lines=report_context['narrative_lines'],
+                  attachment_lines=report_context['attachment_lines'],
+              ),
+              'application/pdf',
+          )
         content_type = 'application/pdf'
 
     return ReportExportResponse(
@@ -3041,7 +4002,467 @@ def export_report(
         narrative_headline=report_context['narrative_headline'],
         narrative_included=bool(report_context['narrative_included']),
         benchmark_callouts=report_context['benchmark_callouts'],
+        comparison_rows=report_context['comparison_rows'],
     )
+
+
+def _build_newsletter_response_payload(db: Session, *, audience: str, tone: str) -> dict:
+    normalized_tone = normalize_narrative_tone(tone)
+    context = _build_newsletter_context(db, audience=audience, tone=normalized_tone)
+    prompt = _build_newsletter_prompt(context)
+    openai_payload = _call_openai_summary(prompt)
+    fallback_payload = _build_fallback_newsletter(context)
+    normalized_payload = _normalize_newsletter_payload(openai_payload, fallback_payload)
+    active_cycle = get_active_cycle(db) or get_latest_cycle(db) or get_or_create_reserved_cycle(db)
+    analytics = build_investor_analytics(db)
+
+    return {
+        'available': True,
+        'audience': audience,
+        'tone': normalized_tone,
+        'generated_at': datetime.utcnow().isoformat(),
+        **normalized_payload,
+        'source_years': [active_cycle.cycle_year] if active_cycle else [],
+        'source_company_count': int(context.get('portfolio', {}).get('total_companies') or 0),
+        'source_submission_count': int(analytics.get('total_submissions') or 0),
+        'impact_headline': (context.get('impact_story') or {}).get('headline'),
+        'benchmark_callouts': ((context.get('impact_story') or {}).get('benchmark_callouts') or [])[:4],
+        'cached': False,
+        'fallback_used': not bool(openai_payload),
+        'message': None,
+    }
+
+
+def _build_newsletter_export_lines(newsletter_payload: dict) -> List[str]:
+    lines: List[str] = []
+    subject_line = str(newsletter_payload.get('subject_line') or '').strip()
+    preheader = str(newsletter_payload.get('preheader') or '').strip()
+    headline = str(newsletter_payload.get('headline') or '').strip()
+    summary = str(newsletter_payload.get('summary') or '').strip()
+    highlights = [str(item or '').strip() for item in newsletter_payload.get('highlights') or [] if str(item or '').strip()]
+    watchouts = [str(item or '').strip() for item in newsletter_payload.get('watchouts') or [] if str(item or '').strip()]
+    recommendations = [str(item or '').strip() for item in newsletter_payload.get('recommendations') or [] if str(item or '').strip()]
+    call_to_action = str(newsletter_payload.get('call_to_action') or '').strip()
+
+    lines.append('ESG Newsletter Draft')
+    lines.append('')
+    if subject_line:
+        lines.append(f'Subject: {subject_line}')
+    if preheader:
+        lines.append(f'Preheader: {preheader}')
+    if headline:
+        lines.append(f'Headline: {headline}')
+    if subject_line or preheader or headline:
+        lines.append('')
+    if summary:
+        lines.append('Summary:')
+        lines.extend(summary.splitlines())
+        lines.append('')
+    if highlights:
+        lines.append('Highlights:')
+        lines.extend([f'- {item}' for item in highlights])
+        lines.append('')
+    if watchouts:
+        lines.append('Watchouts:')
+        lines.extend([f'- {item}' for item in watchouts])
+        lines.append('')
+    if recommendations:
+        lines.append('Recommendations:')
+        lines.extend([f'- {item}' for item in recommendations])
+        lines.append('')
+    if call_to_action:
+        lines.append('Call to Action:')
+        lines.append(call_to_action)
+        lines.append('')
+    if newsletter_payload.get('impact_headline'):
+        lines.append(f"Impact headline: {newsletter_payload.get('impact_headline')}")
+    source_years = newsletter_payload.get('source_years') or []
+    if source_years:
+        lines.append(f"Source years: {', '.join(str(year) for year in source_years)}")
+    source_company_count = newsletter_payload.get('source_company_count')
+    source_submission_count = newsletter_payload.get('source_submission_count')
+    if source_company_count is not None or source_submission_count is not None:
+        lines.append(
+            f"Sources: {int(source_submission_count or 0)} submissions across {int(source_company_count or 0)} companies"
+        )
+    benchmark_callouts = [str(item or '').strip() for item in newsletter_payload.get('benchmark_callouts') or [] if str(item or '').strip()]
+    if benchmark_callouts:
+        lines.append('')
+        lines.append('Benchmark Callouts:')
+        lines.extend([f'- {item}' for item in benchmark_callouts])
+
+    return lines or ['ESG newsletter draft unavailable.']
+
+
+def _newsletter_delivery_config() -> dict:
+    host = str(os.getenv('NEWSLETTER_SMTP_HOST') or os.getenv('SMTP_HOST') or '').strip()
+    port_value = str(os.getenv('NEWSLETTER_SMTP_PORT') or os.getenv('SMTP_PORT') or '587').strip()
+    username = str(os.getenv('NEWSLETTER_SMTP_USERNAME') or os.getenv('SMTP_USERNAME') or '').strip()
+    password = str(os.getenv('NEWSLETTER_SMTP_PASSWORD') or os.getenv('SMTP_PASSWORD') or '').strip()
+    from_email = str(
+        os.getenv('NEWSLETTER_FROM_EMAIL')
+        or os.getenv('SMTP_FROM_EMAIL')
+        or os.getenv('SMTP_USERNAME')
+        or ''
+    ).strip()
+    from_name = str(os.getenv('NEWSLETTER_FROM_NAME') or 'ESG Newsletter').strip()
+    use_tls = str(os.getenv('NEWSLETTER_SMTP_USE_TLS') or '1').strip().lower() not in {'0', 'false', 'no'}
+
+    if not host or not from_email:
+        return {}
+
+    try:
+        port = int(port_value)
+    except (TypeError, ValueError):
+        port = 587
+
+    return {
+        'host': host,
+        'port': port,
+        'username': username,
+        'password': password,
+        'from_email': from_email,
+        'from_name': from_name,
+        'use_tls': use_tls,
+    }
+
+
+def _newsletter_default_recipients(db: Session, audience: str) -> List[str]:
+    role = normalize_role('manager' if audience == 'manager' else 'investor')
+    users = db.query(User).filter(User.role == role).order_by(User.email.asc()).all()
+    emails: List[str] = []
+    for user in users:
+        email = str(getattr(user, 'email', '') or '').strip().lower()
+        if email and email not in emails:
+            emails.append(email)
+    return emails
+
+
+def _newsletter_plain_text_body(newsletter_payload: dict) -> str:
+    return '\n'.join(_build_newsletter_export_lines(newsletter_payload)).strip() + '\n'
+
+
+def _newsletter_html_body(newsletter_payload: dict) -> str:
+    subject_line = html_lib.escape(str(newsletter_payload.get('subject_line') or '').strip())
+    preheader = html_lib.escape(str(newsletter_payload.get('preheader') or '').strip())
+    headline = html_lib.escape(str(newsletter_payload.get('headline') or '').strip())
+    summary = html_lib.escape(str(newsletter_payload.get('summary') or '').strip()).replace('\n', '<br>')
+    call_to_action = html_lib.escape(str(newsletter_payload.get('call_to_action') or '').strip())
+
+    def render_list(title: str, items: List[str]) -> str:
+        clean_items = [html_lib.escape(str(item or '').strip()) for item in items if str(item or '').strip()]
+        if not clean_items:
+            return ''
+        bullets = ''.join(f'<li style="margin:0 0 8px 0;">{item}</li>' for item in clean_items)
+        return (
+            f'<div style="margin-top:20px;">'
+            f'<h3 style="margin:0 0 10px 0;font-size:15px;color:#183153;">{html_lib.escape(title)}</h3>'
+            f'<ul style="margin:0;padding-left:20px;color:#24364b;line-height:1.6;">{bullets}</ul>'
+            f'</div>'
+        )
+
+    highlights = render_list('Highlights', newsletter_payload.get('highlights') or [])
+    watchouts = render_list('Watchouts', newsletter_payload.get('watchouts') or [])
+    recommendations = render_list('Recommendations', newsletter_payload.get('recommendations') or [])
+
+    return f'''
+    <html>
+      <body style="margin:0;padding:0;background:#f4f7fb;font-family:Arial,Helvetica,sans-serif;color:#132238;">
+        <div style="max-width:720px;margin:0 auto;padding:32px 20px;">
+          <div style="background:#ffffff;border:1px solid #dbe3ee;border-radius:16px;padding:28px;">
+            <div style="font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:#6a7788;">ESG Newsletter</div>
+            <h1 style="margin:12px 0 8px 0;font-size:28px;line-height:1.2;color:#0f2747;">{subject_line or 'Portfolio update'}</h1>
+            {'<p style="margin:0 0 18px 0;color:#5e6b7a;font-size:14px;">' + preheader + '</p>' if preheader else ''}
+            {'<h2 style="margin:0 0 14px 0;font-size:20px;color:#16355e;">' + headline + '</h2>' if headline else ''}
+            <div style="font-size:15px;line-height:1.7;color:#223449;">{summary}</div>
+            {highlights}
+            {watchouts}
+            {recommendations}
+            {'<div style="margin-top:24px;padding:16px;border-left:4px solid #2b6cb0;background:#eef5ff;color:#153054;border-radius:10px;"><strong>Call to action:</strong> ' + call_to_action + '</div>' if call_to_action else ''}
+          </div>
+        </div>
+      </body>
+    </html>
+    '''.strip()
+
+
+def _newsletter_send_message(config: dict, recipient_email: str, newsletter_payload: dict) -> tuple[bool, str | None, str | None]:
+    message = EmailMessage()
+    subject_line = str(newsletter_payload.get('subject_line') or 'ESG Newsletter Update').strip()
+    message['Subject'] = subject_line
+    message['From'] = f"{config['from_name']} <{config['from_email']}>"
+    message['To'] = recipient_email
+    message['Message-ID'] = (
+        '<'
+        + hashlib.sha1(
+            f"{recipient_email}:{subject_line}:{newsletter_payload.get('generated_at')}".encode('utf-8')
+        ).hexdigest()
+        + '@esg-app.local>'
+    )
+    message.set_content(_newsletter_plain_text_body(newsletter_payload))
+    message.add_alternative(_newsletter_html_body(newsletter_payload), subtype='html')
+
+    with smtplib.SMTP(config['host'], config['port'], timeout=20) as smtp:
+        if config.get('use_tls'):
+            smtp.starttls()
+        if config.get('username'):
+            smtp.login(config['username'], config.get('password') or '')
+        refused = smtp.send_message(message)
+    if refused:
+        return False, None, f'Recipient rejected by SMTP server: {json.dumps(refused, sort_keys=True)}'
+    return True, message['Message-ID'], None
+
+
+def _send_newsletter_campaign(
+    db: Session,
+    *,
+    audience: str,
+    tone: str,
+    dry_run: bool = False,
+    recipient_emails: Optional[List[str]] = None,
+    force_refresh: bool = False,
+    scheduled_for: datetime | None = None,
+) -> dict:
+    newsletter_payload = _build_newsletter_response_payload(db, audience=audience, tone=tone)
+    if force_refresh:
+        newsletter_payload['cached'] = False
+
+    recipients = [str(email or '').strip().lower() for email in (recipient_emails or []) if str(email or '').strip()]
+    if not recipients:
+        recipients = _newsletter_default_recipients(db, audience)
+    if not recipients:
+        raise HTTPException(status_code=404, detail=f'No recipients found for {audience} newsletter')
+
+    payload_hash = hashlib.sha256(
+        json.dumps(
+            {
+                'audience': audience,
+                'tone': newsletter_payload.get('tone'),
+                'subject_line': newsletter_payload.get('subject_line'),
+                'summary': newsletter_payload.get('summary'),
+                'highlights': newsletter_payload.get('highlights'),
+                'watchouts': newsletter_payload.get('watchouts'),
+                'recommendations': newsletter_payload.get('recommendations'),
+                'call_to_action': newsletter_payload.get('call_to_action'),
+            },
+            sort_keys=True,
+            default=str,
+        ).encode('utf-8')
+    ).hexdigest()
+
+    if dry_run:
+        return {
+            'available': True,
+            'audience': audience,
+            'tone': str(newsletter_payload.get('tone') or tone),
+            'generated_at': str(newsletter_payload.get('generated_at') or datetime.utcnow().isoformat()),
+            'delivery_status': 'dry_run',
+            'provider': 'smtp',
+            'recipient_count': len(recipients),
+            'sent_count': 0,
+            'failed_count': 0,
+            'skipped_count': 0,
+            'subject_line': str(newsletter_payload.get('subject_line') or ''),
+            'preheader': str(newsletter_payload.get('preheader') or ''),
+            'headline': str(newsletter_payload.get('headline') or ''),
+            'dry_run': True,
+            'message': 'Dry run completed. No email was sent.',
+        }
+
+    config = _newsletter_delivery_config()
+    if not config:
+        raise HTTPException(
+            status_code=503,
+            detail='Newsletter SMTP is not configured. Set NEWSLETTER_SMTP_HOST and NEWSLETTER_FROM_EMAIL to send emails.',
+        )
+
+    sent_count = 0
+    failed_count = 0
+    skipped_count = 0
+    provider = 'smtp'
+    log_rows: List[NewsletterDispatchLog] = []
+
+    for recipient_email in recipients:
+        duplicate_log = db.query(NewsletterDispatchLog).filter(
+            NewsletterDispatchLog.audience == audience,
+            NewsletterDispatchLog.tone == newsletter_payload.get('tone'),
+            NewsletterDispatchLog.recipient_email == recipient_email,
+            NewsletterDispatchLog.payload_hash == payload_hash,
+            NewsletterDispatchLog.delivery_status == 'sent',
+        ).order_by(NewsletterDispatchLog.id.desc()).first()
+        if duplicate_log:
+            skipped_count += 1
+            continue
+
+        dispatch_log = NewsletterDispatchLog(
+            audience=audience,
+            tone=str(newsletter_payload.get('tone') or tone),
+            recipient_email=recipient_email,
+            payload_hash=payload_hash,
+            subject_line=str(newsletter_payload.get('subject_line') or ''),
+            provider=provider,
+            delivery_status='queued',
+            scheduled_for=scheduled_for,
+        )
+        db.add(dispatch_log)
+        log_rows.append(dispatch_log)
+        db.flush()
+
+        try:
+            delivered, provider_message_id, error_message = _newsletter_send_message(config, recipient_email, newsletter_payload)
+            dispatch_log.delivery_status = 'sent' if delivered else 'failed'
+            dispatch_log.provider_message_id = provider_message_id
+            dispatch_log.error_message = error_message
+            dispatch_log.sent_at = datetime.utcnow()
+            if delivered:
+                sent_count += 1
+            else:
+                failed_count += 1
+        except Exception as exc:
+            dispatch_log.delivery_status = 'failed'
+            dispatch_log.error_message = str(exc)
+            dispatch_log.sent_at = datetime.utcnow()
+            failed_count += 1
+
+    db.commit()
+
+    delivery_status = 'sent' if sent_count and not failed_count else 'failed' if failed_count else 'skipped'
+    if sent_count == 0 and skipped_count > 0 and failed_count == 0:
+        delivery_status = 'skipped'
+
+    return {
+        'available': True,
+        'audience': audience,
+        'tone': str(newsletter_payload.get('tone') or tone),
+        'generated_at': str(newsletter_payload.get('generated_at') or datetime.utcnow().isoformat()),
+        'delivery_status': delivery_status,
+        'provider': provider,
+        'recipient_count': len(recipients),
+        'sent_count': sent_count,
+        'failed_count': failed_count,
+        'skipped_count': skipped_count,
+        'subject_line': str(newsletter_payload.get('subject_line') or ''),
+        'preheader': str(newsletter_payload.get('preheader') or ''),
+        'headline': str(newsletter_payload.get('headline') or ''),
+        'dry_run': False,
+        'message': 'Newsletter sent.' if sent_count else 'Newsletter send completed with no new deliveries.',
+    }
+
+
+def require_cron_secret(authorization: str | None = Header(default=None)):
+    expected_secret = str(os.getenv('CRON_SECRET') or '').strip()
+    if not expected_secret:
+        raise HTTPException(status_code=503, detail='CRON_SECRET is not configured')
+    if authorization != f'Bearer {expected_secret}':
+        raise HTTPException(status_code=401, detail='Invalid cron secret')
+    return True
+
+
+@app.post('/newsletter/generate', response_model=NewsletterSummaryResponse)
+def generate_newsletter(
+    payload: NewsletterGenerateRequest,
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
+    normalized_role = normalize_role(role)
+    audience = _newsletter_audience_for_role(normalized_role)
+    if not audience:
+        raise HTTPException(status_code=403, detail='Newsletter access is restricted to managers and investors')
+    if payload.audience != audience:
+        raise HTTPException(status_code=403, detail='Newsletter audience does not match the authenticated user role')
+
+    newsletter_payload = _build_newsletter_response_payload(db, audience=audience, tone=payload.tone)
+    return NewsletterSummaryResponse(**newsletter_payload)
+
+
+@app.post('/newsletter/export', response_model=NewsletterExportResponse)
+def export_newsletter(
+    payload: NewsletterGenerateRequest,
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
+    normalized_role = normalize_role(role)
+    audience = _newsletter_audience_for_role(normalized_role)
+    if not audience:
+        raise HTTPException(status_code=403, detail='Newsletter access is restricted to managers and investors')
+    if payload.audience != audience:
+        raise HTTPException(status_code=403, detail='Newsletter audience does not match the authenticated user role')
+
+    newsletter_payload = _build_newsletter_response_payload(db, audience=audience, tone=payload.tone)
+    export_timestamp = datetime.utcnow().strftime('%Y%m%d%H%M%S')
+    file_name = f'newsletter_{audience}_{export_timestamp}.txt'
+    export_lines = _build_newsletter_export_lines(newsletter_payload)
+    artifact = save_export_artifact(
+        file_name,
+        '\n'.join(export_lines).encode('utf-8'),
+        'text/plain',
+    )
+    return NewsletterExportResponse(
+        available=True,
+        audience=audience,
+        tone=str(newsletter_payload.get('tone') or payload.tone),
+        generated_at=str(newsletter_payload.get('generated_at') or datetime.utcnow().isoformat()),
+        file_name=file_name,
+        file_path=str(artifact['file_path']),
+        download_url=str(artifact['download_url']),
+        content_type='text/plain',
+        subject_line=str(newsletter_payload.get('subject_line') or ''),
+        preheader=str(newsletter_payload.get('preheader') or ''),
+        headline=str(newsletter_payload.get('headline') or ''),
+        message='Newsletter export is ready.',
+    )
+
+
+@app.post('/newsletter/send', response_model=NewsletterSendResponse)
+@app.post('/api/newsletter/send', response_model=NewsletterSendResponse)
+def send_newsletter(
+    payload: NewsletterGenerateRequest,
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
+    normalized_role = normalize_role(role)
+    audience = _newsletter_audience_for_role(normalized_role)
+    if not audience:
+        raise HTTPException(status_code=403, detail='Newsletter access is restricted to managers and investors')
+    if payload.audience != audience:
+        raise HTTPException(status_code=403, detail='Newsletter audience does not match the authenticated user role')
+
+    newsletter_payload = _send_newsletter_campaign(
+        db,
+        audience=audience,
+        tone=payload.tone,
+        dry_run=bool(payload.dry_run),
+        recipient_emails=payload.recipient_emails,
+        force_refresh=payload.force_refresh,
+    )
+    return NewsletterSendResponse(**newsletter_payload)
+
+
+@app.get('/cron/newsletter/manager', response_model=NewsletterSendResponse, dependencies=[Depends(require_cron_secret)])
+@app.get('/api/cron/newsletter/manager', response_model=NewsletterSendResponse, dependencies=[Depends(require_cron_secret)])
+def cron_send_manager_newsletter(db: Session = Depends(get_db)):
+    newsletter_payload = _send_newsletter_campaign(
+        db,
+        audience='manager',
+        tone='board-ready',
+        dry_run=False,
+    )
+    return NewsletterSendResponse(**newsletter_payload)
+
+
+@app.get('/cron/newsletter/investor', response_model=NewsletterSendResponse, dependencies=[Depends(require_cron_secret)])
+@app.get('/api/cron/newsletter/investor', response_model=NewsletterSendResponse, dependencies=[Depends(require_cron_secret)])
+def cron_send_investor_newsletter(db: Session = Depends(get_db)):
+    newsletter_payload = _send_newsletter_campaign(
+        db,
+        audience='investor',
+        tone='lp-letter',
+        dry_run=False,
+    )
+    return NewsletterSendResponse(**newsletter_payload)
 
 
 @app.get('/narrative/summary', response_model=NarrativeDetailResponse)
@@ -3067,8 +4488,8 @@ def narrative_summary(
 
 @app.get('/dashboard/manager', response_model=ManagerDashboardResponse, dependencies=[Depends(require_manager)])
 def manager_dashboard(db: Session = Depends(get_db)):
-    companies = db.query(Company).order_by(Company.name.asc()).all()
-    analytics = build_investor_analytics(db)
+    companies = _load_companies_with_related_data(db)
+    analytics = build_investor_analytics(db, companies=companies)
     summary = build_manager_summary(db, companies)
     impact_story = _build_impact_intelligence(db, analytics, companies)
     return {
@@ -3088,6 +4509,43 @@ def safe_number(value, default: float = 0.0) -> float:
 
 def clamp(value: float, minimum: float = 0, maximum: float = 100) -> float:
     return max(minimum, min(maximum, value))
+
+
+def _clone_cache_value(value: Any) -> Any:
+    return json.loads(json.dumps(value, default=str))
+
+
+def _get_timed_cache(key: str) -> Any:
+    cached = _TIMED_COMPUTE_CACHE.get(key)
+    if not cached:
+        return None
+    if time.monotonic() - cached['stored_at'] > ANALYTICS_CACHE_TTL_SECONDS:
+        _TIMED_COMPUTE_CACHE.pop(key, None)
+        return None
+    return _clone_cache_value(cached['value'])
+
+
+def _set_timed_cache(key: str, value: Any) -> Any:
+    cloned = _clone_cache_value(value)
+    _TIMED_COMPUTE_CACHE[key] = {
+        'stored_at': time.monotonic(),
+        'value': cloned,
+    }
+    return _clone_cache_value(cloned)
+
+
+def _load_companies_with_related_data(db: Session) -> List[Company]:
+    return (
+        db.query(Company)
+        .options(
+            selectinload(Company.submissions).selectinload(Submission.cycle),
+            selectinload(Company.action_plans),
+            selectinload(Company.review_actions),
+            selectinload(Company.validation_flags),
+        )
+        .order_by(Company.name.asc())
+        .all()
+    )
 
 
 def normalize_status_label(status: str | None) -> str:
@@ -3116,21 +4574,177 @@ def parse_submission(submission: Submission | None) -> dict:
         return {}
 
 
-def build_emissions_trend(total_emissions: float) -> list[dict]:
-    now = datetime.utcnow()
-    periods = []
-    for offset in range(5, -1, -1):
-        month_value = datetime(now.year, max(1, now.month - offset), 1)
-        periods.append(month_value.strftime('%b'))
+def _percent_change(current: float, previous: float) -> float:
+    if previous <= 0:
+        return 0.0
+    return round(((current - previous) / previous) * 100, 2)
 
-    trend = []
-    for index, period in enumerate(periods):
-        factor = 1 + ((len(periods) - index - 1) * 0.04)
-        trend.append({
-            'period': period,
-            'total_emissions': round(total_emissions * factor, 2),
-        })
-    return trend
+
+def _trend_direction(current: float, previous: float) -> str:
+    if current > previous:
+        return 'up'
+    if current < previous:
+        return 'down'
+    return 'neutral'
+
+
+def _build_cycle_summaries(db: Session) -> list[dict]:
+    cycles = (
+        db.query(CollectionCycle)
+        .filter(CollectionCycle.cycle_year > 0)
+        .order_by(CollectionCycle.cycle_year.asc(), CollectionCycle.id.asc())
+        .all()
+    )
+    required_fields = [
+        'scope_1_emissions',
+        'scope_2_location_based',
+        'scope_3_emissions',
+        'total_ghg_emissions',
+        'total_energy_consumption',
+        'total_water_withdrawal',
+        'total_waste_generated',
+        'female_representation_percent',
+        'trifr',
+        'independent_board_members_percent',
+    ]
+    policy_fields = [
+        'esg_policy_in_place',
+        'whs_policy_in_place',
+        'cybersecurity_policy_in_place',
+        'anti_bribery_corruption_policy',
+    ]
+
+    submissions_by_cycle: Dict[int, List[Submission]] = {}
+    for submission in (
+        db.query(Submission)
+        .filter(Submission.cycle_id.is_not(None))
+        .order_by(Submission.cycle_id.asc(), Submission.id.asc())
+        .all()
+    ):
+        if submission.cycle_id is None:
+            continue
+        submissions_by_cycle.setdefault(submission.cycle_id, []).append(submission)
+
+    summaries: list[dict] = []
+    for cycle in cycles:
+        payloads = [
+            payload
+            for payload in (parse_submission(submission) for submission in submissions_by_cycle.get(cycle.id, []))
+            if payload
+        ]
+        if not payloads:
+            continue
+
+        reporting_count = len(payloads)
+        total_scope_1 = 0.0
+        total_scope_2 = 0.0
+        total_scope_3 = 0.0
+        total_energy = 0.0
+        total_water = 0.0
+        total_waste = 0.0
+        total_female_rep = 0.0
+        total_trifr = 0.0
+        governance_yes = 0.0
+        governance_checks = 0.0
+        score_e_total = 0.0
+        score_s_total = 0.0
+        score_g_total = 0.0
+        score_total = 0.0
+        completeness_total = 0.0
+        confidence_total = 0.0
+        accuracy_total = 0.0
+
+        for payload in payloads:
+            esg_score, e_score, s_score, g_score = score_company_payload(payload)
+            scope_1 = safe_number(payload.get('scope_1_emissions'))
+            scope_2 = safe_number(payload.get('scope_2_location_based'))
+            scope_3 = safe_number(payload.get('scope_3_emissions'))
+            total_ghg = safe_number(payload.get('total_ghg_emissions'))
+            energy = safe_number(payload.get('total_energy_consumption'))
+            renewable = safe_number(payload.get('renewable_energy_consumption'))
+            water = safe_number(payload.get('total_water_withdrawal'))
+            waste = safe_number(payload.get('total_waste_generated'))
+            female_rep = safe_number(payload.get('female_representation_percent'))
+            trifr = safe_number(payload.get('trifr'))
+            turnover = safe_number(payload.get('employee_turnover_rate'))
+
+            total_scope_1 += scope_1
+            total_scope_2 += scope_2
+            total_scope_3 += scope_3
+            total_energy += energy
+            total_water += water
+            total_waste += waste
+            total_female_rep += female_rep
+            total_trifr += trifr
+            score_e_total += e_score
+            score_s_total += s_score
+            score_g_total += g_score
+            score_total += esg_score
+
+            governance_yes += 1 if str(payload.get('esg_policy_in_place', '')).strip().lower() == 'yes' else 0
+            governance_yes += 1 if str(payload.get('whs_policy_in_place', '')).strip().lower() == 'yes' else 0
+            governance_yes += 1 if str(payload.get('cybersecurity_policy_in_place', '')).strip().lower() == 'yes' else 0
+            governance_yes += 1 if str(payload.get('anti_bribery_corruption_policy', '')).strip().lower() == 'yes' else 0
+            governance_checks += len(policy_fields)
+
+            filled_fields = sum(1 for field in required_fields if payload.get(field) is not None)
+            completeness_total += (filled_fields / len(required_fields)) * 100
+
+            confidence_values = [str(value).strip().lower() for key, value in payload.items() if key.endswith('_confidence')]
+            if confidence_values:
+                measured_count = sum(1 for value in confidence_values if value == 'measured')
+                confidence_total += (measured_count / len(confidence_values)) * 100
+
+            scope_total = scope_1 + scope_2 + scope_3
+            accuracy = 100.0
+            if total_ghg > 0:
+                delta = abs(total_ghg - scope_total) / max(total_ghg, 1)
+                if delta > 0.05:
+                    accuracy -= min(30, delta * 100)
+            if renewable > energy and energy > 0:
+                accuracy -= 10
+            accuracy_total += clamp(accuracy)
+
+        summaries.append(
+            {
+                'cycle_id': cycle.id,
+                'cycle_year': cycle.cycle_year,
+                'reporting_companies': reporting_count,
+                'scope_1_total': round(total_scope_1, 2),
+                'scope_2_total': round(total_scope_2, 2),
+                'scope_3_total': round(total_scope_3, 2),
+                'total_ghg': round(total_scope_1 + total_scope_2 + total_scope_3, 2),
+                'total_energy': round(total_energy, 2),
+                'total_water': round(total_water, 2),
+                'total_waste': round(total_waste, 2),
+                'average_female_representation': round(total_female_rep / reporting_count, 2),
+                'trifr': round(total_trifr / reporting_count, 2),
+                'governance_adoption_percent': round((governance_yes / governance_checks) * 100, 2) if governance_checks else 0.0,
+                'portfolio_esg_score': round(score_total / reporting_count, 2),
+                'score_breakdown': {
+                    'E': round(score_e_total / reporting_count, 2),
+                    'S': round(score_s_total / reporting_count, 2),
+                    'G': round(score_g_total / reporting_count, 2),
+                },
+                'data_quality': {
+                    'completeness': round(completeness_total / reporting_count, 2),
+                    'accuracy': round(accuracy_total / reporting_count, 2),
+                    'confidence': round(confidence_total / reporting_count, 2),
+                },
+            }
+        )
+
+    return summaries
+
+
+def _build_cycle_emissions_trend(cycle_summaries: list[dict]) -> list[dict]:
+    return [
+        {
+            'period': str(summary['cycle_year']),
+            'total_emissions': round(summary['total_ghg'], 2),
+        }
+        for summary in cycle_summaries
+    ]
 
 
 def score_company_payload(payload: dict) -> tuple[float, float, float, float]:
@@ -3243,8 +4857,8 @@ def _framework_insertions(snapshot: dict, audience: str) -> dict:
     }
 
 
-def _action_plan_summary(db: Session, company_id: int) -> dict:
-    plans = db.query(ActionPlan).filter(ActionPlan.company_id == company_id).order_by(ActionPlan.created_at.asc()).all()
+def _action_plan_summary(db: Session, company_id: int, plans: Optional[List[ActionPlan]] = None) -> dict:
+    plans = sorted(plans if plans is not None else db.query(ActionPlan).filter(ActionPlan.company_id == company_id).all(), key=lambda plan: plan.created_at or datetime.min)
     if not plans:
         return {
             'total': 0,
@@ -3472,13 +5086,19 @@ def _build_company_snapshot(db: Session, company: Company) -> Optional[dict]:
         'confidence': confidence,
         'submission_notes': (latest_payload.get('submission_notes') or '').strip(),
         'narrative_signals': narrative_signals,
-        'action_plan_summary': _action_plan_summary(db, company.id),
+        'action_plan_summary': _action_plan_summary(db, company.id, plans=company.action_plans or []),
         'framework_tags': get_framework_tags_for_audience('company'),
     }
 
 
-def _build_portfolio_snapshot(db: Session) -> Optional[dict]:
-    companies = db.query(Company).order_by(Company.name.asc()).all()
+def _build_portfolio_snapshot(db: Session, companies: Optional[List[Company]] = None) -> Optional[dict]:
+    cache_key = 'build_portfolio_snapshot'
+    if companies is None:
+        cached = _get_timed_cache(cache_key)
+        if cached is not None:
+            return cached
+
+    companies = companies if companies is not None else _load_companies_with_related_data(db)
     approved_company_snapshots = []
     for company in companies:
         snapshot = _build_company_snapshot(db, company)
@@ -3543,7 +5163,7 @@ def _build_portfolio_snapshot(db: Session) -> Optional[dict]:
         action_plan_overdue += int(action_plan_summary.get('overdue', 0) or 0)
         action_plan_items.extend(action_plan_summary.get('items', []))
 
-    return {
+    result = {
         'total_companies': total_companies,
         'approved_company_count': approved_company_count,
         'avg_esg_score': round(avg_esg_score, 2),
@@ -3617,6 +5237,7 @@ def _build_portfolio_snapshot(db: Session) -> Optional[dict]:
         },
         'framework_tags': get_framework_tags_for_audience('lp'),
     }
+    return _set_timed_cache(cache_key, result)
 
 
 def _build_narrative_prompt(audience: str, scope: str, tone: str, context: dict) -> str:
@@ -3626,12 +5247,21 @@ def _build_narrative_prompt(audience: str, scope: str, tone: str, context: dict)
         'board': 'Write like a board pack summary for executives and directors.',
     }
     return (
-        f'You are writing a board-ready ESG narrative summary for the {audience} audience.\n'
+        f'You are writing an ESG narrative summary for the {audience} audience.\n'
         f'{audience_notes.get(audience, audience_notes["board"])}\n'
         f'Tone: {_tone_title(tone)}. {_tone_brief(tone, audience)}\n'
-        'Use only the approved data provided below. Do not invent facts. If a value is missing, say it plainly.\n'
-        'Keep the language plain-English, concise, and businesslike. Avoid jargon and markdown.\n'
+        'Use only the approved data provided below. Do not invent facts or speculate. '
+        'If a value is missing, say it plainly or omit it.\n'
+        'Keep the language plain-English, concise, and businesslike. Avoid markdown, emojis, and generic filler.\n'
+        'Prioritize decision-useful language: what changed, why it matters, and what should happen next.\n'
         'Weave in framework-aware language where relevant for TCFD, GRI, SFDR, and EDCI.\n'
+        'Output requirements:\n'
+        '- Return valid JSON only.\n'
+        '- Headline: 8-14 words.\n'
+        '- Summary: 2 short paragraphs, roughly 90-140 words total.\n'
+        '- Highlights, watchouts, and recommendations: exactly 3 items each.\n'
+        '- Each bullet should be one sentence and tied to approved data.\n'
+        '- Keep the result readable in a board pack or investor letter without extra editing.\n'
         'Return valid JSON only with this exact shape:\n'
         '{'
         '"headline":"string",'
@@ -3640,6 +5270,7 @@ def _build_narrative_prompt(audience: str, scope: str, tone: str, context: dict)
         '"watchouts":["string","string","string"],'
         '"recommendations":["string","string","string"]'
         '}\n'
+        f'Decision brief:\n{_build_narrative_brief(context)}\n'
         f'Scope: {scope}\n'
         f'Approved data:\n{json.dumps(context, indent=2, sort_keys=True, default=str)}'
     )
@@ -3661,6 +5292,107 @@ def _extract_json_object(text_value: str) -> Optional[dict]:
         return parsed if isinstance(parsed, dict) else None
     except (TypeError, ValueError):
         return None
+
+
+def _coerce_narrative_items(value: object) -> List[str]:
+    if isinstance(value, (list, tuple)):
+        source_items = value
+    elif isinstance(value, str):
+        source_items = [value]
+    else:
+        source_items = []
+
+    items: List[str] = []
+    for item in source_items:
+        text = str(item).strip()
+        if text and text not in items:
+            items.append(text)
+    return items
+
+
+def _normalize_narrative_items(value: object, fallback_value: object, *, limit: int = 3) -> List[str]:
+    items = _coerce_narrative_items(value)[:limit]
+    if len(items) >= limit:
+        return items[:limit]
+
+    for fallback_item in _coerce_narrative_items(fallback_value):
+        if len(items) >= limit:
+            break
+        if fallback_item not in items:
+            items.append(fallback_item)
+    return items[:limit]
+
+
+def _build_narrative_brief(context: dict) -> str:
+    company = context.get('company') or {}
+    metrics = context.get('metrics') or {}
+    action_plan_summary = context.get('action_plan_summary') or {}
+    narrative_signals = context.get('narrative_signals') or {}
+    framework_tags = context.get('framework_tags') or []
+
+    def metric_text(label: str, value: object, suffix: str = '') -> str:
+        if value is None or value == '':
+            return f'{label}: n/a'
+        try:
+            numeric_value = float(value)
+            rendered = f'{int(numeric_value)}' if numeric_value.is_integer() else f'{numeric_value:.1f}'
+        except (TypeError, ValueError):
+            rendered = str(value).strip()
+        return f'{label}: {rendered}{suffix}'
+
+    lines = [
+        f"Audience: {context.get('audience')} | Tone: {_tone_title(context.get('tone') or 'board-ready')}",
+        (
+            'Entity: '
+            f"{company.get('name') or 'n/a'} | "
+            f"Sector: {company.get('sector') or 'n/a'} | "
+            f"Asset class: {company.get('asset_class') or 'n/a'} | "
+            f"Geography: {company.get('geography') or 'n/a'}"
+        ),
+    ]
+
+    if company.get('current_year') is not None or company.get('previous_year') is not None:
+        report_years = f"{company.get('current_year') or 'n/a'}"
+        if company.get('previous_year'):
+            report_years += f" vs {company.get('previous_year')}"
+        lines.append(
+            f"Reporting years: {report_years} | Status: {company.get('status') or 'n/a'} | "
+            f"ESG score: {metric_text('', company.get('esg_score')).split(': ', 1)[-1]}"
+        )
+
+    metric_summary = [
+        metric_text('Renewable energy', metrics.get('renewable_ratio_percent'), '%'),
+        metric_text('Female representation', metrics.get('female_representation_percent'), '%'),
+        metric_text('TRIFR', metrics.get('trifr')),
+        metric_text('Emissions delta', metrics.get('emissions_delta_pct'), '%'),
+    ]
+    lines.append('Key metrics: ' + '; '.join(metric_summary))
+
+    strengths = _coerce_narrative_items(narrative_signals.get('strengths'))[:2]
+    watchouts = _coerce_narrative_items(narrative_signals.get('watchouts'))[:2]
+    opportunities = _coerce_narrative_items(narrative_signals.get('opportunities'))[:2]
+    lines.append(
+        f"Signals: strengths={strengths or ['n/a']}; watchouts={watchouts or ['n/a']}; "
+        f"opportunities={opportunities or ['n/a']}"
+    )
+
+    action_plan_text = action_plan_summary.get('summary') or 'No action plan summary is available.'
+    lines.append(f"Action plan: {action_plan_text}")
+
+    if action_plan_summary.get('items'):
+        first_item = action_plan_summary['items'][0]
+        lines.append(
+            'Action plan example: '
+            f"{first_item.get('initiative_name') or 'n/a'} "
+            f"({first_item.get('status') or 'n/a'})"
+        )
+
+    lines.append(f"Framework tags: {', '.join(framework_tags) if framework_tags else 'n/a'}")
+    lines.append(
+        'Write a plain-English, decision-ready narrative that explains what changed, why it matters, '
+        'and what should happen next. Use only approved data and do not invent missing facts.'
+    )
+    return '\n'.join(lines)
 
 
 def _call_openai_summary(prompt: str, *, model: str = OPENAI_DEFAULT_MODEL) -> Optional[dict]:
@@ -3789,10 +5521,29 @@ def _narrative_payload_dict(
     return {
         'headline': str(headline or '').strip(),
         'summary': str(summary or '').strip(),
-        'highlights': [str(item).strip() for item in highlights if str(item).strip()],
-        'watchouts': [str(item).strip() for item in watchouts if str(item).strip()],
-        'recommendations': [str(item).strip() for item in recommendations if str(item).strip()],
+        'highlights': _coerce_narrative_items(highlights),
+        'watchouts': _coerce_narrative_items(watchouts),
+        'recommendations': _coerce_narrative_items(recommendations),
     }
+
+
+def _normalize_narrative_payload(payload: Optional[dict], fallback_payload: dict) -> dict:
+    safe_payload = payload if isinstance(payload, dict) else {}
+    normalized = _narrative_payload_dict(
+        headline=safe_payload.get('headline') or fallback_payload.get('headline') or '',
+        summary=safe_payload.get('summary') or fallback_payload.get('summary') or '',
+        highlights=_normalize_narrative_items(safe_payload.get('highlights'), fallback_payload.get('highlights')),
+        watchouts=_normalize_narrative_items(safe_payload.get('watchouts'), fallback_payload.get('watchouts')),
+        recommendations=_normalize_narrative_items(
+            safe_payload.get('recommendations'),
+            fallback_payload.get('recommendations'),
+        ),
+    )
+    if not normalized['headline']:
+        normalized['headline'] = fallback_payload.get('headline') or 'ESG narrative summary'
+    if not normalized['summary']:
+        normalized['summary'] = fallback_payload.get('summary') or 'Approved data is available, but the narrative text could not be generated.'
+    return normalized
 
 
 def _load_cached_narrative(
@@ -3878,6 +5629,26 @@ def _narrative_active_payload(record: NarrativeSummary) -> dict:
         highlights=payload.get('highlights') or _safe_json_loads(record.highlights_json, []),
         watchouts=payload.get('watchouts') or _safe_json_loads(record.watchouts_json, []),
         recommendations=payload.get('recommendations') or _safe_json_loads(record.recommendations_json, []),
+    )
+
+
+def _narrative_record_history_item(record: NarrativeSummary, *, company_name: str | None) -> NarrativeHistoryItem:
+    return NarrativeHistoryItem(
+        narrative_id=record.id,
+        audience=record.audience,
+        scope=record.scope,
+        tone=getattr(record, 'tone', 'board-ready'),
+        status=getattr(record, 'status', 'generated'),
+        company_id=record.company_id,
+        company_name=company_name,
+        generated_at=(record.created_at or datetime.utcnow()).isoformat(),
+        updated_at=(record.updated_at or datetime.utcnow()).isoformat(),
+        headline=getattr(record, 'headline', '') or '',
+        source_years=_narrative_source_years(record),
+        source_company_count=getattr(record, 'source_company_count', 0) or 0,
+        source_submission_count=getattr(record, 'source_submission_count', 0) or 0,
+        approved_by_role=getattr(record, 'approved_by_role', None),
+        approved_at=(record.approved_at.isoformat() if getattr(record, 'approved_at', None) else None),
     )
 
 
@@ -4139,44 +5910,8 @@ def build_narrative_summary(
 
         prompt = _build_narrative_prompt(normalized_audience, scope, normalized_tone, context)
         openai_payload = _call_openai_summary(prompt)
-
-        if not openai_payload:
-            fallback_payload = _build_fallback_company_narrative(snapshot, normalized_audience, normalized_tone)
-            record = _store_narrative_record(
-                db,
-                audience=normalized_audience,
-                scope=scope,
-                tone=normalized_tone,
-                company_id=target_company.id,
-                source_hash=source_hash,
-                model=None,
-                source_years=[snapshot['current_year']] if snapshot.get('current_year') else [],
-                source_company_count=1,
-                source_submission_count=1,
-                generated_payload=_narrative_payload_dict(
-                    headline=fallback_payload.get('headline') or '',
-                    summary=fallback_payload.get('summary') or '',
-                    highlights=fallback_payload.get('highlights') or [],
-                    watchouts=fallback_payload.get('watchouts') or [],
-                    recommendations=fallback_payload.get('recommendations') or [],
-                ),
-                generation_context=context,
-                framework_tags=context.get('framework_tags') or [],
-                status='generated',
-            )
-            return _narrative_record_response(
-                record,
-                audience=normalized_audience,
-                scope=scope,
-                company_id=target_company.id,
-                company_name=target_company.name,
-                source_years=[snapshot['current_year']] if snapshot.get('current_year') else [],
-                cached=False,
-                fallback_used=True,
-                can_edit=role == 'manager',
-                can_approve=role == 'manager',
-                can_export=True,
-            )
+        fallback_payload = _build_fallback_company_narrative(snapshot, normalized_audience, normalized_tone)
+        normalized_payload = _normalize_narrative_payload(openai_payload, fallback_payload)
 
         record = _store_narrative_record(
             db,
@@ -4185,17 +5920,11 @@ def build_narrative_summary(
             tone=normalized_tone,
             company_id=target_company.id,
             source_hash=source_hash,
-                model=OPENAI_DEFAULT_MODEL,
+            model=OPENAI_DEFAULT_MODEL if openai_payload else None,
             source_years=[snapshot['current_year']] if snapshot.get('current_year') else [],
             source_company_count=1,
             source_submission_count=1,
-            generated_payload=_narrative_payload_dict(
-                headline=openai_payload.get('headline') or '',
-                summary=openai_payload.get('summary') or '',
-                highlights=openai_payload.get('highlights') or [],
-                watchouts=openai_payload.get('watchouts') or [],
-                recommendations=openai_payload.get('recommendations') or [],
-            ),
+            generated_payload=normalized_payload,
             generation_context=context,
             framework_tags=context.get('framework_tags') or [],
             status='generated',
@@ -4208,7 +5937,7 @@ def build_narrative_summary(
             company_name=target_company.name,
             source_years=[snapshot['current_year']] if snapshot.get('current_year') else [],
             cached=False,
-            fallback_used=False,
+            fallback_used=not bool(openai_payload),
             can_edit=role == 'manager',
             can_approve=role == 'manager',
             can_export=True,
@@ -4256,27 +5985,21 @@ def build_narrative_summary(
 
         prompt = _build_narrative_prompt(normalized_audience, scope, normalized_tone, context)
         openai_payload = _call_openai_summary(prompt)
+        fallback_payload = _build_fallback_portfolio_narrative(snapshot, normalized_audience, normalized_tone)
+        normalized_payload = _normalize_narrative_payload(openai_payload, fallback_payload)
 
-        if not openai_payload:
-            fallback_payload = _build_fallback_portfolio_narrative(snapshot, normalized_audience, normalized_tone)
-            record = _store_narrative_record(
-                db,
+        record = _store_narrative_record(
+            db,
             audience=normalized_audience,
             scope=scope,
             tone=normalized_tone,
             company_id=None,
             source_hash=source_hash,
-            model=None,
+            model=OPENAI_DEFAULT_MODEL if openai_payload else None,
             source_years=snapshot['source_years'],
             source_company_count=snapshot['source_company_count'],
             source_submission_count=snapshot['source_submission_count'],
-            generated_payload=_narrative_payload_dict(
-                headline=fallback_payload.get('headline') or '',
-                summary=fallback_payload.get('summary') or '',
-                highlights=fallback_payload.get('highlights') or [],
-                watchouts=fallback_payload.get('watchouts') or [],
-                recommendations=fallback_payload.get('recommendations') or [],
-            ),
+            generated_payload=normalized_payload,
             generation_context=context,
             framework_tags=context.get('framework_tags') or [],
             status='generated',
@@ -4289,47 +6012,11 @@ def build_narrative_summary(
             company_name=None,
             source_years=snapshot['source_years'],
             cached=False,
-            fallback_used=True,
+            fallback_used=not bool(openai_payload),
             can_edit=role == 'manager',
             can_approve=role == 'manager',
             can_export=True,
         )
-
-    record = _store_narrative_record(
-        db,
-        audience=normalized_audience,
-        scope=scope,
-        tone=normalized_tone,
-        company_id=None,
-        source_hash=source_hash,
-                model=OPENAI_DEFAULT_MODEL,
-        source_years=snapshot['source_years'],
-        source_company_count=snapshot['source_company_count'],
-        source_submission_count=snapshot['source_submission_count'],
-            generated_payload=_narrative_payload_dict(
-                headline=openai_payload.get('headline') or '',
-                summary=openai_payload.get('summary') or '',
-                highlights=openai_payload.get('highlights') or [],
-                watchouts=openai_payload.get('watchouts') or [],
-                recommendations=openai_payload.get('recommendations') or [],
-            ),
-        generation_context=context,
-        framework_tags=context.get('framework_tags') or [],
-        status='generated',
-    )
-    return _narrative_record_response(
-        record,
-        audience=normalized_audience,
-        scope=scope,
-        company_id=None,
-        company_name=None,
-        source_years=snapshot['source_years'],
-        cached=False,
-        fallback_used=False,
-        can_edit=role == 'manager',
-        can_approve=role == 'manager',
-        can_export=True,
-    )
 
 
 def _get_narrative_record_or_404(db: Session, narrative_id: int) -> NarrativeSummary:
@@ -4369,6 +6056,91 @@ def _render_narrative_file_lines(record: NarrativeSummary) -> List[str]:
     return lines
 
 
+def _authorize_narrative_record_access(
+    db: Session,
+    *,
+    record: NarrativeSummary,
+    role: str,
+    email: str | None,
+) -> None:
+    normalized_role = normalize_role(role)
+    if record.scope == 'portfolio':
+        if normalized_role == 'company':
+            raise HTTPException(status_code=403, detail='Company users cannot access portfolio narrative records')
+        return
+
+    if normalized_role == 'investor':
+        raise HTTPException(status_code=403, detail='Investors cannot access company narrative records')
+
+    if normalized_role == 'manager':
+        return
+
+    if normalized_role != 'company':
+        raise HTTPException(status_code=403, detail='Narrative access is restricted')
+
+    if not email:
+        raise HTTPException(status_code=401, detail='Email header required')
+
+    user = find_request_user(db, email)
+    if not user:
+        raise HTTPException(status_code=404, detail='User not found')
+
+    company = db.query(Company).filter(Company.user_id == user.id).first()
+    if not company or company.id != record.company_id:
+        raise HTTPException(status_code=403, detail='You do not have access to this narrative record')
+
+
+@app.get('/narrative/history', response_model=NarrativeHistoryResponse)
+def narrative_history(
+    audience: str = Query(default='board'),
+    company_id: int | None = Query(default=None),
+    limit: int = Query(default=10, ge=1, le=25),
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
+    normalized_audience = normalize_narrative_audience(audience)
+    scope = NARRATIVE_SCOPE_BY_AUDIENCE[normalized_audience]
+
+    query = db.query(NarrativeSummary).filter(
+        NarrativeSummary.audience == normalized_audience,
+        NarrativeSummary.scope == scope,
+    )
+
+    if scope == 'company':
+        if role == 'investor':
+            raise HTTPException(status_code=403, detail='Investors cannot access company narrative history')
+        if company_id is not None:
+            query = query.filter(NarrativeSummary.company_id == company_id)
+        elif role == 'company':
+            if not email:
+                raise HTTPException(status_code=401, detail='Email header required')
+            user = find_request_user(db, email)
+            if not user:
+                raise HTTPException(status_code=404, detail='User not found')
+            company = db.query(Company).filter(Company.user_id == user.id).first()
+            if not company:
+                raise HTTPException(status_code=404, detail='No company associated with this user')
+            query = query.filter(NarrativeSummary.company_id == company.id)
+        elif role != 'manager':
+            raise HTTPException(status_code=403, detail='Narrative history access is restricted')
+    elif role == 'company':
+        raise HTTPException(status_code=403, detail='Company users cannot access portfolio narrative history')
+
+    records = query.order_by(NarrativeSummary.updated_at.desc(), NarrativeSummary.id.desc()).limit(limit).all()
+    items = [
+        _narrative_record_history_item(record, company_name=record.company.name if record.company else None)
+        for record in records
+    ]
+    return NarrativeHistoryResponse(
+        available=True,
+        audience=normalized_audience,
+        scope=scope,
+        items=items,
+        message=None,
+    )
+
+
 @app.post('/narrative/generate', response_model=NarrativeDetailResponse)
 def generate_narrative_summary(
     payload: NarrativeGenerateRequest,
@@ -4384,6 +6156,31 @@ def generate_narrative_summary(
         company_id=payload.company_id,
         tone=payload.tone,
         force_refresh=payload.force_refresh,
+    )
+
+
+@app.get('/narrative/{narrative_id}', response_model=NarrativeDetailResponse)
+def get_narrative_summary(
+    narrative_id: int,
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
+    record = _get_narrative_record_or_404(db, narrative_id)
+    _authorize_narrative_record_access(db, record=record, role=role, email=email)
+    company_name = record.company.name if record.company else None
+    return _narrative_record_response(
+        record,
+        audience=record.audience,
+        scope=record.scope,
+        company_id=record.company_id,
+        company_name=company_name,
+        source_years=_narrative_source_years(record),
+        cached=True,
+        fallback_used=record.provider != 'openai',
+        can_edit=normalize_role(role) == 'manager',
+        can_approve=normalize_role(role) == 'manager',
+        can_export=True,
     )
 
 
@@ -4485,8 +6282,15 @@ def export_narrative_summary(
     )
 
 
-def build_investor_analytics(db: Session) -> dict:
-    companies = db.query(Company).all()
+def build_investor_analytics(db: Session, companies: Optional[List[Company]] = None, cycle_summaries: Optional[List[dict]] = None) -> dict:
+    cache_key = 'build_investor_analytics'
+    if companies is None and cycle_summaries is None:
+        cached = _get_timed_cache(cache_key)
+        if cached is not None:
+            return cached
+
+    companies = companies if companies is not None else _load_companies_with_related_data(db)
+    cycle_summaries = cycle_summaries if cycle_summaries is not None else _build_cycle_summaries(db)
 
     status_counts = {
         'Not Started': 0,
@@ -4653,7 +6457,36 @@ def build_investor_analytics(db: Session) -> dict:
     top_performers = sorted(company_scores, key=lambda item: item['esg_score'], reverse=True)[:5]
     bottom_performers = sorted(company_scores, key=lambda item: item['esg_score'])[:5]
 
-    return {
+    current_cycle_summary = cycle_summaries[-1] if cycle_summaries else None
+    previous_cycle_summary = cycle_summaries[-2] if len(cycle_summaries) > 1 else None
+    current_cycle_reporting = safe_number((current_cycle_summary or {}).get('reporting_companies'), reporting_companies)
+    previous_cycle_reporting = safe_number((previous_cycle_summary or {}).get('reporting_companies'), current_cycle_reporting)
+    current_cycle_score = safe_number((current_cycle_summary or {}).get('portfolio_esg_score'), round(score_total / reporting_count, 2))
+    previous_cycle_score = safe_number((previous_cycle_summary or {}).get('portfolio_esg_score'), current_cycle_score)
+    current_cycle_total_ghg = safe_number((current_cycle_summary or {}).get('total_ghg'), portfolio_total_emissions)
+    previous_cycle_total_ghg = safe_number((previous_cycle_summary or {}).get('total_ghg'), current_cycle_total_ghg)
+    current_cycle_female_rep = safe_number(
+        (current_cycle_summary or {}).get('average_female_representation'),
+        round(total_female_rep / reporting_count, 2),
+    )
+    previous_cycle_female_rep = safe_number(
+        (previous_cycle_summary or {}).get('average_female_representation'),
+        current_cycle_female_rep,
+    )
+    current_cycle_trifr = safe_number((current_cycle_summary or {}).get('trifr'), round(total_trifr / reporting_count, 2))
+    previous_cycle_trifr = safe_number((previous_cycle_summary or {}).get('trifr'), current_cycle_trifr)
+    current_cycle_governance = safe_number(
+        (current_cycle_summary or {}).get('governance_adoption_percent'),
+        round((governance_yes / governance_checks) * 100, 2) if governance_checks else 0.0,
+    )
+    previous_cycle_governance = safe_number((previous_cycle_summary or {}).get('governance_adoption_percent'), current_cycle_governance)
+    current_cycle_completeness = safe_number(
+        (current_cycle_summary or {}).get('completeness'),
+        round(completeness_total / reporting_count, 2),
+    )
+    previous_cycle_completeness = safe_number((previous_cycle_summary or {}).get('completeness'), current_cycle_completeness)
+
+    result = {
         'total_companies': len(companies),
         'reporting_companies': reporting_companies,
         'total_submissions': total_submissions,
@@ -4674,7 +6507,7 @@ def build_investor_analytics(db: Session) -> dict:
             'scope_3': round(total_scope_3, 2),
             'total': round(portfolio_total_emissions, 2),
         },
-        'emissions_trend': build_emissions_trend(portfolio_total_emissions),
+        'emissions_trend': _build_cycle_emissions_trend(cycle_summaries),
         'resource_totals': {
             'energy': round(total_energy, 2),
             'water': round(total_water, 2),
@@ -4693,7 +6526,70 @@ def build_investor_analytics(db: Session) -> dict:
             'accuracy': round(accuracy_total / reporting_count, 2),
             'confidence': round(confidence_total / reporting_count, 2),
         },
+        'comparison_rows': [
+            {
+                'metric_name': 'Portfolio ESG Score',
+                'current_value': round(current_cycle_score, 2),
+                'previous_value': round(previous_cycle_score, 2),
+                'unit': 'score',
+                'trend_percent': _percent_change(current_cycle_score, previous_cycle_score),
+                'trend_direction': _trend_direction(current_cycle_score, previous_cycle_score),
+                'narrative': 'Latest portfolio score compared with the prior cycle.',
+            },
+            {
+                'metric_name': 'Average GHG Emissions',
+                'current_value': round(current_cycle_total_ghg / max(current_cycle_reporting, 1), 2),
+                'previous_value': round(previous_cycle_total_ghg / max(previous_cycle_reporting, 1), 2),
+                'unit': 'tCO2e per company',
+                'trend_percent': _percent_change(
+                    current_cycle_total_ghg / max(current_cycle_reporting, 1),
+                    previous_cycle_total_ghg / max(previous_cycle_reporting, 1),
+                ),
+                'trend_direction': _trend_direction(
+                    current_cycle_total_ghg / max(current_cycle_reporting, 1),
+                    previous_cycle_total_ghg / max(previous_cycle_reporting, 1),
+                ),
+                'narrative': 'Average emissions intensity for the current reporting cohort versus the prior cycle.',
+            },
+            {
+                'metric_name': 'Average Female Representation',
+                'current_value': round(current_cycle_female_rep, 2),
+                'previous_value': round(previous_cycle_female_rep, 2),
+                'unit': '%',
+                'trend_percent': _percent_change(current_cycle_female_rep, previous_cycle_female_rep),
+                'trend_direction': _trend_direction(current_cycle_female_rep, previous_cycle_female_rep),
+                'narrative': 'Workforce diversity comparison across consecutive cycles.',
+            },
+            {
+                'metric_name': 'TRIFR (Safety)',
+                'current_value': round(current_cycle_trifr, 2),
+                'previous_value': round(previous_cycle_trifr, 2),
+                'unit': 'rate',
+                'trend_percent': _percent_change(current_cycle_trifr, previous_cycle_trifr),
+                'trend_direction': _trend_direction(current_cycle_trifr, previous_cycle_trifr),
+                'narrative': 'Safety performance against the prior cycle.',
+            },
+            {
+                'metric_name': 'Governance Adoption',
+                'current_value': round(current_cycle_governance, 2),
+                'previous_value': round(previous_cycle_governance, 2),
+                'unit': '%',
+                'trend_percent': _percent_change(current_cycle_governance, previous_cycle_governance),
+                'trend_direction': _trend_direction(current_cycle_governance, previous_cycle_governance),
+                'narrative': 'Policy adoption and board oversight coverage versus the prior cycle.',
+            },
+            {
+                'metric_name': 'Data Completeness',
+                'current_value': round(current_cycle_completeness, 2),
+                'previous_value': round(previous_cycle_completeness, 2),
+                'unit': '%',
+                'trend_percent': _percent_change(current_cycle_completeness, previous_cycle_completeness),
+                'trend_direction': _trend_direction(current_cycle_completeness, previous_cycle_completeness),
+                'narrative': 'How complete the latest reporting cohort is versus the previous cycle.',
+            },
+        ],
     }
+    return _set_timed_cache(cache_key, result) if companies is not None and cycle_summaries is not None else result
 
 
 _IMPACT_INTELLIGENCE_CACHE: Dict[str, dict] = {}
@@ -4946,6 +6842,11 @@ def _build_impact_intelligence(db: Session, analytics: dict, companies: List[Com
     if cached_impact:
         return json.loads(json.dumps(cached_impact))
 
+    # Reuse the ranked analytics slices so the narrative, dashboard, and newsletter
+    # all point at the same company groups.
+    top_performers = list(analytics.get('top_performers') or [])
+    watchlist_companies = list(analytics.get('watchlist_companies') or [])
+
     metric_tooltip_map: Dict[str, str] = {}
     ai_payload = _call_openai_summary(_build_impact_tooltip_bundle_prompt(metric_specs))
     if isinstance(ai_payload, dict):
@@ -5022,6 +6923,38 @@ def _build_impact_intelligence(db: Session, analytics: dict, companies: List[Com
             f'{sector_name} is {gap:+.1f} pts versus its peer benchmark for female representation.'
         )
 
+    status_distribution = [
+        {'label': 'Reporting', 'value': reporting_companies, 'note': 'Companies with approved or usable data'},
+        {'label': 'Top performers', 'value': len(top_performers), 'note': 'Highest ESG score group'},
+        {'label': 'Watchlist', 'value': len(watchlist_companies), 'note': 'Lower relative performance or elevated TRIFR'},
+    ]
+    trend_points = [
+        {
+            'period': item.get('period'),
+            'value': item.get('total_emissions'),
+            'note': 'Cycle emissions',
+        }
+        for item in analytics.get('emissions_trend') or []
+    ]
+    score_leaderboard = [
+        {
+            'label': item['company_name'],
+            'value': item['esg_score'],
+            'note': item['sector'],
+        }
+        for item in top_performers[:5]
+    ]
+    trend_summary = 'Portfolio trend data is available for the selected cycle history.'
+    if len(trend_points) >= 2:
+        first_point = safe_number(trend_points[0].get('value'))
+        last_point = safe_number(trend_points[-1].get('value'))
+        if first_point > 0:
+            delta_pct = ((last_point - first_point) / first_point) * 100
+            trend_summary = (
+                f'Portfolio emissions moved {delta_pct:+.1f}% across the tracked cycle history, '
+                f'with the latest period at {_format_pdf_metric(last_point, decimals=1, suffix=" tCO2e")} .'
+            ).replace('  ', ' ')
+
     result = {
         'headline': 'Portfolio impact story',
         'summary': (
@@ -5039,6 +6972,13 @@ def _build_impact_intelligence(db: Session, analytics: dict, companies: List[Com
             {'label': 'Total GHG', 'value': total_emissions, 'unit': 'tCO2e', 'narrative': total_emissions_equivalent},
         ],
         'benchmark_callouts': benchmark_callouts[:4],
+        'trend_summary': trend_summary,
+        'comparison_rows': analytics.get('comparison_rows') or [],
+        'chart_series': {
+            'status_distribution': status_distribution,
+            'trend_points': trend_points,
+            'score_leaderboard': score_leaderboard,
+        },
         'metric_insights': metric_insights,
         'benchmark_comparisons': [
             {
@@ -5095,6 +7035,208 @@ def _build_impact_intelligence(db: Session, analytics: dict, companies: List[Com
         ],
     }
 
+    _IMPACT_INTELLIGENCE_CACHE[cache_key] = json.loads(json.dumps(result))
+    return json.loads(json.dumps(result))
+
+
+def _newsletter_audience_for_role(role: str) -> str:
+    normalized = normalize_role(role)
+    if normalized == 'manager':
+        return 'manager'
+    if normalized == 'investor':
+        return 'investor'
+    return ''
+
+
+def _build_newsletter_context(db: Session, *, audience: str, tone: str) -> dict:
+    companies = _load_companies_with_related_data(db)
+    analytics = build_investor_analytics(db, companies=companies)
+    impact_story = _build_impact_intelligence(db, analytics, companies)
+    source_years = [item.get('period') for item in analytics.get('emissions_trend') or [] if item.get('period')]
+    portfolio = {
+        'portfolio_esg_score': analytics.get('portfolio_esg_score'),
+        'reporting_companies': analytics.get('reporting_companies'),
+        'total_companies': analytics.get('total_companies'),
+        'governance_adoption_percent': analytics.get('governance_adoption_percent'),
+        'average_ghg_emissions': analytics.get('average_ghg_emissions'),
+        'data_quality': analytics.get('data_quality') or {},
+        'score_breakdown': analytics.get('score_breakdown') or {},
+    }
+    top_companies = [
+        f"{item.get('company_name')} ({item.get('esg_score'):.1f})"
+        for item in (analytics.get('top_performers') or [])[:3]
+        if item.get('company_name') is not None and item.get('esg_score') is not None
+    ]
+    bottom_companies = [
+        f"{item.get('company_name')} ({item.get('esg_score'):.1f})"
+        for item in (analytics.get('bottom_performers') or [])[:3]
+        if item.get('company_name') is not None and item.get('esg_score') is not None
+    ]
+    audience_tags = get_framework_tags_for_audience('lp' if audience == 'investor' else 'board')
+    if not audience_tags:
+        audience_tags = get_framework_tags_for_audience('board')
+    return {
+        'audience': audience,
+        'tone': tone,
+        'framework_tags': audience_tags,
+        'portfolio': portfolio,
+        'impact_story': impact_story,
+        'source_years': sorted({int(year) for year in source_years if str(year).isdigit()}),
+        'top_companies': top_companies,
+        'bottom_companies': bottom_companies,
+        'action_cta': (
+            'Use this digest in the board pack and follow up on the highlighted watchlist items.'
+            if audience == 'manager'
+            else 'Use this digest in the LP update and follow up on the highlighted watchlist items.'
+        ),
+    }
+
+
+def _build_newsletter_prompt(context: dict) -> str:
+    audience = context.get('audience') or 'manager'
+    tone = context.get('tone') or 'board-ready'
+    portfolio = context.get('portfolio') or {}
+    impact_story = context.get('impact_story') or {}
+    top_companies = context.get('top_companies') or []
+    bottom_companies = context.get('bottom_companies') or []
+    return (
+        f'Write a concise ESG newsletter for the {audience} audience.\n'
+        f'Tone: {_tone_title(tone)}.\n'
+        'Use only the approved data provided below. Do not invent facts or speculate.\n'
+        'Keep the copy clear, polished, and easy to send in an email or board update.\n'
+        'Return valid JSON only with this exact shape:\n'
+        '{'
+        '"subject_line":"string",'
+        '"preheader":"string",'
+        '"headline":"string",'
+        '"summary":"string",'
+        '"highlights":["string","string","string"],'
+        '"watchouts":["string","string","string"],'
+        '"recommendations":["string","string","string"],'
+        '"call_to_action":"string"'
+        '}\n'
+        'Requirements:\n'
+        '- Subject line should be <= 70 characters.\n'
+        '- Preheader should be <= 120 characters.\n'
+        '- Summary should be 1-2 short paragraphs.\n'
+        '- Use a practical, decision-ready tone.\n'
+        '- Tailor the call to action to the audience.\n'
+        f'Decision brief:\n'
+        f"Portfolio ESG score: {portfolio.get('portfolio_esg_score')}\n"
+        f"Reporting companies: {portfolio.get('reporting_companies')} of {portfolio.get('total_companies')}\n"
+        f"Governance adoption: {portfolio.get('governance_adoption_percent')}%\n"
+        f"Average GHG emissions: {portfolio.get('average_ghg_emissions')} tCO2e\n"
+        f"Top performers: {', '.join(top_companies) if top_companies else 'n/a'}\n"
+        f"Watchlist: {', '.join(bottom_companies) if bottom_companies else 'n/a'}\n"
+        f"Impact story summary: {impact_story.get('summary') or 'n/a'}\n"
+        f"Impact story highlights: {json.dumps((impact_story.get('highlights') or [])[:2], default=str)}\n"
+        f"Impact story watchouts: {json.dumps((impact_story.get('watchouts') or [])[:2], default=str)}\n"
+        f"Impact story recommendations: {json.dumps((impact_story.get('recommendations') or [])[:2], default=str)}\n"
+        f"Trend summary: {impact_story.get('trend_summary') or 'n/a'}\n"
+        f"Benchmark callouts: {json.dumps((impact_story.get('benchmark_callouts') or [])[:3], default=str)}\n"
+        f'Source years: {json.dumps(context.get("source_years") or [], default=str)}\n'
+        f'Approved data:\n{json.dumps(context, indent=2, sort_keys=True, default=str)}'
+    )
+
+
+def _newsletter_payload_dict(
+    *,
+    subject_line: str,
+    preheader: str,
+    headline: str,
+    summary: str,
+    highlights: List[str],
+    watchouts: List[str],
+    recommendations: List[str],
+    call_to_action: str,
+) -> dict:
+    return {
+        'subject_line': str(subject_line or '').strip(),
+        'preheader': str(preheader or '').strip(),
+        'headline': str(headline or '').strip(),
+        'summary': str(summary or '').strip(),
+        'highlights': _coerce_narrative_items(highlights),
+        'watchouts': _coerce_narrative_items(watchouts),
+        'recommendations': _coerce_narrative_items(recommendations),
+        'call_to_action': str(call_to_action or '').strip(),
+    }
+
+
+def _normalize_newsletter_payload(payload: Optional[dict], fallback_payload: dict) -> dict:
+    safe_payload = payload if isinstance(payload, dict) else {}
+    normalized = _newsletter_payload_dict(
+        subject_line=safe_payload.get('subject_line') or fallback_payload.get('subject_line') or '',
+        preheader=safe_payload.get('preheader') or fallback_payload.get('preheader') or '',
+        headline=safe_payload.get('headline') or fallback_payload.get('headline') or '',
+        summary=safe_payload.get('summary') or fallback_payload.get('summary') or '',
+        highlights=_normalize_narrative_items(safe_payload.get('highlights'), fallback_payload.get('highlights')),
+        watchouts=_normalize_narrative_items(safe_payload.get('watchouts'), fallback_payload.get('watchouts')),
+        recommendations=_normalize_narrative_items(
+            safe_payload.get('recommendations'),
+            fallback_payload.get('recommendations'),
+        ),
+        call_to_action=safe_payload.get('call_to_action') or fallback_payload.get('call_to_action') or '',
+    )
+    if not normalized['subject_line']:
+        normalized['subject_line'] = fallback_payload.get('subject_line') or 'ESG newsletter update'
+    if not normalized['preheader']:
+        normalized['preheader'] = fallback_payload.get('preheader') or 'A concise update grounded in approved portfolio data.'
+    if not normalized['headline']:
+        normalized['headline'] = fallback_payload.get('headline') or 'ESG newsletter update'
+    if not normalized['summary']:
+        normalized['summary'] = fallback_payload.get('summary') or 'Approved portfolio data is available, but the newsletter copy could not be generated.'
+    if not normalized['call_to_action']:
+        normalized['call_to_action'] = fallback_payload.get('call_to_action') or 'Review the approved data and follow up on the highlighted items.'
+    return normalized
+
+
+def _build_fallback_newsletter(context: dict) -> dict:
+    audience = context.get('audience') or 'manager'
+    portfolio = context.get('portfolio') or {}
+    impact_story = context.get('impact_story') or {}
+    top_companies = context.get('top_companies') or []
+    bottom_companies = context.get('bottom_companies') or []
+    subject_line = (
+        f"ESG newsletter: {portfolio.get('reporting_companies') or 0} companies in view"
+        if audience == 'manager'
+        else f"Portfolio ESG digest: {portfolio.get('reporting_companies') or 0} reporting companies"
+    )
+    preheader = (
+        f"Portfolio ESG score {float(portfolio.get('portfolio_esg_score') or 0):.1f}/100 with live watchlist and benchmark signals."
+    )
+    headline = 'Approved ESG data in plain English'
+    summary = (
+        f"The portfolio shows an ESG score of {float(portfolio.get('portfolio_esg_score') or 0):.1f}/100 across "
+        f"{int(portfolio.get('reporting_companies') or 0)} reporting companies. "
+        f"{impact_story.get('summary') or 'The latest impact story is available from approved portfolio data.'}"
+    )
+    highlights = [
+        f"Reporting coverage stands at {int(portfolio.get('reporting_companies') or 0)} of {int(portfolio.get('total_companies') or 0)} companies.",
+        (impact_story.get('highlights') or ['Portfolio momentum is holding steady.'])[0],
+        f"Top performer: {top_companies[0]}" if top_companies else 'Top performers are visible in the dashboard ranking.',
+    ]
+    watchouts = [
+        (impact_story.get('watchouts') or ['No major watchouts were triggered.'])[0],
+        f"Watchlist item: {bottom_companies[0]}" if bottom_companies else 'No watchlist company stood out from the approved data sample.',
+        f"Governance adoption is {float(portfolio.get('governance_adoption_percent') or 0):.1f}% and can still improve.",
+    ]
+    recommendations = [
+        (impact_story.get('recommendations') or ['Keep following up on the strongest improvement opportunities.'])[0],
+        'Use this digest to brief stakeholders on the current reporting cycle.',
+        'Keep pushing the strongest performers as internal benchmarks for the rest of the portfolio.',
+    ]
+    call_to_action = context.get('action_cta') or 'Use this digest in your next portfolio update.'
+    return _newsletter_payload_dict(
+        subject_line=subject_line,
+        preheader=preheader,
+        headline=headline,
+        summary=summary,
+        highlights=highlights,
+        watchouts=watchouts,
+        recommendations=recommendations,
+        call_to_action=call_to_action,
+    )
+
     _IMPACT_INTELLIGENCE_CACHE[cache_key] = json.loads(json.dumps(result, default=str))
     return result
 
@@ -5123,6 +7265,16 @@ def _search_normalize(value: Any) -> str:
 
 def _search_tokens(value: Any) -> List[str]:
     return [token for token in re.findall(r'[a-z0-9]+', _search_normalize(value)) if token]
+
+
+def _search_has_term_match(query: str, text: str) -> bool:
+    normalized_query = _search_normalize(query)
+    normalized_text = _search_normalize(text)
+    if not normalized_query or not normalized_text:
+        return False
+    if normalized_query in normalized_text:
+        return True
+    return bool(set(_search_tokens(normalized_query)) & set(_search_tokens(normalized_text)))
 
 
 def _search_score(query: str, text: str) -> float:
@@ -5303,9 +7455,27 @@ def _search_company_results(db: Session, query: str, role: str, user: User | Non
             search_score += _search_boost('companyStatusBoost', 0.0)
 
         action_plans = company.action_plans or []
+        best_action_plan_score = 0.0
+        matched_action_plan = False
         for plan in action_plans:
-            plan_score = _search_score(normalized_query, f'{plan.initiative_name} {plan.status} {plan.assigned_owner} {plan.linked_metric or ""}')
+            plan_text = ' '.join(
+                str(part or '').strip()
+                for part in [
+                    plan.initiative_name,
+                    plan.status,
+                    plan.assigned_owner,
+                    plan.linked_metric,
+                    company.name,
+                    company.sector,
+                    latest_payload.get('submission_notes'),
+                ]
+            )
+            if not _search_has_term_match(normalized_query, plan_text):
+                continue
+            plan_score = _search_score(normalized_query, plan_text)
             if plan_score > 0:
+                matched_action_plan = True
+                best_action_plan_score = max(best_action_plan_score, plan_score)
                 results.append(
                     _search_result(
                         result_type='Action Plan',
@@ -5324,7 +7494,7 @@ def _search_company_results(db: Session, query: str, role: str, user: User | Non
                     )
                 )
 
-        if search_score < SEARCH_MINIMUM_SCORE:
+        if search_score < SEARCH_MINIMUM_SCORE and not matched_action_plan:
             continue
 
         if normalized_role == 'company':
@@ -5335,13 +7505,17 @@ def _search_company_results(db: Session, query: str, role: str, user: User | Non
             company_param = quote_plus(company.name.strip())
             path = f'/submissions?companyId={company.id}&company={company_param}'
 
+        company_score = search_score + (8 if company.name.lower().startswith(normalized_query.lower()) else 0)
+        if search_score < SEARCH_MINIMUM_SCORE and matched_action_plan:
+            company_score = max(company_score, best_action_plan_score + 1)
+
         results.append(
             _search_result(
                 result_type='Company',
                 title=company.name,
                 subtitle=f'{company.sector} - {company.geography or "Unknown geography"} - {status_label}',
                 path=path,
-                score=search_score + (8 if company.name.lower().startswith(normalized_query.lower()) else 0),
+                score=company_score,
                 company_id=company.id,
                 company_name=company.name,
                 sector=company.sector,
@@ -5666,8 +7840,8 @@ def analytics_manager(db: Session = Depends(get_db)):
 @app.get('/dashboard/investor', response_model=InvestorDashboardResponse, dependencies=[Depends(require_manager_or_investor)])
 def investor_dashboard(db: Session = Depends(get_db)):
     # Investor receives portfolio-level analytics only (no raw company submissions).
-    analytics = build_investor_analytics(db)
-    companies = db.query(Company).order_by(Company.name.asc()).all()
+    companies = _load_companies_with_related_data(db)
+    analytics = build_investor_analytics(db, companies=companies)
     impact_story = _build_impact_intelligence(db, analytics, companies)
     return InvestorDashboardResponse(**analytics, impact_story=impact_story)
 
@@ -5685,8 +7859,11 @@ def lp_dashboard(db: Session = Depends(get_db)):
     """
     from schemas import LPDashboardResponse
     
-    companies = db.query(Company).all()
-    analytics = build_investor_analytics(db)
+    companies = _load_companies_with_related_data(db)
+    analytics = build_investor_analytics(db, companies=companies)
+    cycle_summaries = _build_cycle_summaries(db)
+    current_cycle_summary = cycle_summaries[-1] if cycle_summaries else None
+    previous_cycle_summary = cycle_summaries[-2] if len(cycle_summaries) > 1 else None
 
     def company_latest_payload(company: Company) -> dict:
         submissions = company.submissions or []
@@ -5743,33 +7920,61 @@ def lp_dashboard(db: Session = Depends(get_db)):
         ('Anti-Bribery / Anti-Corruption', 'anti_bribery_corruption_policy'),
     ]
 
+    def summary_value(summary: dict | None, key: str, default: float = 0.0) -> float:
+        if not summary:
+            return default
+        value = summary.get(key, default)
+        return value if value is not None else default
+
+    def summary_quality(summary: dict | None, key: str, default: float = 0.0) -> float:
+        if not summary:
+            return default
+        quality = summary.get('data_quality', {}) or {}
+        value = quality.get(key, default)
+        return value if value is not None else default
+
+    def sparkline(summary_key: str, fallback_value: float) -> list[float]:
+        values = [
+            round(summary['score_breakdown'].get(summary_key, fallback_value), 2)
+            for summary in cycle_summaries[-5:]
+        ]
+        return values or [round(fallback_value, 2)]
+
+    current_overall_score = summary_value(current_cycle_summary, 'portfolio_esg_score', analytics['portfolio_esg_score'])
+    previous_overall_score = summary_value(previous_cycle_summary, 'portfolio_esg_score', current_overall_score)
+    current_scores = current_cycle_summary.get('score_breakdown', {}) if current_cycle_summary else analytics.get('score_breakdown', {})
+    previous_scores = previous_cycle_summary.get('score_breakdown', {}) if previous_cycle_summary else current_scores
+
     # Build portfolio scorecard
     portfolio_scorecard = {
-        'overall_esg_score': round(analytics['portfolio_esg_score'], 2),
-        'overall_esg_score_previous': round(max(analytics['portfolio_esg_score'] - 3.5, 0), 2),
-        'yoy_change_percent': round((3.5 / max(analytics['portfolio_esg_score'] - 3.5, 1)) * 100, 2),
-        'three_year_trend': [round(max(analytics['portfolio_esg_score'] - 8, 0), 2), round(max(analytics['portfolio_esg_score'] - 4, 0), 2), round(max(analytics['portfolio_esg_score'] - 2, 0), 2), round(analytics['portfolio_esg_score'], 2)],
+        'overall_esg_score': round(current_overall_score, 2),
+        'overall_esg_score_previous': round(previous_overall_score, 2),
+        'yoy_change_percent': _percent_change(current_overall_score, previous_overall_score),
+        'three_year_trend': [
+            round(summary['portfolio_esg_score'], 2)
+            for summary in cycle_summaries[-4:]
+        ] or [round(current_overall_score, 2)],
         'pillars': [
             {
                 'name': 'E',
-                'current_score': round(analytics['score_breakdown']['E'], 2),
-                'previous_score': round(max(analytics['score_breakdown']['E'] - 3.1, 0), 2),
-                'yoy_change': round((3.1 / max(analytics['score_breakdown']['E'] - 3.1, 1)) * 100, 2),
-                'trend_sparkline': [round(max(analytics['score_breakdown']['E'] - 6, 0), 2), round(max(analytics['score_breakdown']['E'] - 4, 0), 2), round(max(analytics['score_breakdown']['E'] - 2, 0), 2), round(analytics['score_breakdown']['E'], 2), round(analytics['score_breakdown']['E'], 2)],
+                'current_score': round(current_scores.get('E', 0.0), 2),
+                'previous_score': round(previous_scores.get('E', current_scores.get('E', 0.0)), 2),
+                'yoy_change': _percent_change(current_scores.get('E', 0.0), previous_scores.get('E', current_scores.get('E', 0.0))),
+                'trend_sparkline': sparkline('E', current_scores.get('E', 0.0)),
             },
             {
                 'name': 'S',
-                'current_score': round(analytics['score_breakdown']['S'], 2),
-                'previous_score': round(max(analytics['score_breakdown']['S'] - 2.4, 0), 2),
-                'yoy_change': round((2.4 / max(analytics['score_breakdown']['S'] - 2.4, 1)) * 100, 2),
-                'trend_sparkline': [round(max(analytics['score_breakdown']['S'] - 5, 0), 2), round(max(analytics['score_breakdown']['S'] - 3, 0), 2), round(max(analytics['score_breakdown']['S'] - 1, 0), 2), round(analytics['score_breakdown']['S'], 2), round(analytics['score_breakdown']['S'], 2)],
+                'current_score': round(current_scores.get('S', 0.0), 2),
+                'previous_score': round(previous_scores.get('S', current_scores.get('S', 0.0)), 2),
+                'yoy_change': _percent_change(current_scores.get('S', 0.0), previous_scores.get('S', current_scores.get('S', 0.0))),
+                'trend_sparkline': sparkline('S', current_scores.get('S', 0.0)),
             },
             {
                 'name': 'G',
-                'current_score': round(analytics['score_breakdown']['G'], 2),
-                'previous_score': round(max(analytics['score_breakdown']['G'] - 3.8, 0), 2),
-                'yoy_change': round((3.8 / max(analytics['score_breakdown']['G'] - 3.8, 1)) * 100, 2),
-                'trend_sparkline': [round(max(analytics['score_breakdown']['G'] - 7, 0), 2), round(max(analytics['score_breakdown']['G'] - 5, 0), 2), round(max(analytics['score_breakdown']['G'] - 2, 0), 2), round(analytics['score_breakdown']['G'], 2), round(analytics['score_breakdown']['G'], 2)],
+                'current_score': round(current_scores.get('G', 0.0), 2),
+                'previous_score': round(previous_scores.get('G', current_scores.get('G', 0.0)), 2),
+                'yoy_change': _percent_change(current_scores.get('G', 0.0), previous_scores.get('G', current_scores.get('G', 0.0))),
+                'trend_sparkline': sparkline('G', current_scores.get('G', 0.0)),
             },
         ],
     }
@@ -5803,128 +8008,132 @@ def lp_dashboard(db: Session = Depends(get_db)):
     }
     
     # Build key metrics from actual analytics data
-    total_emissions = analytics['emissions_totals']['total']
-    avg_female_rep = analytics['diversity_safety']['female_representation_percent']
-    avg_trifr = analytics['diversity_safety']['trifr']
+    current_total_emissions = summary_value(current_cycle_summary, 'total_ghg', analytics['emissions_totals']['total'])
+    previous_total_emissions = summary_value(previous_cycle_summary, 'total_ghg', current_total_emissions)
+    current_reporting_count = summary_value(current_cycle_summary, 'reporting_companies', analytics['reporting_companies'])
+    previous_reporting_count = summary_value(previous_cycle_summary, 'reporting_companies', current_reporting_count)
+    current_female_rep = summary_value(current_cycle_summary, 'average_female_representation', analytics['diversity_safety']['female_representation_percent'])
+    previous_female_rep = summary_value(previous_cycle_summary, 'average_female_representation', current_female_rep)
+    current_trifr = summary_value(current_cycle_summary, 'trifr', analytics['diversity_safety']['trifr'])
+    previous_trifr = summary_value(previous_cycle_summary, 'trifr', current_trifr)
+    current_governance = summary_value(current_cycle_summary, 'governance_adoption_percent', analytics['governance_adoption_percent'])
+    previous_governance = summary_value(previous_cycle_summary, 'governance_adoption_percent', current_governance)
+    current_completeness = summary_quality(current_cycle_summary, 'completeness', analytics['data_quality']['completeness'])
+    previous_completeness = summary_quality(previous_cycle_summary, 'completeness', current_completeness)
+    current_accuracy = summary_quality(current_cycle_summary, 'accuracy', analytics['data_quality']['accuracy'])
+    previous_accuracy = summary_quality(previous_cycle_summary, 'accuracy', current_accuracy)
+    current_intensity = current_total_emissions / max(current_reporting_count, 1)
+    previous_intensity = previous_total_emissions / max(previous_reporting_count, 1)
     
-    # Determine trend directions (default: minimal change)
+    # Determine trend directions from actual cycle values
     key_metrics = [
         {
             'metric_name': 'Total GHG Emissions',
-            'current_value': f'{total_emissions:,.0f}',
+            'current_value': f'{current_total_emissions:,.0f}',
             'unit': 'tCO2e',
-            'trend_percent': -3.2,
-            'trend_direction': 'down',
+            'trend_percent': _percent_change(current_total_emissions, previous_total_emissions),
+            'trend_direction': _trend_direction(current_total_emissions, previous_total_emissions),
             'last_updated': datetime.utcnow().strftime('%Y-%m-%d'),
         },
         {
             'metric_name': 'Emissions Intensity',
-            'current_value': f'{max(analytics["emissions_totals"]["scope_1"] / max(analytics["total_companies"], 1), 0):,.1f}',
+            'current_value': f'{current_intensity:,.1f}',
             'unit': 'tCO2e per company',
-            'trend_percent': -2.1,
-            'trend_direction': 'down',
+            'trend_percent': _percent_change(current_intensity, previous_intensity),
+            'trend_direction': _trend_direction(current_intensity, previous_intensity),
             'last_updated': datetime.utcnow().strftime('%Y-%m-%d'),
         },
         {
             'metric_name': 'Average Female Representation',
-            'current_value': f'{avg_female_rep:.1f}',
+            'current_value': f'{current_female_rep:.1f}',
             'unit': '%',
-            'trend_percent': 1.8,
-            'trend_direction': 'up',
+            'trend_percent': _percent_change(current_female_rep, previous_female_rep),
+            'trend_direction': _trend_direction(current_female_rep, previous_female_rep),
             'last_updated': datetime.utcnow().strftime('%Y-%m-%d'),
         },
         {
             'metric_name': 'TRIFR (Safety)',
-            'current_value': f'{avg_trifr:.2f}',
+            'current_value': f'{current_trifr:.2f}',
             'unit': 'rate',
-            'trend_percent': -17.6,
-            'trend_direction': 'down',
+            'trend_percent': _percent_change(current_trifr, previous_trifr),
+            'trend_direction': _trend_direction(current_trifr, previous_trifr),
             'last_updated': datetime.utcnow().strftime('%Y-%m-%d'),
         },
         {
             'metric_name': 'Governance Adoption',
-            'current_value': f'{analytics["governance_adoption_percent"]:.1f}',
+            'current_value': f'{current_governance:.1f}',
             'unit': '% of portfolio',
-            'trend_percent': 4.1,
-            'trend_direction': 'up',
+            'trend_percent': _percent_change(current_governance, previous_governance),
+            'trend_direction': _trend_direction(current_governance, previous_governance),
             'last_updated': datetime.utcnow().strftime('%Y-%m-%d'),
         },
         {
             'metric_name': 'Data Completeness',
-            'current_value': f'{analytics["data_quality"]["completeness"]:.1f}',
+            'current_value': f'{current_completeness:.1f}',
             'unit': '%',
-            'trend_percent': analytics.get('completeness_trend', 2.4),
-            'trend_direction': 'up',
+            'trend_percent': _percent_change(current_completeness, previous_completeness),
+            'trend_direction': _trend_direction(current_completeness, previous_completeness),
             'last_updated': datetime.utcnow().strftime('%Y-%m-%d'),
         },
         {
             'metric_name': 'Portfolio ESG Score',
-            'current_value': f'{analytics["portfolio_esg_score"]:.1f}',
+            'current_value': f'{current_overall_score:.1f}',
             'unit': 'score',
-            'trend_percent': 3.2,
-            'trend_direction': 'up',
+            'trend_percent': _percent_change(current_overall_score, previous_overall_score),
+            'trend_direction': _trend_direction(current_overall_score, previous_overall_score),
             'last_updated': datetime.utcnow().strftime('%Y-%m-%d'),
         },
         {
             'metric_name': 'Companies Reporting',
-            'current_value': f'{analytics["reporting_companies"]}',
-            'unit': '/ ' + str(analytics['total_companies']),
-            'trend_percent': 0.0,
-            'trend_direction': 'neutral',
+            'current_value': f'{int(current_reporting_count)}',
+            'unit': '/ ' + str(total_companies),
+            'trend_percent': _percent_change(current_reporting_count, previous_reporting_count),
+            'trend_direction': _trend_direction(current_reporting_count, previous_reporting_count),
             'last_updated': datetime.utcnow().strftime('%Y-%m-%d'),
         },
     ]
     
-    # Use emissions trend from analytics, but format it properly
-    analytics_trend = analytics['emissions_trend']
-    
-    # Convert the trend to proper scope breakdown format
-    # Since analytics_trend might not have scope breakdown, calculate it proportionally
-    scope_1_total = analytics['emissions_totals']['scope_1'] or 1
-    scope_2_total = analytics['emissions_totals']['scope_2'] or 1
-    scope_3_total = analytics['emissions_totals']['scope_3'] or 1
-    total_all = scope_1_total + scope_2_total + scope_3_total or 1
-    
-    scope_1_ratio = scope_1_total / total_all
-    scope_2_ratio = scope_2_total / total_all
-    scope_3_ratio = scope_3_total / total_all
-    
-    # Build proper emissions trend with scope breakdown
     emissions_trend = [
         {
-            'period': item['period'],
-            'scope_1': round(safe_number(item.get('total_emissions', 0)) * scope_1_ratio, 2),
-            'scope_2': round(safe_number(item.get('total_emissions', 0)) * scope_2_ratio, 2),
-            'scope_3': round(safe_number(item.get('total_emissions', 0)) * scope_3_ratio, 2),
+            'period': str(summary['cycle_year']),
+            'scope_1': round(summary['scope_1_total'], 2),
+            'scope_2': round(summary['scope_2_total'], 2),
+            'scope_3': round(summary['scope_3_total'], 2),
         }
-        for item in analytics_trend
+        for summary in cycle_summaries
+    ] or [
+        {
+            'period': str(datetime.utcnow().year),
+            'scope_1': round(analytics['emissions_totals']['scope_1'], 2),
+            'scope_2': round(analytics['emissions_totals']['scope_2'], 2),
+            'scope_3': round(analytics['emissions_totals']['scope_3'], 2),
+        }
     ]
     
-    # Build diversity metrics from actual data
     diversity_metrics = [
         {
             'metric_name': 'Female Workforce %',
-            'percentage': avg_female_rep,
-            'previous_year': max(avg_female_rep - 2.0, 0),
-            'trend': 'up' if avg_female_rep > 0 else 'neutral',
+            'percentage': current_female_rep,
+            'previous_year': previous_female_rep,
+            'trend': _trend_direction(current_female_rep, previous_female_rep),
         },
         {
             'metric_name': 'Safety (TRIFR)',
-            'percentage': min(avg_trifr * 10, 100),  # Scale for percentage display
-            'previous_year': max(min((avg_trifr + 0.5) * 10, 100), 0),
-            'trend': 'down',
+            'percentage': min(current_trifr * 10, 100),
+            'previous_year': min(previous_trifr * 10, 100),
+            'trend': _trend_direction(current_trifr, previous_trifr),
         },
         {
             'metric_name': 'Data Accuracy',
-            'percentage': analytics['data_quality']['accuracy'],
-            'previous_year': max(analytics['data_quality']['accuracy'] - 5.0, 0),
-            'trend': 'up',
+            'percentage': current_accuracy,
+            'previous_year': previous_accuracy,
+            'trend': _trend_direction(current_accuracy, previous_accuracy),
         },
         {
             'metric_name': 'Submission Completeness',
-            'percentage': analytics['data_quality']['completeness'],
-            'previous_year': max(analytics['data_quality']['completeness'] - 3.0, 0),
-            'trend': 'up',
+            'percentage': current_completeness,
+            'previous_year': previous_completeness,
+            'trend': _trend_direction(current_completeness, previous_completeness),
         },
     ]
     
@@ -5974,127 +8183,173 @@ def lp_metrics(db: Session = Depends(get_db)):
     from schemas import LPMetricsPageResponse
     analytics = build_investor_analytics(db)
     companies = db.query(Company).order_by(Company.name.asc()).all()
-    
-    environmental = {
-        'scope_1_emissions': [
-            {'period': '2022', 'value': 1850, 'trend': 0},
-            {'period': '2023', 'value': 1780, 'trend': -3.8},
-            {'period': '2024', 'value': 1650, 'trend': -7.3},
-            {'period': 'YTD 2026', 'value': 1420, 'trend': -13.9},
-        ],
-        'scope_2_emissions': [
-            {'period': '2022', 'value': 620, 'trend': 0},
-            {'period': '2023', 'value': 598, 'trend': -3.5},
-            {'period': '2024', 'value': 550, 'trend': -8.0},
-            {'period': 'YTD 2026', 'value': 480, 'trend': -12.7},
-        ],
-        'scope_3_emissions': [
-            {'period': '2022', 'value': 4120, 'trend': 0},
-            {'period': '2023', 'value': 4080, 'trend': -1.0},
-            {'period': '2024', 'value': 3890, 'trend': -4.7},
-            {'period': 'YTD 2026', 'value': 3520, 'trend': -9.5},
-        ],
-        'energy_total': [
-            {'period': '2022', 'value': 2.4, 'trend': 0},
-            {'period': '2023', 'value': 2.3, 'trend': -4.2},
-            {'period': '2024', 'value': 2.1, 'trend': -8.7},
-            {'period': 'YTD 2026', 'value': 1.9, 'trend': -9.5},
-        ],
-        'energy_renewable': [
-            {'period': '2022', 'value': 28.1, 'trend': 0},
-            {'period': '2023', 'value': 32.5, 'trend': 15.7},
-            {'period': '2024', 'value': 38.2, 'trend': 17.5},
-            {'period': 'YTD 2026', 'value': 42.8, 'trend': 12.0},
-        ],
-        'water_usage': [
-            {'period': '2022', 'value': 12400, 'trend': 0},
-            {'period': '2023', 'value': 12100, 'trend': -2.4},
-            {'period': '2024', 'value': 11200, 'trend': -7.4},
-            {'period': 'YTD 2026', 'value': 10800, 'trend': -3.6},
-        ],
-        'water_recycled': [
-            {'period': '2022', 'value': 3100, 'trend': 0},
-            {'period': '2023', 'value': 3400, 'trend': 9.7},
-            {'period': '2024', 'value': 3890, 'trend': 14.4},
-            {'period': 'YTD 2026', 'value': 4200, 'trend': 8.0},
-        ],
-        'waste_generated': [
-            {'period': '2022', 'value': 8900, 'trend': 0},
-            {'period': '2023', 'value': 8600, 'trend': -3.4},
-            {'period': '2024', 'value': 8100, 'trend': -5.8},
-            {'period': 'YTD 2026', 'value': 7200, 'trend': -11.1},
-        ],
-        'waste_diverted': [
-            {'period': '2022', 'value': 5340, 'trend': 0},
-            {'period': '2023', 'value': 6010, 'trend': 12.5},
-            {'period': '2024', 'value': 6890, 'trend': 14.6},
-            {'period': 'YTD 2026', 'value': 7440, 'trend': 8.0},
-        ],
-    }
-    
-    social = {
-        'trifr': [
-            {'period': '2022', 'value': 1.6, 'trend': 0},
-            {'period': '2023', 'value': 1.48, 'trend': -7.5},
-            {'period': '2024', 'value': 1.32, 'trend': -10.8},
-            {'period': 'YTD 2026', 'value': 1.18, 'trend': -10.6},
-        ],
-        'fatalities': [
-            {'period': '2022', 'value': 16, 'trend': 0},
-            {'period': '2023', 'value': 14, 'trend': -12.5},
-            {'period': '2024', 'value': 14, 'trend': 0},
-            {'period': 'YTD 2026', 'value': 12, 'trend': -14.3},
-        ],
-        'total_employees': [
-            {'period': '2022', 'value': 810000, 'trend': 0},
-            {'period': '2023', 'value': 825000, 'trend': 1.85},
-            {'period': '2024', 'value': 838000, 'trend': 1.58},
-            {'period': 'YTD 2026', 'value': 847521, 'trend': 1.14},
-        ],
-        'female_workforce_percent': [
-            {'period': '2022', 'value': 39.8, 'trend': 0},
-            {'period': '2023', 'value': 41.4, 'trend': 4.02},
-            {'period': '2024', 'value': 42.1, 'trend': 1.69},
-            {'period': 'YTD 2026', 'value': 43.2, 'trend': 2.61},
-        ],
-        'female_leadership_percent': [
-            {'period': '2022', 'value': 34.1, 'trend': 0},
-            {'period': '2023', 'value': 36.9, 'trend': 8.21},
-            {'period': '2024', 'value': 37.8, 'trend': 2.44},
-            {'period': 'YTD 2026', 'value': 38.7, 'trend': 2.38},
-        ],
-        'community_investment': [
-            {'period': '2022', 'value': 42800000, 'trend': 0},
-            {'period': '2023', 'value': 48900000, 'trend': 14.25},
-            {'period': '2024', 'value': 52400000, 'trend': 7.15},
-            {'period': 'YTD 2026', 'value': 56200000, 'trend': 7.25},
-        ],
-    }
-    
-    governance = {
-        'esg_policy_compliance': 91.2,
-        'whs_policy_compliance': 94.5,
-        'cybersecurity_policy_compliance': 87.3,
-        'antibribery_policy_compliance': 89.6,
-        'board_esg_oversight': 76.4,
-        'cyber_incidents': [
-            {'period': '2022', 'value': 8},
-            {'period': '2023', 'value': 6},
-            {'period': '2024', 'value': 4},
-            {'period': 'YTD 2026', 'value': 2},
-        ],
-    }
-    
-    asset_class_breakdown = [
-        {'asset_class': 'Private Equity', 'company_count': 256, 'avg_esg_score': 77.2, 'avg_emission_intensity': 4.1, 'avg_female_representation': 42.8},
-        {'asset_class': 'Real Estate', 'company_count': 128, 'avg_esg_score': 74.8, 'avg_emission_intensity': 3.8, 'avg_female_representation': 44.1},
-        {'asset_class': 'Debt', 'company_count': 85, 'avg_esg_score': 71.4, 'avg_emission_intensity': 4.5, 'avg_female_representation': 42.2},
-        {'asset_class': 'Infrastructure', 'company_count': 43, 'avg_esg_score': 73.9, 'avg_emission_intensity': 5.2, 'avg_female_representation': 41.5},
+    cycles = [
+        cycle
+        for cycle in db.query(CollectionCycle).order_by(CollectionCycle.cycle_year.asc(), CollectionCycle.id.asc()).all()
+        if cycle.cycle_year > 0
     ]
-    
+
+    def get_cycle_payloads(cycle: CollectionCycle) -> List[dict]:
+        payloads = []
+        for submission in db.query(Submission).filter(Submission.cycle_id == cycle.id).all():
+            payload = parse_submission(submission)
+            if payload:
+                payloads.append(payload)
+        return payloads
+
+    cycle_payload_cache = {cycle.id: get_cycle_payloads(cycle) for cycle in cycles}
+
+    def percent_change(current: float, previous: float) -> float:
+        if previous <= 0:
+            return 0.0
+        return round(((current - previous) / previous) * 100, 2)
+
+    def build_numeric_series(field_key: str) -> List[Dict[str, Any]]:
+        series = []
+        previous_value: float | None = None
+        for cycle in cycles:
+            values = [safe_number(payload.get(field_key)) for payload in cycle_payload_cache.get(cycle.id, []) if payload.get(field_key) not in (None, '')]
+            if not values:
+                continue
+            current_value = sum(values) / len(values)
+            series.append(
+                {
+                    'period': str(cycle.cycle_year),
+                    'value': round(current_value, 2),
+                    'trend': 0 if previous_value is None else percent_change(current_value, previous_value),
+                }
+            )
+            previous_value = current_value
+        return series
+
+    def build_yes_rate_series(field_key: str) -> List[Dict[str, Any]]:
+        series = []
+        previous_value: float | None = None
+        for cycle in cycles:
+            payloads = cycle_payload_cache.get(cycle.id, [])
+            if not payloads:
+                continue
+            yes_rate = (
+                sum(1 for payload in payloads if str(payload.get(field_key, '')).strip().lower() == 'yes')
+                / len(payloads)
+            ) * 100
+            series.append(
+                {
+                    'period': str(cycle.cycle_year),
+                    'value': round(yes_rate, 2),
+                    'trend': 0 if previous_value is None else percent_change(yes_rate, previous_value),
+                }
+            )
+            previous_value = yes_rate
+        return series
+
+    environmental = {
+        'scope_1_emissions': build_numeric_series('scope_1_emissions'),
+        'scope_2_emissions': build_numeric_series('scope_2_location_based'),
+        'scope_3_emissions': build_numeric_series('scope_3_emissions'),
+        'energy_total': build_numeric_series('total_energy_consumption'),
+        'energy_renewable': build_numeric_series('renewable_energy_consumption'),
+        'water_usage': build_numeric_series('total_water_withdrawal'),
+        'water_recycled': build_numeric_series('water_recycled_reused'),
+        'waste_generated': build_numeric_series('total_waste_generated'),
+        'waste_diverted': build_numeric_series('waste_diverted_from_landfill'),
+    }
+
+    social = {
+        'trifr': build_numeric_series('trifr'),
+        'fatalities': build_numeric_series('total_fatalities'),
+        'total_employees': build_numeric_series('total_employees_fte'),
+        'female_workforce_percent': build_numeric_series('female_representation_percent'),
+        'female_leadership_percent': build_numeric_series('female_leadership_representation_percent'),
+        'community_investment': build_numeric_series('community_investment_spend'),
+    }
+
+    governance = {
+        'esg_policy_compliance': round(sum(1 for company in companies if str((parse_submission(company.submissions[-1]) if company.submissions else {}).get('esg_policy_in_place', '')).strip().lower() == 'yes') / max(len([company for company in companies if company.submissions]), 1) * 100, 2) if companies else 0.0,
+        'whs_policy_compliance': round(sum(1 for company in companies if str((parse_submission(company.submissions[-1]) if company.submissions else {}).get('whs_policy_in_place', '')).strip().lower() == 'yes') / max(len([company for company in companies if company.submissions]), 1) * 100, 2) if companies else 0.0,
+        'cybersecurity_policy_compliance': round(sum(1 for company in companies if str((parse_submission(company.submissions[-1]) if company.submissions else {}).get('cybersecurity_policy_in_place', '')).strip().lower() == 'yes') / max(len([company for company in companies if company.submissions]), 1) * 100, 2) if companies else 0.0,
+        'antibribery_policy_compliance': round(sum(1 for company in companies if str((parse_submission(company.submissions[-1]) if company.submissions else {}).get('anti_bribery_corruption_policy', '')).strip().lower() == 'yes') / max(len([company for company in companies if company.submissions]), 1) * 100, 2) if companies else 0.0,
+        'board_esg_oversight': round(sum(1 for company in companies if str((parse_submission(company.submissions[-1]) if company.submissions else {}).get('board_level_esg_oversight', '')).strip().lower() == 'yes') / max(len([company for company in companies if company.submissions]), 1) * 100, 2) if companies else 0.0,
+        'cyber_incidents': build_numeric_series('cyber_incidents_in_reporting_period'),
+    }
+
+    def score_payload(payload: dict) -> tuple[float, float, float, float]:
+        scope_1 = safe_number(payload.get('scope_1_emissions'))
+        scope_2 = safe_number(payload.get('scope_2_location_based'))
+        scope_3 = safe_number(payload.get('scope_3_emissions'))
+        total_ghg = safe_number(payload.get('total_ghg_emissions'))
+        energy = safe_number(payload.get('total_energy_consumption'))
+        renewable = safe_number(payload.get('renewable_energy_consumption'))
+        female_rep = safe_number(payload.get('female_representation_percent'))
+        trifr = safe_number(payload.get('trifr'))
+        turnover = safe_number(payload.get('employee_turnover_rate'))
+        independent_board = safe_number(payload.get('independent_board_members_percent'))
+        corruption_cases = safe_number(payload.get('confirmed_cases_of_corruption'))
+
+        renewable_ratio = (renewable / energy) if energy > 0 else 0
+        scope_total = scope_1 + scope_2 + scope_3
+
+        e_score = clamp(
+            30
+            + max(0, 35 - (scope_total / 60))
+            + min(20, safe_number(payload.get('reduction_target_percent')) * 0.25)
+            + min(15, renewable_ratio * 100 * 0.2)
+        )
+        s_score = clamp(
+            25
+            + min(25, female_rep * 0.35)
+            + max(0, 20 - trifr * 2.5)
+            + max(0, 15 - turnover * 0.3)
+            + (15 if str(payload.get('whs_policy_in_place', '')).strip().lower() == 'yes' else 0)
+        )
+        g_score = clamp(
+            (20 if str(payload.get('esg_policy_in_place', '')).strip().lower() == 'yes' else 0)
+            + (20 if str(payload.get('board_level_esg_oversight', '')).strip().lower() == 'yes' else 0)
+            + (20 if str(payload.get('cybersecurity_policy_in_place', '')).strip().lower() == 'yes' else 0)
+            + (20 if str(payload.get('anti_bribery_corruption_policy', '')).strip().lower() == 'yes' else 0)
+            + min(20, independent_board * 0.4)
+            - min(10, corruption_cases * 2)
+        )
+        esg_score = round((0.45 * e_score) + (0.30 * s_score) + (0.25 * g_score), 2)
+        return esg_score, e_score, s_score, g_score
+
+    asset_class_groups: Dict[str, Dict[str, float]] = {}
+    for company in companies:
+        latest_submission = company.submissions[-1] if company.submissions else None
+        payload = parse_submission(latest_submission)
+        if not payload:
+            continue
+        asset_class = str(company.asset_class or 'Unassigned').strip() or 'Unassigned'
+        esg_score, _, _, _ = score_payload(payload)
+        total_ghg = safe_number(payload.get('total_ghg_emissions'))
+        group = asset_class_groups.setdefault(
+            asset_class,
+            {
+                'company_count': 0,
+                'avg_esg_score_total': 0.0,
+                'avg_emission_intensity_total': 0.0,
+                'avg_female_representation_total': 0.0,
+            },
+        )
+        group['company_count'] += 1
+        group['avg_esg_score_total'] += esg_score
+        group['avg_emission_intensity_total'] += total_ghg
+        group['avg_female_representation_total'] += safe_number(payload.get('female_representation_percent'))
+
+    asset_class_breakdown = [
+        {
+            'asset_class': asset_class,
+            'company_count': int(values['company_count']),
+            'avg_esg_score': round(values['avg_esg_score_total'] / max(values['company_count'], 1), 2),
+            'avg_emission_intensity': round(values['avg_emission_intensity_total'] / max(values['company_count'], 1), 2),
+            'avg_female_representation': round(values['avg_female_representation_total'] / max(values['company_count'], 1), 2),
+        }
+        for asset_class, values in sorted(asset_class_groups.items(), key=lambda item: item[1]['company_count'], reverse=True)
+    ]
+
     impact_story = _build_impact_intelligence(db, analytics, companies)
     benchmark_comparisons = impact_story['benchmark_comparisons']
-    
+
     return LPMetricsPageResponse(
         environmental=environmental,
         social=social,
@@ -6184,29 +8439,23 @@ def company_dashboard(
             detail=f'No company assigned to user {email}. Please contact your administrator.',
         )
     
-    # Get active cycle (prefer active, fallback to most recent)
-    active_cycle = db.query(CollectionCycle).filter(CollectionCycle.status == 'active').first()
-    if not active_cycle:
-        # Try to get the most recent cycle
-        active_cycle = (
-            db.query(CollectionCycle)
-            .order_by(CollectionCycle.cycle_year.desc(), CollectionCycle.id.desc())
-            .first()
-        )
+    active_cycle = get_active_cycle(db)
+    total_fields = get_company_reporting_field_count()
     
     if not active_cycle:
         # Return a minimal dashboard with a message
         return CompanyDashboardResponse(
             company_id=company.id,
             company_name=company.name,
-            current_cycle_year=2026,
+            current_cycle_id=None,
+            current_cycle_year=datetime.utcnow().year,
             submission_status='NOT AVAILABLE',
             status_color='grey',
             deadline='No cycle set',
             days_remaining=0,
             deadline_urgency='red',
             overall_completion_percent=0,
-            total_data_points=400,
+            total_data_points=total_fields,
             completed_data_points=0,
             section_breakdown={'Environmental': 0, 'Social': 0, 'Governance': 0},
             outstanding_validation_errors=0,
@@ -6221,7 +8470,6 @@ def company_dashboard(
     ).first()
     
     # Calculate completion metrics from submission data
-    total_fields = 400  # Default ESG field count
     completed_fields = 0
     section_breakdown = {'Environmental': 0, 'Social': 0, 'Governance': 0}
     
@@ -6298,6 +8546,7 @@ def company_dashboard(
     return CompanyDashboardResponse(
         company_id=company.id,
         company_name=company.name,
+        current_cycle_id=active_cycle.id,
         current_cycle_year=active_cycle.cycle_year,
         submission_status=submission_status.upper(),
         status_color=status_colors.get(submission_status, 'grey'),

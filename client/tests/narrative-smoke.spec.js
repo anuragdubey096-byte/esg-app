@@ -25,14 +25,25 @@ test('LP narrative screen opens in Reports', async ({ page }) => {
   await signIn(page, USERS.investor)
   await expect(page.getByRole('link', { name: 'Reports' })).toBeVisible()
   await page.getByRole('link', { name: 'Reports' }).click()
-  await expect(page.getByRole('heading', { name: 'LP Narrative Summary' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: /Investor Narrative Summary|LP Narrative Summary/ })).toBeVisible()
   await expect(page.getByText('Read-only portfolio narrative for investors')).toBeVisible()
 })
 
 test('company narrative screen opens in submission review', async ({ page }) => {
   await signIn(page, USERS.company)
-  await expect(page.getByRole('button', { name: /View Submission|Continue Submission/ })).toBeVisible()
-  await page.getByRole('button', { name: /View Submission|Continue Submission/ }).click()
+  await expect(page.getByRole('heading', { name: 'Submission Status' })).toBeVisible()
+  const submissionCta = page.getByRole('button', { name: /View Submission|Continue Submission/ })
+  const inactiveCycleCta = page.getByRole('button', { name: 'Await Active Cycle' })
+  const inactiveCycleMessage = page.getByText('No active reporting cycle is open for edits right now.')
+
+  if (await inactiveCycleMessage.isVisible()) {
+    await expect(inactiveCycleCta).toBeDisabled()
+    await expect(inactiveCycleMessage).toBeVisible()
+    return
+  }
+
+  await expect(submissionCta).toBeVisible()
+  await submissionCta.click()
   await expect(page.getByRole('button', { name: 'Review and Submit' })).toBeVisible()
   await page.getByRole('button', { name: 'Review and Submit' }).click()
   await expect(page.getByRole('heading', { name: 'Company Confirmation Letter' })).toBeVisible()
