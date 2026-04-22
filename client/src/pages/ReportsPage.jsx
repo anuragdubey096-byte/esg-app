@@ -60,6 +60,7 @@ export default function ReportsPage() {
     tone: narrativeTone,
     enabled: Boolean(user),
   })
+  const [selectedNarrativeId, setSelectedNarrativeId] = useState('')
 
   useEffect(() => {
     const persisted = loadLastFilterState(filterScope) || {}
@@ -161,6 +162,14 @@ export default function ReportsPage() {
     syncNarrativeDraft(narrative.data)
   }, [narrative.data])
 
+  useEffect(() => {
+    if (selectedNarrativeId) return
+    const latestId = narrative.history?.[0]?.narrative_id
+    if (latestId) {
+      setSelectedNarrativeId(String(latestId))
+    }
+  }, [narrative.history, selectedNarrativeId])
+
   const generateNarrative = async () => {
     setNarrativeBusy(true)
     setNarrativeMessage('')
@@ -174,6 +183,21 @@ export default function ReportsPage() {
       setNarrativeMessage('Portfolio narrative generated.')
     } catch (error) {
       setNarrativeMessage(error.message || 'Unable to generate portfolio narrative.')
+    } finally {
+      setNarrativeBusy(false)
+    }
+  }
+
+  const loadSavedNarrative = async () => {
+    if (!selectedNarrativeId) return
+    setNarrativeBusy(true)
+    setNarrativeMessage('')
+    try {
+      const payload = await narrative.loadNarrative(Number(selectedNarrativeId))
+      syncNarrativeDraft(payload)
+      setNarrativeMessage(`Loaded saved narrative #${selectedNarrativeId}.`)
+    } catch (error) {
+      setNarrativeMessage(error.message || 'Unable to load saved narrative.')
     } finally {
       setNarrativeBusy(false)
     }
@@ -381,6 +405,28 @@ export default function ReportsPage() {
                 ))}
               </div>
             ) : null}
+            {Array.isArray(download.comparison_rows) && download.comparison_rows.length ? (
+              <div className="space-y-2">
+                <p className="ui-text-strong text-[color:var(--ui-text)]">Current vs previous</p>
+                <div className="grid gap-3 md:grid-cols-2">
+                  {download.comparison_rows.slice(0, 4).map((row) => (
+                    <div key={row.metric_name} className="rounded-lg border border-[color:var(--ui-panel-border)] bg-[color:var(--ui-surface)] px-3 py-2 text-sm text-[color:var(--ui-text)]">
+                      <p className="ui-text-strong">{row.metric_name}</p>
+                      <p className="text-xs text-[color:var(--ui-text-muted)]">
+                        Current: {row.current_value}
+                        {' '}
+                        {row.unit || ''}
+                      </p>
+                      <p className="text-xs text-[color:var(--ui-text-muted)]">
+                        Previous: {row.previous_value}
+                        {' '}
+                        {row.unit || ''}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
           </div>
         ) : null}
       </SectionCard>
@@ -390,6 +436,37 @@ export default function ReportsPage() {
         subtitle={NARRATIVE_UI_COPY.pages.reportsNarrativeSubtitle}
       >
         <div className="space-y-4">
+          <div className="flex flex-col gap-3 rounded-xl border border-[color:var(--ui-panel-border)] bg-[color:var(--ui-surface-muted)] p-4 lg:flex-row lg:items-end lg:justify-between">
+            <div className="space-y-2">
+              <p className="text-xs uppercase tracking-wide text-[color:var(--ui-text-muted)]">Saved narratives</p>
+              <label className="block min-w-[240px]">
+                <span className="sr-only">Select a saved narrative</span>
+                <select
+                  value={selectedNarrativeId}
+                  onChange={(event) => setSelectedNarrativeId(event.target.value)}
+                  className="w-full rounded-lg border border-[color:var(--ui-panel-border)] bg-white px-3 py-2 text-sm text-[color:var(--ui-text)]"
+                >
+                  <option value="">Most recent saved narrative</option>
+                  {narrative.history.map((item) => (
+                    <option key={item.narrative_id} value={String(item.narrative_id)}>
+                      #{item.narrative_id} {item.headline ? `- ${item.headline}` : ''} ({item.status})
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {narrative.historyError ? (
+                <p className="text-xs text-rose-700">{narrative.historyError}</p>
+              ) : null}
+            </div>
+            <div className="flex items-center gap-2">
+              <Button type="button" variant="secondary" onClick={loadSavedNarrative} disabled={!selectedNarrativeId || narrativeBusy || narrative.historyLoading}>
+                Load saved narrative
+              </Button>
+              <Button type="button" variant="ghost" onClick={narrative.refreshHistory} disabled={narrative.historyLoading}>
+                {narrative.historyLoading ? 'Refreshing' : 'Refresh history'}
+              </Button>
+            </div>
+          </div>
           <NarrativeToolbar
             tone={narrativeTone}
             onToneChange={setNarrativeTone}

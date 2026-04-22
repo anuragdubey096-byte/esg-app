@@ -11,6 +11,7 @@ import useDashboardData, { getLatestSubmission, parseSubmissionPayload, calculat
 import useNarrativeSummary from '../hooks/useNarrativeSummary'
 import { API_BASE_URL } from '../lib/api'
 import { DEFAULT_REPORT_VIEW, NARRATIVE_UI_COPY } from '../lib/portalOptions'
+import { humanizeKey } from '../lib/text'
 
 function toNumber(value) {
   if (value === null || value === undefined || value === '') return null
@@ -31,13 +32,6 @@ function formatDelta(current, previous) {
   if (currentNum === null || previousNum === null || previousNum === 0) return 'n/a'
   const pct = Number((((currentNum - previousNum) / previousNum) * 100).toFixed(2))
   return `${pct > 0 ? '+' : ''}${pct}%`
-}
-
-function formatMetricLabel(fieldKey) {
-  return String(fieldKey || '')
-    .split('_')
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(' ')
 }
 
 function getValidationSummary(rows) {
@@ -381,7 +375,7 @@ export default function ReviewHubPage() {
         return {
           id: index + 1,
           fieldKey: key,
-          metric: formatMetricLabel(key),
+          metric: humanizeKey(key),
           currentValue: formatValue(currentValue),
           previousValue: formatValue(previousValue),
           delta,

@@ -191,13 +191,38 @@ class ActionPlanCreateRequest(BaseModel):
     assigned_owner: str
 
 class GHGCalculatorRequest(BaseModel):
-    fuel_liters: float
-    electricity_kwh: float
+    fuel_liters: float = Field(default=0, ge=0)
+    electricity_kwh: float = Field(default=0, ge=0)
+    diesel_liters: float = Field(default=0, ge=0)
+    natural_gas_therms: float = Field(default=0, ge=0)
+    vehicle_km: float = Field(default=0, ge=0)
+    flight_km: float = Field(default=0, ge=0)
+    fuel_emission_factor: float = Field(default=0.00268, ge=0)
+    electricity_emission_factor: float = Field(default=0.0005, ge=0)
+    diesel_emission_factor: float = Field(default=0.00268, ge=0)
+    natural_gas_emission_factor: float = Field(default=0.0053, ge=0)
+    vehicle_emission_factor: float = Field(default=0.00018, ge=0)
+    flight_emission_factor: float = Field(default=0.00015, ge=0)
 
 class GHGCalculatorResponse(BaseModel):
     scope_1_tco2e: float
     scope_2_tco2e: float
+    scope_3_tco2e: float = 0.0
     total_tco2e: float
+    scope_1_equivalent: Optional[str] = None
+    scope_2_equivalent: Optional[str] = None
+    scope_3_equivalent: Optional[str] = None
+    total_equivalent: Optional[str] = None
+    summary: Optional[str] = None
+    fuel_emission_factor: Optional[float] = None
+    electricity_emission_factor: Optional[float] = None
+    diesel_emission_factor: Optional[float] = None
+    natural_gas_emission_factor: Optional[float] = None
+    vehicle_emission_factor: Optional[float] = None
+    flight_emission_factor: Optional[float] = None
+    activity_breakdown: List[Dict[str, Any]] = Field(default_factory=list)
+    scope_breakdown: Dict[str, Any] = Field(default_factory=dict)
+    recommendation: Optional[str] = None
 
 class ReviewSubmissionRequest(BaseModel):
     reviewer_role: str
@@ -402,6 +427,71 @@ class ReportExportResponse(BaseModel):
     narrative_headline: Optional[str] = None
     narrative_included: bool = False
     benchmark_callouts: List[str] = []
+    comparison_rows: List[Dict[str, Any]] = []
+
+
+class NewsletterGenerateRequest(BaseModel):
+    audience: Literal['manager', 'investor'] = 'manager'
+    tone: Literal['board-ready', 'lp-letter', 'exec-summary'] = 'board-ready'
+    force_refresh: bool = False
+    dry_run: bool = False
+    recipient_emails: List[str] = Field(default_factory=list)
+
+
+class NewsletterSummaryResponse(BaseModel):
+    available: bool
+    audience: Literal['manager', 'investor']
+    tone: str = 'board-ready'
+    generated_at: str
+    subject_line: str = ''
+    preheader: str = ''
+    headline: str = ''
+    summary: str = ''
+    highlights: List[str] = []
+    watchouts: List[str] = []
+    recommendations: List[str] = []
+    call_to_action: str = ''
+    source_years: List[int] = []
+    source_company_count: int = 0
+    source_submission_count: int = 0
+    impact_headline: Optional[str] = None
+    benchmark_callouts: List[str] = []
+    cached: bool = False
+    fallback_used: bool = False
+    message: Optional[str] = None
+
+
+class NewsletterExportResponse(BaseModel):
+    available: bool
+    audience: Literal['manager', 'investor']
+    tone: str = 'board-ready'
+    generated_at: str
+    file_name: str = ''
+    file_path: str = ''
+    download_url: str = ''
+    content_type: str = 'text/plain'
+    subject_line: str = ''
+    preheader: str = ''
+    headline: str = ''
+    message: Optional[str] = None
+
+
+class NewsletterSendResponse(BaseModel):
+    available: bool
+    audience: Literal['manager', 'investor']
+    tone: str = 'board-ready'
+    generated_at: str
+    delivery_status: Literal['sent', 'dry_run', 'queued', 'failed', 'skipped']
+    provider: str = 'smtp'
+    recipient_count: int = 0
+    sent_count: int = 0
+    failed_count: int = 0
+    skipped_count: int = 0
+    subject_line: str = ''
+    preheader: str = ''
+    headline: str = ''
+    dry_run: bool = False
+    message: Optional[str] = None
 
 
 class NarrativeSummaryResponse(BaseModel):
@@ -425,6 +515,32 @@ class NarrativeSummaryResponse(BaseModel):
     highlights: List[str] = []
     watchouts: List[str] = []
     recommendations: List[str] = []
+    message: Optional[str] = None
+
+
+class NarrativeHistoryItem(BaseModel):
+    narrative_id: int
+    audience: Literal['company', 'lp', 'board']
+    scope: Literal['company', 'portfolio']
+    tone: str = 'board-ready'
+    status: str = 'generated'
+    company_id: Optional[int] = None
+    company_name: Optional[str] = None
+    generated_at: str
+    updated_at: str
+    headline: str = ''
+    source_years: List[int] = []
+    source_company_count: int = 0
+    source_submission_count: int = 0
+    approved_by_role: Optional[str] = None
+    approved_at: Optional[str] = None
+
+
+class NarrativeHistoryResponse(BaseModel):
+    available: bool = True
+    audience: Literal['company', 'lp', 'board']
+    scope: Literal['company', 'portfolio']
+    items: List[NarrativeHistoryItem] = Field(default_factory=list)
     message: Optional[str] = None
 
 
@@ -764,6 +880,7 @@ class CompanySubmissionSectionResponse(BaseModel):
 class CompanyDashboardResponse(BaseModel):
     company_id: int
     company_name: str
+    current_cycle_id: Optional[int] = None
     current_cycle_year: int
     submission_status: str  # NOT STARTED, IN PROGRESS, SUBMITTED, APPROVED, REJECTED, RESUBMISSION REQUIRED
     status_color: str  # grey, blue, yellow, green, red, amber
@@ -860,9 +977,16 @@ class DocumentExtractionSuggestion(BaseModel):
     explanation: Optional[str] = None
     source_excerpt: Optional[str] = None
     needs_confirmation: bool = True
+    document_type: Optional[str] = None
+    document_topics: List[str] = Field(default_factory=list)
 
 
 class SupportingDocumentUploadResponse(BaseModel):
     message: str
     document: SupportingDocumentResponse
+    document_type: str = 'document'
+    document_topics: List[str] = Field(default_factory=list)
+    matched_keywords: List[str] = Field(default_factory=list)
+    extraction_summary: str = ''
+    suggestion_count: int = 0
     extraction_suggestions: List[DocumentExtractionSuggestion] = Field(default_factory=list)

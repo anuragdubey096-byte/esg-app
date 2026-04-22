@@ -11,5 +11,15 @@
       "source": "/((?!api(?:/|$)).*)",
       "destination": "/index.html"
     }
+  ],
+  "crons": [
+    {
+      "path": "/api/cron/newsletter/manager",
+      "schedule": "0 8 * * 1-5"
+    },
+    {
+      "path": "/api/cron/newsletter/investor",
+      "schedule": "0 9 * * 1"
+    }
   ]
 }

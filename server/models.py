@@ -195,6 +195,24 @@ class ReminderLog(Base):
     sent_by_user = relationship('User', back_populates='reminder_logs')
 
 
+class NewsletterDispatchLog(Base):
+    __tablename__ = 'newsletter_dispatch_logs'
+
+    id = Column(Integer, primary_key=True, index=True)
+    audience = Column(String, nullable=False)
+    tone = Column(String, nullable=False, default='board-ready')
+    recipient_email = Column(String, nullable=False, index=True)
+    payload_hash = Column(String, nullable=False, index=True)
+    subject_line = Column(String, nullable=False)
+    provider = Column(String, nullable=False, default='smtp')
+    delivery_status = Column(String, nullable=False, default='queued')
+    provider_message_id = Column(String, nullable=True)
+    error_message = Column(Text, nullable=True)
+    scheduled_for = Column(DateTime, nullable=True)
+    sent_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 class ActionPlan(Base):
     __tablename__ = 'action_plans'
 

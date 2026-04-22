@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useOutletContext, useSearchParams } from 'react-router-dom'
 import SectionCard from '../components/SectionCard'
 import { Button, ConfidenceFlagSelector, SelectInput, TextareaInput, TextInput } from '../components/ui'
+import useCompanyActiveCycleId from '../hooks/useCompanyActiveCycleId'
 import { API_BASE_URL } from '../lib/api'
 import { UI_LABELS } from '../lib/uiLabels'
 
@@ -20,7 +21,9 @@ export default function CompanySubmissionPage() {
   const [saveMessage, setSaveMessage] = useState('')
   const [lastSavedAt, setLastSavedAt] = useState(null)
 
-  const cycleId = searchParams.get('cycleId') || '1'
+  const requestedCycleId = searchParams.get('cycleId') || ''
+  const { cycleId: activeCycleId, loading: cycleLoading, error: cycleError } = useCompanyActiveCycleId(user)
+  const cycleId = requestedCycleId || activeCycleId
   const sections = ['Submission Context', 'Environmental', 'Social', 'Governance', 'Supporting Notes']
 
   const fetchSubmission = async (sectionName) => {
@@ -53,6 +56,7 @@ export default function CompanySubmissionPage() {
   }
 
   useEffect(() => {
+    if (!cycleId) return
     fetchSubmission(activeSection)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSection, cycleId, user])
@@ -107,7 +111,7 @@ export default function CompanySubmissionPage() {
     }, {})
   }, [data])
 
-  if (loading) {
+  if (cycleLoading || (loading && Boolean(cycleId))) {
     return (
       <div className="page-grid">
         <SectionCard title={UI_LABELS.pages.companySubmission.title} subtitle={UI_LABELS.pages.companySubmission.loadingSubtitle}>
@@ -126,6 +130,19 @@ export default function CompanySubmissionPage() {
           <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-red-800">
             <p className="ui-text-strong">Error: {error}</p>
             <p className="mt-2 text-sm">{UI_LABELS.common.backendServerRunning}</p>
+          </div>
+        </SectionCard>
+      </div>
+    )
+  }
+
+  if (!cycleId) {
+    return (
+      <div className="page-grid">
+        <SectionCard title={UI_LABELS.pages.companySubmission.title} subtitle={UI_LABELS.pages.companySubmission.errorSubtitle}>
+          <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-amber-900">
+            <p className="ui-text-strong">Unable to resolve the active reporting cycle.</p>
+            <p className="mt-2 text-sm">{cycleError || 'The company dashboard did not return an active cycle id.'}</p>
           </div>
         </SectionCard>
       </div>

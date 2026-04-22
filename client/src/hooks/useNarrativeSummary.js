@@ -7,6 +7,10 @@ export default function useNarrativeSummary({ user, audience, companyId, tone = 
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [refreshToken, setRefreshToken] = useState(0)
+  const [history, setHistory] = useState([])
+  const [historyLoading, setHistoryLoading] = useState(true)
+  const [historyError, setHistoryError] = useState('')
+  const [historyRefreshToken, setHistoryRefreshToken] = useState(0)
 
   useEffect(() => {
     let active = true
@@ -60,7 +64,64 @@ export default function useNarrativeSummary({ user, audience, companyId, tone = 
     }
   }, [audience, companyId, enabled, refreshToken, tone, user?.email, user?.role])
 
-  const refresh = () => setRefreshToken((current) => current + 1)
+  useEffect(() => {
+    let active = true
+
+    const fetchHistory = async () => {
+      if (!enabled || !user?.role || !audience) {
+        setHistory([])
+        setHistoryError('')
+        setHistoryLoading(false)
+        return
+      }
+
+      setHistoryLoading(true)
+      setHistoryError('')
+      try {
+        const params = new URLSearchParams({ audience, limit: '10' })
+        if (companyId !== undefined && companyId !== null) {
+          params.set('company_id', String(companyId))
+        }
+        const response = await fetch(`${API_BASE_URL}/narrative/history?${params.toString()}`, {
+          headers: {
+            'X-User-Role': user?.role || '',
+            'X-User-Email': user?.email || '',
+            'Content-Type': 'application/json',
+          },
+        })
+
+        const payload = await response.json().catch(() => ({}))
+        if (!response.ok) {
+          throw new Error(payload.detail || `Failed to load narrative history (${response.status})`)
+        }
+
+        if (active) {
+          setHistory(Array.isArray(payload.items) ? payload.items : [])
+        }
+      } catch (err) {
+        if (active) {
+          setHistoryError(err.message || 'Unable to load narrative history.')
+          setHistory([])
+        }
+      } finally {
+        if (active) {
+          setHistoryLoading(false)
+        }
+      }
+    }
+
+    fetchHistory()
+    return () => {
+      active = false
+    }
+  }, [audience, companyId, enabled, historyRefreshToken, user?.email, user?.role])
+
+  const refresh = () => {
+    setRefreshToken((current) => current + 1)
+    setHistoryRefreshToken((current) => current + 1)
+  }
+
+  const refreshHistory = () => setHistoryRefreshToken((current) => current + 1)
 
   const generate = async ({ audience: nextAudience = audience, companyId: nextCompanyId = companyId, tone: nextTone = tone, forceRefresh = false } = {}) => {
       const response = await fetch(`${API_BASE_URL}/narrative/generate`, {
@@ -135,5 +196,39 @@ export default function useNarrativeSummary({ user, audience, companyId, tone = 
     return payload
   }
 
-  return { data, loading, error, refresh, generate, update, approve, exportNarrative }
+  const loadNarrative = async (narrativeId) => {
+    if (!narrativeId) {
+      throw new Error('Narrative ID is required.')
+    }
+
+    const response = await fetch(`${API_BASE_URL}/narrative/${narrativeId}`, {
+      headers: {
+        'X-User-Role': user?.role || '',
+        'X-User-Email': user?.email || '',
+        'Content-Type': 'application/json',
+      },
+    })
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok) {
+      throw new Error(payload.detail || `Failed to load narrative summary (${response.status})`)
+    }
+    setData(payload)
+    return payload
+  }
+
+  return {
+    data,
+    loading,
+    error,
+    refresh,
+    generate,
+    update,
+    approve,
+    exportNarrative,
+    loadNarrative,
+    history,
+    historyLoading,
+    historyError,
+    refreshHistory,
+  }
 }

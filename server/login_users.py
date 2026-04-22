@@ -7,6 +7,7 @@ from typing import Iterable
 from models import User, UserRole
 
 DEFAULT_LOGIN_USERS_CSV = Path(__file__).resolve().parent / 'fixtures' / 'users.csv'
+EXPECTED_LOGIN_USER_COLUMNS = {'name', 'email', 'password', 'role'}
 DEFAULT_FALLBACK_USERS: list[tuple[str, str, str, UserRole]] = [
     ('Portfolio Contact', 'company@example.com', 'password123', UserRole.COMPANY),
     ('Manager Alice', 'manager@example.com', 'password123', UserRole.MANAGER),
@@ -23,6 +24,11 @@ def load_login_user_rows(csv_path: Path) -> list[dict[str, str]]:
 
     with csv_path.open('r', encoding='utf-8-sig', newline='') as handle:
         reader = csv.DictReader(handle)
+        missing_columns = sorted(EXPECTED_LOGIN_USER_COLUMNS - set(reader.fieldnames or []))
+        if missing_columns:
+            raise ValueError(
+                f'Login user fixture {csv_path} is missing required columns: {", ".join(missing_columns)}'
+            )
         return [row for row in reader if any((value or '').strip() for value in row.values())]
 
 

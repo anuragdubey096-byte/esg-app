@@ -3,9 +3,11 @@ import { useOutletContext } from 'react-router-dom'
 import { LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts'
 import KpiCard from '../components/KpiCard'
 import ImpactStoryCard from '../components/ImpactStoryCard'
+import NewsletterCard from '../components/NewsletterCard'
 import NarrativeSummaryCard from '../components/NarrativeSummaryCard'
 import SectionCard from '../components/SectionCard'
 import useNarrativeSummary from '../hooks/useNarrativeSummary'
+import useNewsletterSummary from '../hooks/useNewsletterSummary'
 import { API_BASE_URL } from '../lib/api'
 import { CHART_COLORS } from '../lib/foundation'
 import { NARRATIVE_UI_COPY } from '../lib/portalOptions'
@@ -20,6 +22,12 @@ export default function LPDashboardPage() {
   const narrative = useNarrativeSummary({
     user,
     audience: 'lp',
+    tone: 'lp-letter',
+    enabled: Boolean(user),
+  })
+  const newsletter = useNewsletterSummary({
+    user,
+    audience: 'investor',
     tone: 'lp-letter',
     enabled: Boolean(user),
   })
@@ -119,44 +127,6 @@ export default function LPDashboardPage() {
     'Scope 3': Number(item.scope_3 || 0) / 1000,
   }))
 
-  const currentEmissionsPoint = emissionsTrendRaw[emissionsTrendRaw.length - 1] || null
-  const previousEmissionsPoint = emissionsTrendRaw[emissionsTrendRaw.length - 2] || null
-  const comparisonRows = [
-    {
-      metric: 'Overall ESG Score',
-      current: scorecard.overall_esg_score,
-      previous: scorecard.overall_esg_score_previous,
-      delta: `${Number(scorecard.yoy_change_percent) > 0 ? '+' : ''}${Number(scorecard.yoy_change_percent || 0).toFixed(2)}%`,
-    },
-    {
-      metric: 'Scope 1 Emissions (tCO2e)',
-      current: currentEmissionsPoint?.scope_1 ?? 'n/a',
-      previous: previousEmissionsPoint?.scope_1 ?? 'n/a',
-      delta:
-        currentEmissionsPoint && previousEmissionsPoint && previousEmissionsPoint.scope_1
-          ? `${(((currentEmissionsPoint.scope_1 - previousEmissionsPoint.scope_1) / previousEmissionsPoint.scope_1) * 100).toFixed(2)}%`
-          : 'n/a',
-    },
-    {
-      metric: 'Scope 2 Emissions (tCO2e)',
-      current: currentEmissionsPoint?.scope_2 ?? 'n/a',
-      previous: previousEmissionsPoint?.scope_2 ?? 'n/a',
-      delta:
-        currentEmissionsPoint && previousEmissionsPoint && previousEmissionsPoint.scope_2
-          ? `${(((currentEmissionsPoint.scope_2 - previousEmissionsPoint.scope_2) / previousEmissionsPoint.scope_2) * 100).toFixed(2)}%`
-          : 'n/a',
-    },
-    {
-      metric: 'Scope 3 Emissions (tCO2e)',
-      current: currentEmissionsPoint?.scope_3 ?? 'n/a',
-      previous: previousEmissionsPoint?.scope_3 ?? 'n/a',
-      delta:
-        currentEmissionsPoint && previousEmissionsPoint && previousEmissionsPoint.scope_3
-          ? `${(((currentEmissionsPoint.scope_3 - previousEmissionsPoint.scope_3) / previousEmissionsPoint.scope_3) * 100).toFixed(2)}%`
-          : 'n/a',
-    },
-  ]
-
   return (
     <div className="page-grid">
       <NarrativeSummaryCard
@@ -173,6 +143,19 @@ export default function LPDashboardPage() {
         subtitle={NARRATIVE_UI_COPY.pages.lpDashboardImpactSubtitle}
         story={impactStory}
         maxInsights={4}
+      />
+
+      <NewsletterCard
+        title="Investor Newsletter Draft"
+        subtitle={NARRATIVE_UI_COPY.pages.lpDashboardNewsletterSubtitle}
+        data={newsletter.data}
+        loading={newsletter.loading}
+        error={newsletter.error}
+        onRefresh={newsletter.refresh}
+        onExport={newsletter.exportNewsletter}
+        onSend={newsletter.sendNewsletter}
+        exporting={newsletter.exporting}
+        sending={newsletter.sending}
       />
 
       <SectionCard title="Portfolio ESG Scorecard" subtitle="Live backend snapshot">

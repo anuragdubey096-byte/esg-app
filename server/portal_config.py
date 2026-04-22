@@ -18,6 +18,7 @@ def _load_portal_config() -> Dict[str, Any]:
 
 
 PORTAL_CONFIG: Dict[str, Any] = _load_portal_config()
+FOUNDATION_CONFIG: Dict[str, Any] = PORTAL_CONFIG.get('foundation') or {}
 EXPERIENCE_CONFIG: Dict[str, Any] = PORTAL_CONFIG.get('experience') or {}
 SEARCH_CONFIG: Dict[str, Any] = PORTAL_CONFIG.get('search') or {}
 

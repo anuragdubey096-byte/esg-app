@@ -1,6 +1,7 @@
 import portalConfig from './portalConfig.json'
 
 export const PORTAL_CONFIG = portalConfig
+export const FOUNDATION_CONFIG = portalConfig.foundation || {}
 
 export const EXPERIENCE_CONFIG = portalConfig.experience
 export const BRAND_PROFILES = EXPERIENCE_CONFIG.brandProfiles

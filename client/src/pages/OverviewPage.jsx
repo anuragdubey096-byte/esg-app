@@ -4,9 +4,11 @@ import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts'
 import DataTable from '../components/DataTable'
 import ImpactStoryCard from '../components/ImpactStoryCard'
 import KpiCard from '../components/KpiCard'
+import NewsletterCard from '../components/NewsletterCard'
 import SectionCard from '../components/SectionCard'
 import StatusBadge from '../components/StatusBadge'
 import useDashboardData, { getLatestSubmission, normalizeStatus } from '../hooks/useDashboardData'
+import useNewsletterSummary from '../hooks/useNewsletterSummary'
 import { API_BASE_URL } from '../lib/api'
 import { STATUS_COLORS } from '../lib/foundation'
 import { UI_LABELS } from '../lib/uiLabels'
@@ -53,6 +55,12 @@ function buildFallbackSummary(companies) {
 export default function OverviewPage() {
   const { user } = useOutletContext()
   const { companies, summary, loading, error, refresh } = useDashboardData(user)
+  const newsletter = useNewsletterSummary({
+    user,
+    audience: 'manager',
+    tone: 'board-ready',
+    enabled: Boolean(user),
+  })
 
   const managerSummary = useMemo(() => {
     if (summary && typeof summary === 'object' && summary.status_breakdown) {
@@ -240,6 +248,19 @@ export default function OverviewPage() {
         subtitle="Plain-English context for the current portfolio"
         story={impactStory}
         maxInsights={4}
+      />
+
+      <NewsletterCard
+        title="Board Newsletter Draft"
+        subtitle="Email-ready digest from live portfolio data"
+        data={newsletter.data}
+        loading={newsletter.loading}
+        error={newsletter.error}
+        onRefresh={newsletter.refresh}
+        onExport={newsletter.exportNewsletter}
+        onSend={newsletter.sendNewsletter}
+        exporting={newsletter.exporting}
+        sending={newsletter.sending}
       />
 
       <section className="kpi-grid">

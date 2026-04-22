@@ -1,4 +1,5 @@
 import { ESG_FORM_SECTIONS } from './esgFormConfig'
+import { humanizeKey } from './lib/text'
 
 const metricFields = ESG_FORM_SECTIONS.flatMap((section) =>
   section.fields.filter((field) => field.type !== 'text' && field.type !== 'textarea').map((field) => field.name)
@@ -13,13 +14,6 @@ export function parseESGData(raw) {
   } catch {
     return raw
   }
-}
-
-export function formatFieldLabel(key) {
-  return key
-    .replace(/_confidence$/, ' confidence')
-    .replace(/_/g, ' ')
-    .replace(/\b\w/g, (char) => char.toUpperCase())
 }
 
 export function renderValue(value) {
@@ -43,7 +37,10 @@ export function validateSubmissionData(formValues) {
     message:
       missingMetrics.length === 0
         ? 'All required metric fields have values.'
-        : `Missing values: ${missingMetrics.slice(0, 5).map(formatFieldLabel).join(', ')}${missingMetrics.length > 5 ? '...' : ''}`,
+        : `Missing values: ${missingMetrics
+            .slice(0, 5)
+            .map((field) => humanizeKey(String(field || '').replace(/_confidence$/, ' confidence')))
+            .join(', ')}${missingMetrics.length > 5 ? '...' : ''}`,
   })
 
   const missingConfidence = confidenceFields.filter((field) => !values[field])
@@ -53,7 +50,10 @@ export function validateSubmissionData(formValues) {
     message:
       missingConfidence.length === 0
         ? 'Every measurable field includes a confidence selection.'
-        : `Missing confidence flags: ${missingConfidence.slice(0, 5).map(formatFieldLabel).join(', ')}${missingConfidence.length > 5 ? '...' : ''}`,
+        : `Missing confidence flags: ${missingConfidence
+            .slice(0, 5)
+            .map((field) => humanizeKey(String(field || '').replace(/_confidence$/, ' confidence')))
+            .join(', ')}${missingConfidence.length > 5 ? '...' : ''}`,
   })
 
   const cautionFlags = confidenceFields.filter((field) => {

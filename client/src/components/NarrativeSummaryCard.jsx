@@ -1,49 +1,9 @@
 import { useState } from 'react'
 import SectionCard from './SectionCard'
 import EmptyState from './ui/EmptyState'
-import { Button } from './ui'
+import { Button, ListSection } from './ui'
 import { NARRATIVE_UI_COPY } from '../lib/portalOptions'
-
-function splitSentences(text) {
-  const value = String(text || '').trim()
-  if (!value) return []
-  const matches = value.match(/[^.!?]+[.!?]+|[^.!?]+$/g)
-  return matches ? matches.map((part) => part.trim()).filter(Boolean) : [value]
-}
-
-function buildPreviewSummary(text, sentenceCount = 2) {
-  const sentences = splitSentences(text)
-  if (!sentences.length) return ''
-  if (sentences.length <= sentenceCount) return sentences.join(' ')
-  return `${sentences.slice(0, sentenceCount).join(' ')}...`
-}
-
-function buildSummaryBlocks(text) {
-  const sentences = splitSentences(text)
-  if (sentences.length <= 2) return [sentences.join(' ')]
-
-  const blocks = []
-  for (let index = 0; index < sentences.length; index += 2) {
-    blocks.push(sentences.slice(index, index + 2).join(' '))
-  }
-  return blocks
-}
-
-function SectionList({ title, items }) {
-  if (!items?.length) return null
-  return (
-    <div className="space-y-2">
-      <p className="ui-text-strong text-[color:var(--ui-text)]">{title}</p>
-      <ul className="space-y-2">
-        {items.map((item) => (
-          <li key={item} className="rounded-lg border border-[color:var(--ui-panel-border)] bg-[color:var(--ui-surface-muted)] px-3 py-2 text-sm text-[color:var(--ui-text)]">
-            {item}
-          </li>
-        ))}
-      </ul>
-    </div>
-  )
-}
+import { buildPreviewSummary, buildSummaryBlocks } from '../lib/text'
 
 export default function NarrativeSummaryCard({
   title = NARRATIVE_UI_COPY.summaryCard.title,
@@ -166,9 +126,9 @@ export default function NarrativeSummaryCard({
           </div>
 
           <div className="grid gap-4 lg:grid-cols-3">
-            <SectionList title={NARRATIVE_UI_COPY.summaryCard.highlightsTitle} items={data.highlights} />
-            <SectionList title={NARRATIVE_UI_COPY.summaryCard.watchoutsTitle} items={data.watchouts} />
-            <SectionList title={NARRATIVE_UI_COPY.summaryCard.nextStepsTitle} items={data.recommendations} />
+            <ListSection title={NARRATIVE_UI_COPY.summaryCard.highlightsTitle} items={data.highlights} />
+            <ListSection title={NARRATIVE_UI_COPY.summaryCard.watchoutsTitle} items={data.watchouts} />
+            <ListSection title={NARRATIVE_UI_COPY.summaryCard.nextStepsTitle} items={data.recommendations} />
           </div>
         </div>
       )}

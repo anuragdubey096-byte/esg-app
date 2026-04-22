@@ -19,6 +19,7 @@ import useDashboardData, {
 import { API_BASE_URL } from '../lib/api'
 import { CHART_COLORS } from '../lib/foundation'
 import { REPORT_FRAMEWORK_OPTIONS } from '../lib/portalOptions'
+import { humanizeKey } from '../lib/text'
 import {
   createFilterPresetId,
   loadLastFilterState,
@@ -28,6 +29,7 @@ import {
   saveLastFilterState,
   upsertSavedFilterPreset,
 } from '../lib/experience'
+import useCompanyActiveCycleId from '../hooks/useCompanyActiveCycleId'
 
 const numericFields = new Set(
   ESG_FORM_SECTIONS.flatMap((section) =>
@@ -66,16 +68,32 @@ function buildSubmissionPayload(formValues) {
   return payload
 }
 
+function getExtractionSuggestionKey(suggestion) {
+  return [
+    suggestion.field_key || '',
+    suggestion.suggested_value || '',
+    suggestion.source_excerpt || '',
+  ].join('::')
+}
+
+function getExtractionSuggestionExplanation(suggestion) {
+  const explanation = suggestion.explanation?.trim() || ''
+  const sourceExcerpt = suggestion.source_excerpt?.trim() || ''
+
+  if (!sourceExcerpt) return explanation
+  return explanation ? `${explanation} Source excerpt: ${sourceExcerpt}` : `Source excerpt: ${sourceExcerpt}`
+}
+
 function validatePortfolioForm(formValues) {
   const errors = []
   metricFields.forEach((fieldName) => {
     const value = formValues[fieldName]
     const confidence = formValues[`${fieldName}_confidence`]
     if ((value ?? '') === '') {
-      errors.push(`${fieldName.replace(/_/g, ' ')} is required.`)
+      errors.push(`${humanizeKey(fieldName)} is required.`)
     }
     if (!confidence) {
-      errors.push(`${fieldName.replace(/_/g, ' ')} confidence is required.`)
+      errors.push(`${humanizeKey(fieldName)} confidence is required.`)
     }
   })
 
@@ -85,6 +103,28 @@ function validatePortfolioForm(formValues) {
   })
 
   return [...new Set(errors)]
+}
+
+const CARBON_CALCULATOR_FIELDS = [
+  { name: 'fuel_liters', label: 'Fuel', help: 'Fuel combustion used in owned or controlled operations.', unit: 'liters' },
+  { name: 'diesel_liters', label: 'Diesel', help: 'Diesel consumption for owned assets and fleets.', unit: 'liters' },
+  { name: 'natural_gas_therms', label: 'Natural gas', help: 'Stationary combustion or building heat use.', unit: 'therms' },
+  { name: 'electricity_kwh', label: 'Electricity', help: 'Purchased electricity for the reporting period.', unit: 'kWh' },
+  { name: 'vehicle_km', label: 'Vehicle travel', help: 'Business travel by road or fleet vehicles.', unit: 'km' },
+  { name: 'flight_km', label: 'Air travel', help: 'Passenger flights for business travel.', unit: 'km' },
+]
+
+function createInitialCarbonInputs() {
+  return CARBON_CALCULATOR_FIELDS.reduce((acc, field) => {
+    acc[field.name] = ''
+    return acc
+  }, {})
+}
+
+function formatCarbonMetric(value) {
+  const numeric = Number(value || 0)
+  if (Number.isNaN(numeric)) return '0.0000'
+  return numeric.toFixed(4)
 }
 
 function createPrefilledFormValues(company) {
@@ -105,6 +145,7 @@ export default function SubmissionsPage() {
   const { user } = useOutletContext()
   const [searchParams] = useSearchParams()
   const { companies, cycles, loading, error, refresh } = useDashboardData(user)
+  const { cycleId: activeCycleId, loading: activeCycleLoading, error: activeCycleError } = useCompanyActiveCycleId(user)
   const [status, setStatus] = useState('All')
   const [sector, setSector] = useState('All')
   const [geography, setGeography] = useState('All')
@@ -116,7 +157,12 @@ export default function SubmissionsPage() {
   const [formValues, setFormValues] = useState(createInitialFormValues)
   const [formMessage, setFormMessage] = useState('')
   const [evidenceExtraction, setEvidenceExtraction] = useState(null)
+  const [hiddenSuggestionKeys, setHiddenSuggestionKeys] = useState([])
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [carbonInputs, setCarbonInputs] = useState(createInitialCarbonInputs)
+  const [carbonResult, setCarbonResult] = useState(null)
+  const [carbonBusy, setCarbonBusy] = useState(false)
+  const [carbonMessage, setCarbonMessage] = useState('')
   const formValuesRef = useRef(formValues)
   const hydratedFiltersRef = useRef(false)
   const [activeTab, setActiveTab] = useState(ESG_FORM_SECTIONS.length ? ESG_FORM_SECTIONS[0].key : '')
@@ -194,6 +240,56 @@ export default function SubmissionsPage() {
       throw new Error(errorPayload.detail || `Request failed (${response.status})`)
     }
     return response.json().catch(() => ({}))
+  }
+
+  const handleCarbonInputChange = (event) => {
+    const { name, value } = event.target
+    setCarbonInputs((current) => ({
+      ...current,
+      [name]: value,
+    }))
+  }
+
+  const runCarbonCalculator = async () => {
+    setCarbonBusy(true)
+    setCarbonMessage('')
+    try {
+      const response = await fetch(`${API_BASE_URL}/calculator/ghg`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(
+          Object.fromEntries(
+            Object.entries(carbonInputs).map(([key, value]) => [key, value === '' ? 0 : Number(value)]),
+          ),
+        ),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw new Error(payload.detail || `Calculator failed (${response.status})`)
+      }
+      setCarbonResult(payload)
+      setCarbonMessage(payload.summary || 'Carbon footprint calculated.')
+    } catch (error) {
+      setCarbonMessage(error.message || 'Calculator error')
+    } finally {
+      setCarbonBusy(false)
+    }
+  }
+
+  const applyCarbonResult = () => {
+    if (!carbonResult) return
+    setFormValues((current) => ({
+      ...current,
+      scope_1_emissions: formatCarbonMetric(carbonResult.scope_1_tco2e),
+      scope_1_emissions_confidence: 'Estimated',
+      scope_2_location_based: formatCarbonMetric(carbonResult.scope_2_tco2e),
+      scope_2_location_based_confidence: 'Estimated',
+      scope_3_emissions: formatCarbonMetric(carbonResult.scope_3_tco2e || 0),
+      scope_3_emissions_confidence: 'Estimated',
+      total_ghg_emissions: formatCarbonMetric(carbonResult.total_tco2e),
+      total_ghg_emissions_confidence: 'Estimated',
+    }))
+    setFormMessage('Applied carbon calculator results to the ESG submission draft.')
   }
 
   const handleValidate = async (submissionId) => {
@@ -456,6 +552,72 @@ export default function SubmissionsPage() {
     setFormValues((current) => ({ ...current, [name]: value }))
   }
 
+  const visibleExtractionSuggestions = useMemo(() => {
+    const suggestions = evidenceExtraction?.extraction_suggestions || []
+    if (!suggestions.length) return []
+    if (!hiddenSuggestionKeys.length) return suggestions
+    return suggestions.filter((suggestion) => !hiddenSuggestionKeys.includes(getExtractionSuggestionKey(suggestion)))
+  }, [evidenceExtraction, hiddenSuggestionKeys])
+
+  const applyExtractionSuggestion = async (suggestion) => {
+    const nextValue = suggestion.suggested_value == null ? '' : String(suggestion.suggested_value)
+    const suggestionKey = getExtractionSuggestionKey(suggestion)
+
+    setFormValues((current) => {
+      const nextValues = {
+        ...current,
+        [suggestion.field_key]: nextValue,
+      }
+      const confidenceFieldKey = `${suggestion.field_key}_confidence`
+      if (Object.prototype.hasOwnProperty.call(current, confidenceFieldKey)) {
+        nextValues[confidenceFieldKey] = suggestion.confidence_level || current[confidenceFieldKey] || ''
+      }
+      return nextValues
+    })
+
+    if (!nextValue.trim()) {
+      setHiddenSuggestionKeys((current) => (current.includes(suggestionKey) ? current : [...current, suggestionKey]))
+      setFormMessage(`Applied ${suggestion.field_key} locally. Review the value manually before submitting.`)
+      return
+    }
+
+    if (!activeCycleId) {
+      setHiddenSuggestionKeys((current) => (current.includes(suggestionKey) ? current : [...current, suggestionKey]))
+      setFormMessage(`Applied ${suggestion.field_key} locally. Resolve the active cycle to save it to the submission record.`)
+      return
+    }
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/company/submission/${activeCycleId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          field_key: suggestion.field_key,
+          value: nextValue,
+          confidence_level: suggestion.confidence_level || 'Medium',
+          explanation: getExtractionSuggestionExplanation(suggestion),
+        }),
+      })
+
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw new Error(payload.detail || payload.message || `Failed to apply ${suggestion.field_key}`)
+      }
+
+      setHiddenSuggestionKeys((current) => (current.includes(suggestionKey) ? current : [...current, suggestionKey]))
+      setFormMessage(payload?.message || `Saved suggestion for ${suggestion.field_key}.`)
+      await refresh()
+    } catch (applyError) {
+      setFormMessage(applyError instanceof Error ? applyError.message : `Failed to apply ${suggestion.field_key}.`)
+    }
+  }
+
+  const dismissExtractionSuggestion = (suggestion) => {
+    const suggestionKey = getExtractionSuggestionKey(suggestion)
+    setHiddenSuggestionKeys((current) => (current.includes(suggestionKey) ? current : [...current, suggestionKey]))
+    setFormMessage(`Dismissed suggestion for ${suggestion.field_key}.`)
+  }
+
   const submitPortfolioESG = async (event) => {
     event.preventDefault()
     if (!selectedCompany) return
@@ -573,35 +735,118 @@ export default function SubmissionsPage() {
               )}
 
               <div className="rounded-xl border border-slate-200 bg-blue-50/50 p-4">
-                <h4 className="mb-2 text-base ui-text-strong text-slate-800">Built-in GHG Calculator</h4>
-                <div className="flex flex-wrap items-end gap-4">
-                  <label className="flex-1 min-w-[150px]">
-                    <span className="block text-sm font-medium text-slate-700">Fuel (Liters)</span>
-                    <input type="number" id="calc_fuel" className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm mt-1" />
-                  </label>
-                  <label className="flex-1 min-w-[150px]">
-                    <span className="block text-sm font-medium text-slate-700">Electricity (kWh)</span>
-                    <input type="number" id="calc_elec" className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm mt-1" />
-                  </label>
-                  <Button type="button" className="button bg-blue-600 text-white" onClick={async () => {
-                    const fuel = parseFloat(document.getElementById('calc_fuel').value) || 0;
-                    const elec = parseFloat(document.getElementById('calc_elec').value) || 0;
-                    try {
-      const res = await fetch(`${API_BASE_URL}/calculator/ghg`, {
-                        method: 'POST', headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ fuel_liters: fuel, electricity_kwh: elec })
-                      });
-                      const data = await res.json();
-                      setFormValues(prev => ({
-                        ...prev,
-                        scope_1_emissions: data.scope_1_tco2e.toString(),
-                        scope_2_location_based: data.scope_2_tco2e.toString(),
-                        total_ghg_emissions: data.total_tco2e.toString(),
-                      }));
-                      alert(`Calculated Total: ${data.total_tco2e} tCO2e`);
-                    } catch(e) { alert("Calculator error") }
-                  }}>Calculate & Apply</Button>
+                <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+                  <div>
+                    <h4 className="mb-1 text-base ui-text-strong text-slate-800">Carbon Footprint Calculator</h4>
+                    <p className="text-sm text-slate-600">Estimate Scope 1, 2, and 3 emissions from common activity inputs, then apply the result to the ESG form.</p>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      onClick={() => {
+                        setCarbonInputs(createInitialCarbonInputs())
+                        setCarbonResult(null)
+                        setCarbonMessage('')
+                      }}
+                      disabled={carbonBusy}
+                    >
+                      Reset calculator
+                    </Button>
+                    <Button type="button" className="button bg-blue-600 text-white" onClick={runCarbonCalculator} disabled={carbonBusy}>
+                      {carbonBusy ? 'Calculating...' : 'Calculate emissions'}
+                    </Button>
+                  </div>
                 </div>
+
+                <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                  {CARBON_CALCULATOR_FIELDS.map((field) => (
+                    <label key={field.name} className="rounded-lg border border-slate-200 bg-white p-3">
+                      <span className="block text-sm font-medium text-slate-700">{field.label} ({field.unit})</span>
+                      <input
+                        type="number"
+                        name={field.name}
+                        value={carbonInputs[field.name]}
+                        onChange={handleCarbonInputChange}
+                        min="0"
+                        step={field.unit === 'kWh' || field.unit === 'km' ? '1' : '0.01'}
+                        className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
+                      />
+                      <p className="mt-2 text-xs text-slate-500">{field.help}</p>
+                    </label>
+                  ))}
+                </div>
+
+                {carbonMessage ? (
+                  <p className="mt-4 rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700">{carbonMessage}</p>
+                ) : null}
+
+                {carbonResult ? (
+                  <div className="mt-4 space-y-4">
+                    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                      {[
+                        { label: 'Scope 1', value: carbonResult.scope_1_tco2e, unit: 'tCO2e' },
+                        { label: 'Scope 2', value: carbonResult.scope_2_tco2e, unit: 'tCO2e' },
+                        { label: 'Scope 3', value: carbonResult.scope_3_tco2e, unit: 'tCO2e' },
+                        { label: 'Total', value: carbonResult.total_tco2e, unit: 'tCO2e' },
+                      ].map((item) => (
+                        <div key={item.label} className="rounded-xl border border-slate-200 bg-white p-4">
+                          <p className="text-xs uppercase tracking-wide text-slate-500">{item.label}</p>
+                          <p className="mt-2 ui-text-display text-slate-800">
+                            {formatCarbonMetric(item.value)}
+                            {' '}
+                            {item.unit}
+                          </p>
+                          <p className="mt-2 text-xs text-slate-500">
+                            {item.label === 'Scope 1' ? carbonResult.scope_1_equivalent : null}
+                            {item.label === 'Scope 2' ? carbonResult.scope_2_equivalent : null}
+                            {item.label === 'Scope 3' ? carbonResult.scope_3_equivalent : null}
+                            {item.label === 'Total' ? carbonResult.total_equivalent : null}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+
+                    {Array.isArray(carbonResult.activity_breakdown) && carbonResult.activity_breakdown.length ? (
+                      <div className="space-y-2">
+                        <p className="ui-text-strong text-slate-800">Activity breakdown</p>
+                        <div className="grid gap-3 md:grid-cols-2">
+                          {carbonResult.activity_breakdown.map((row) => (
+                            <div key={`${row.scope}-${row.field_key}`} className="rounded-lg border border-slate-200 bg-white p-3 text-sm text-slate-700">
+                              <div className="flex items-start justify-between gap-3">
+                                <div>
+                                  <p className="ui-text-strong text-slate-800">{row.activity}</p>
+                                  <p className="text-xs text-slate-500">{row.scope}</p>
+                                </div>
+                                <p className="text-right text-xs text-slate-500">
+                                  {formatCarbonMetric(row.input_value)}
+                                  {' '}
+                                  {row.unit}
+                                </p>
+                              </div>
+                              <p className="mt-2 text-xs text-slate-500">
+                                {formatCarbonMetric(row.emissions_tco2e)}
+                                {' '}
+                                tCO2e
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+
+                    <div className="flex flex-wrap gap-2">
+                      <Button type="button" variant="secondary" onClick={applyCarbonResult} disabled={!carbonResult}>
+                        Apply to submission
+                      </Button>
+                      {carbonResult.recommendation ? (
+                        <span className="rounded-full border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
+                          {carbonResult.recommendation}
+                        </span>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : null}
               </div>
 
               <div className="flex overflow-x-auto border-b border-slate-200 mb-6 pb-2 gap-2">
@@ -706,7 +951,8 @@ export default function SubmissionsPage() {
                         const payload = await res.json().catch(() => ({}));
                         if (res.ok) {
                           setEvidenceExtraction(payload);
-                          setFormMessage(payload?.message || 'Evidence uploaded successfully');
+                          setHiddenSuggestionKeys([]);
+                          setFormMessage(payload?.extraction_summary || payload?.message || 'Evidence uploaded successfully');
                           alert('Evidence uploaded successfully');
                         } else {
                           alert(payload?.detail || 'Upload failed');
@@ -714,31 +960,70 @@ export default function SubmissionsPage() {
                       } catch(e) { alert(e.message) }
                     }}>Upload File</Button>
                   </div>
-                  {evidenceExtraction?.extraction_suggestions?.length > 0 ? (
+                  <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                  {activeCycleLoading ? <span>Resolving active cycle for saved extraction suggestions...</span> : null}
+                  {activeCycleError ? <span className="text-amber-700">{activeCycleError}</span> : null}
+                  {activeCycleId ? <span>Confirmed suggestions will save to cycle {activeCycleId}.</span> : null}
+                  </div>
+                  {evidenceExtraction ? (
+                    <div className="mt-4 rounded-xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <p className="ui-text-strong text-blue-900">Extraction summary</p>
+                          <p className="mt-1 text-blue-800">{evidenceExtraction.extraction_summary || evidenceExtraction.message || 'Evidence uploaded successfully.'}</p>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <span className="rounded-full border border-blue-200 bg-white px-3 py-1 text-xs ui-text-strong uppercase tracking-wide text-blue-800">
+                            {humanizeKey(evidenceExtraction.document_type, 'Document')}
+                          </span>
+                          <span className="rounded-full border border-blue-200 bg-white px-3 py-1 text-xs ui-text-strong uppercase tracking-wide text-blue-800">
+                            {evidenceExtraction.suggestion_count || visibleExtractionSuggestions.length || 0} suggestion{(evidenceExtraction.suggestion_count || visibleExtractionSuggestions.length || 0) === 1 ? '' : 's'}
+                          </span>
+                        </div>
+                      </div>
+                      {Array.isArray(evidenceExtraction.document_topics) && evidenceExtraction.document_topics.length ? (
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {evidenceExtraction.document_topics.map((topic) => (
+                            <span key={topic} className="rounded-full border border-blue-200 bg-white px-3 py-1 text-xs text-blue-800">
+                              {humanizeKey(topic)}
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {visibleExtractionSuggestions.length > 0 ? (
                     <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
                       <h5 className="mb-2 text-sm ui-text-strong text-slate-800">Document extraction suggestions</h5>
                       <div className="space-y-3">
-                        {evidenceExtraction.extraction_suggestions.map((suggestion) => (
+                        {visibleExtractionSuggestions.map((suggestion) => (
                           <div key={`${suggestion.field_key}-${suggestion.suggested_value}`} className="rounded-lg border border-slate-200 bg-white p-3 text-sm">
                             <div className="flex flex-wrap items-center justify-between gap-2">
                               <strong className="text-slate-800">{suggestion.field_key}</strong>
                               <span className="text-xs uppercase tracking-wide text-slate-500">{suggestion.confidence_level}</span>
                             </div>
+                            {suggestion.document_type ? (
+                              <p className="mt-1 text-xs text-slate-500">
+                                Matched in {humanizeKey(suggestion.document_type, 'Document')}
+                                {Array.isArray(suggestion.document_topics) && suggestion.document_topics.length ? ` · ${suggestion.document_topics.map((topic) => humanizeKey(topic)).join(', ')}` : ''}
+                              </p>
+                            ) : null}
                             <p className="mt-1 text-slate-600">{suggestion.explanation}</p>
                             {suggestion.source_excerpt ? <p className="mt-1 text-xs text-slate-500">Source: {suggestion.source_excerpt}</p> : null}
                             <div className="mt-3 flex flex-wrap items-center gap-2">
                               <Button
                                 type="button"
                                 className="button"
-                                onClick={() => {
-                                  setFormValues((current) => ({
-                                    ...current,
-                                    [suggestion.field_key]: suggestion.suggested_value || '',
-                                  }))
-                                  setFormMessage(`Applied suggestion for ${suggestion.field_key}.`)
-                                }}
+                                onClick={() => { void applyExtractionSuggestion(suggestion) }}
                               >
-                                Apply suggestion
+                                {activeCycleId ? 'Save to submission' : 'Apply locally'}
+                              </Button>
+                              <Button
+                                type="button"
+                                className="button"
+                                onClick={() => dismissExtractionSuggestion(suggestion)}
+                              >
+                                Dismiss
                               </Button>
                               <span className="text-xs text-slate-500">
                                 Suggested value: {suggestion.suggested_value || 'Review manually'}

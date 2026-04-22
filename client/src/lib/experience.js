@@ -1,4 +1,13 @@
 import { BRAND_PROFILES, DEFAULT_APPEARANCE, DEFAULT_BRAND_ID } from './portalConfig'
+import {
+  FOUNDATION_COMPONENT_SIZES,
+  FOUNDATION_EFFECTS,
+  FOUNDATION_LAYOUT,
+  FOUNDATION_RADIUS,
+  FOUNDATION_SHADOWS,
+  FOUNDATION_SPACING,
+  FOUNDATION_TYPOGRAPHY,
+} from './foundation'
 export { BRAND_PROFILES, DEFAULT_APPEARANCE, DEFAULT_BRAND_ID } from './portalConfig'
 
 const EXPERIENCE_STORAGE_KEY = 'esg.experience.v1'
@@ -27,6 +36,13 @@ function safeWriteJson(storageKey, value) {
   } catch {
     // Ignore storage errors. The UI still works without persistence.
   }
+}
+
+function applyCssVariables(root, variables) {
+  Object.entries(variables).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '') return
+    root.style.setProperty(key, String(value))
+  })
 }
 
 export function getBrandProfile(brandId) {
@@ -69,6 +85,38 @@ export function applyThemeTokens(brandId, appearance) {
   const theme = getAppearance(appearance)
   const profile = getBrandProfile(brandId)
   const tokens = buildThemeTokens(profile.id, theme)
+
+  applyCssVariables(root, {
+    '--ui-font-family-base': FOUNDATION_TYPOGRAPHY.fontFamily,
+    '--ui-font-caption-base': FOUNDATION_TYPOGRAPHY.caption,
+    '--ui-font-body-sm-base': FOUNDATION_TYPOGRAPHY.bodySm,
+    '--ui-font-body-base': FOUNDATION_TYPOGRAPHY.body,
+    '--ui-font-section-base': FOUNDATION_TYPOGRAPHY.section,
+    '--ui-font-display-base': FOUNDATION_TYPOGRAPHY.display,
+    '--ui-line-height-body-base': FOUNDATION_TYPOGRAPHY.bodyLineHeight,
+    '--ui-line-height-heading-base': FOUNDATION_TYPOGRAPHY.headingLineHeight,
+    '--ui-space-1-base': FOUNDATION_SPACING[1],
+    '--ui-space-2-base': FOUNDATION_SPACING[2],
+    '--ui-space-3-base': FOUNDATION_SPACING[3],
+    '--ui-space-4-base': FOUNDATION_SPACING[4],
+    '--ui-space-6-base': FOUNDATION_SPACING[6],
+    '--ui-space-8-base': FOUNDATION_SPACING[8],
+    '--ui-space-12-base': FOUNDATION_SPACING[12],
+    '--ui-page-max-base': FOUNDATION_LAYOUT.pageMax,
+    '--ui-page-pad-base': FOUNDATION_LAYOUT.pagePad,
+    '--ui-radius-sm-base': FOUNDATION_RADIUS.sm,
+    '--ui-radius-md-base': FOUNDATION_RADIUS.md,
+    '--ui-radius-lg-base': FOUNDATION_RADIUS.lg,
+    '--ui-control-radius-base': FOUNDATION_RADIUS.control,
+    '--ui-shadow-card-base': FOUNDATION_SHADOWS.card,
+    '--ui-shadow-elevated-base': FOUNDATION_SHADOWS.elevated,
+    '--ui-shadow-modal-base': FOUNDATION_SHADOWS.modal,
+    '--ui-shadow-stage-base': FOUNDATION_SHADOWS.stage,
+    '--ui-shadow-brand-mark-base': FOUNDATION_SHADOWS.brandMark,
+    '--ui-panel-glow-blur-base': FOUNDATION_EFFECTS.panelGlowBlur,
+    '--ui-button-spinner-size-base': FOUNDATION_COMPONENT_SIZES.buttonSpinner,
+    '--ui-mini-legend-dot-size-base': FOUNDATION_COMPONENT_SIZES.miniLegendDot,
+  })
 
   root.dataset.theme = theme
   root.dataset.brand = profile.id

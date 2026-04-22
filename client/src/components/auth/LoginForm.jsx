@@ -1,6 +1,5 @@
 import { useState } from 'react'
-import Button from './Button'
-import InputField from './InputField'
+import { Button, TextInput } from '../ui'
 import MFAComponent from './MFAComponent'
 import PasswordField from './PasswordField'
 
@@ -127,7 +126,7 @@ export default function LoginForm({ authenticate, onForgotPassword, onSsoSignIn,
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-4">
-            <InputField
+            <TextInput
               id="email"
               label="Email"
               type="email"

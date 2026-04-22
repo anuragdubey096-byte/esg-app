@@ -1,6 +1,5 @@
 import { useState } from 'react'
-import Button from './Button'
-import InputField from './InputField'
+import { Button, TextInput } from '../ui'
 
 export default function MFAComponent({ onVerify, onBack, loading }) {
   const [code, setCode] = useState('')
@@ -23,7 +22,7 @@ export default function MFAComponent({ onVerify, onBack, loading }) {
         Enter the code sent to your email.
       </div>
 
-      <InputField
+      <TextInput
         id="mfa_code"
         label="Verification code"
         value={code}

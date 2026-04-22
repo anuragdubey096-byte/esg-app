@@ -1,24 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { normalizeStatusLabel } from '../components/ui/status'
+import { normalizeStatusText } from '../components/ui/status'
 import { API_BASE_URL } from '../lib/api'
-
-const STATUS_TO_UI = {
-  'not started': 'Not Started',
-  'in progress': 'In Progress',
-  submitted: 'Submitted',
-  'under review': 'Under Review',
-  approved: 'Approved',
-  rejected: 'Rejected',
-  'resubmission requested': 'Resubmission Required',
-  'resubmission required': 'Resubmission Required',
-}
-
-function toTitleCase(value) {
-  return value
-    .split(' ')
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(' ')
-}
 
 function getDashboardPath(user) {
   if (!user) return '/dashboard/manager'
@@ -27,9 +9,7 @@ function getDashboardPath(user) {
 }
 
 export function normalizeStatus(status) {
-  const normalized = String(status || '').trim().toLowerCase()
-  if (!normalized) return 'Not Started'
-  return STATUS_TO_UI[normalized] || normalizeStatusLabel(toTitleCase(normalized))
+  return normalizeStatusText(status)
 }
 
 export function getLatestSubmission(company) {

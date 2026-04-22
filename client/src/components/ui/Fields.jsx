@@ -40,21 +40,6 @@ export function TextareaInput({ label, error, hint, ...props }) {
   )
 }
 
-export function FileUploadField({ label, hint, error, onChange, accept, multiple, disabled }) {
-  return (
-    <FieldShell label={label} error={error} hint={hint}>
-      <input
-        type="file"
-        className="ui-file-input"
-        onChange={onChange}
-        accept={accept}
-        multiple={multiple}
-        disabled={disabled}
-      />
-    </FieldShell>
-  )
-}
-
 export function ConfidenceFlagSelector({ label = 'Confidence', value, onChange, options = [] }) {
   return (
     <div className="ui-field">

@@ -10,6 +10,13 @@ from urllib.request import urlopen
 from fastapi.testclient import TestClient
 
 from main import app
+from import_csv import (
+    EXPECTED_FILES,
+    get_default_data_dir,
+    load_csv_rows,
+    validate_fixture_consistency,
+    validate_fixture_schema,
+)
 from platform_config import (
     IMPACT_DEFAULT_DIVERSITY_BENCHMARK,
     IMPACT_DIVERSITY_BENCHMARKS,
@@ -34,6 +41,7 @@ def run_self_test():
         os.environ.pop('SELF_TEST_FAST', None)
     else:
         os.environ['SELF_TEST_FAST'] = '1'
+    fixture_dir = get_default_data_dir()
 
     def check(name, condition, detail=''):
         results.append((name, bool(condition), detail))
@@ -55,6 +63,32 @@ def run_self_test():
         except Exception:
             return False
         return file_path.exists() and file_path.stat().st_size > 0
+
+    try:
+        validate_fixture_schema(fixture_dir)
+        validate_fixture_consistency(fixture_dir)
+        companies = load_csv_rows(fixture_dir / EXPECTED_FILES['companies'])
+        previous_submissions = load_csv_rows(fixture_dir / EXPECTED_FILES['submissions_previous'])
+        current_submissions = load_csv_rows(fixture_dir / EXPECTED_FILES['submissions_current'])
+        company_ids = {row['company_id'].strip() for row in companies if row.get('company_id')}
+        previous_ids = {row['company_id'].strip() for row in previous_submissions if row.get('company_id')}
+        current_ids = {row['company_id'].strip() for row in current_submissions if row.get('company_id')}
+        check(
+            'synthetic fixture coverage',
+            bool(company_ids)
+            and previous_ids.issubset(company_ids)
+            and current_ids.issubset(company_ids)
+            and len(previous_ids) >= len(current_ids),
+            json.dumps(
+                {
+                    'companies': len(company_ids),
+                    'previous_submissions': len(previous_ids),
+                    'current_submissions': len(current_ids),
+                }
+            ),
+        )
+    except Exception as exc:
+        check('synthetic fixture coverage', False, str(exc))
 
     if not full_mode:
         route_paths = {
@@ -147,6 +181,13 @@ def run_self_test():
             and manager_dashboard_payload.get('impact_story', {}).get('headline') == 'Portfolio impact story',
             manager_dashboard.text,
         )
+        check(
+            'manager impact story comparison rows',
+            manager_dashboard.status_code == 200
+            and isinstance(manager_dashboard_payload.get('impact_story', {}).get('comparison_rows'), list)
+            and len(manager_dashboard_payload.get('impact_story', {}).get('comparison_rows', [])) >= 4,
+            manager_dashboard.text,
+        )
 
         rbac_fail = client.get('/dashboard/manager', headers=investor_headers)
         check('GET /dashboard/manager blocked for investor', rbac_fail.status_code == 403, rbac_fail.text)
@@ -185,6 +226,13 @@ def run_self_test():
             and 'portfolio_scorecard' in lp_dashboard_payload
             and isinstance(lp_dashboard_payload.get('impact_story'), dict)
             and len(lp_dashboard_payload.get('impact_story', {}).get('benchmark_comparisons', [])) >= 5,
+            lp_dashboard.text,
+        )
+        check(
+            'lp impact story comparison rows',
+            lp_dashboard.status_code == 200
+            and isinstance(lp_dashboard_payload.get('impact_story', {}).get('comparison_rows'), list)
+            and len(lp_dashboard_payload.get('impact_story', {}).get('comparison_rows', [])) >= 4,
             lp_dashboard.text,
         )
         lp_metrics = client.get('/lp/metrics', headers=investor_headers)
@@ -542,6 +590,32 @@ def run_self_test():
         investor_action_plan = client.post(f'/company/{company_id}/action-plans', json=action_plan_payload, headers=investor_headers)
         check('POST /company/{id}/action-plans blocked for investor', investor_action_plan.status_code == 403, investor_action_plan.text)
 
+        carbon_calculator = client.post(
+            '/calculator/ghg',
+            json={
+                'fuel_liters': 1000,
+                'electricity_kwh': 2000,
+                'diesel_liters': 300,
+                'natural_gas_therms': 120,
+                'vehicle_km': 4500,
+                'flight_km': 2200,
+            },
+        )
+        carbon_payload = carbon_calculator.json() if carbon_calculator.status_code == 200 else {}
+        check(
+            'POST /calculator/ghg rich payload',
+            carbon_calculator.status_code == 200
+            and carbon_payload.get('scope_1_tco2e', 0) > 0
+            and carbon_payload.get('scope_2_tco2e', 0) > 0
+            and carbon_payload.get('scope_3_tco2e', 0) > 0
+            and carbon_payload.get('total_tco2e', 0) >= carbon_payload.get('scope_1_tco2e', 0)
+            and isinstance(carbon_payload.get('activity_breakdown'), list)
+            and len(carbon_payload.get('activity_breakdown', [])) >= 4
+            and isinstance(carbon_payload.get('scope_breakdown'), dict)
+            and bool(carbon_payload.get('recommendation')),
+            carbon_calculator.text,
+        )
+
         def build_docx_bytes(text: str) -> bytes:
             xml_text = (
                 '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
@@ -578,11 +652,50 @@ def run_self_test():
             'POST /company/{id}/upload-evidence manager',
             manager_upload.status_code == 200
             and manager_upload_payload.get('document', {}).get('file_name') == 'evidence-pack.docx'
+            and manager_upload_payload.get('document_type') == 'mixed'
+            and manager_upload_payload.get('suggestion_count', 0) == len(manager_upload_payload.get('extraction_suggestions', []))
+            and 'policy' in manager_upload_payload.get('document_topics', [])
+            and 'emissions' in manager_upload_payload.get('document_topics', [])
+            and 'governance' in manager_upload_payload.get('document_topics', [])
+            and manager_upload_payload.get('extraction_summary', '').startswith('Detected mixed')
             and len(manager_upload_payload.get('extraction_suggestions', [])) >= 5
             and any(item.get('field_key') == 'whs_policy_document_reference' for item in manager_upload_payload.get('extraction_suggestions', []))
             and any(item.get('field_key') == 'scope_1_emissions' for item in manager_upload_payload.get('extraction_suggestions', []))
             and any(item.get('field_key') == 'trifr' for item in manager_upload_payload.get('extraction_suggestions', [])),
             manager_upload.text,
+        )
+        report_upload = client.post(
+            f'/company/{company_id}/upload-evidence',
+            files={
+                'file': (
+                    'sustainability-report-2025.txt',
+                    (
+                        'Sustainability report 2025. '
+                        'Scope 1 emissions 1024. Scope 2 location based emissions 240. Scope 3 emissions 3200. '
+                        'Total energy consumption 18000. Renewable energy consumption 5400. '
+                        'Total water withdrawal 800. Water recycled 120. '
+                        'Total waste generated 300. Waste diverted from landfill 90. '
+                        'Female representation 44. Female leadership representation 38. '
+                        'Community investment spend 120000. Reduction target 30. Target year 2030.'
+                    ).encode('utf-8'),
+                    'text/plain',
+                )
+            },
+            headers=manager_headers,
+        )
+        report_upload_payload = report_upload.json() if report_upload.status_code == 200 else {}
+        check(
+            'POST /company/{id}/upload-evidence report',
+            report_upload.status_code == 200
+            and report_upload_payload.get('document', {}).get('file_name') == 'sustainability-report-2025.txt'
+            and report_upload_payload.get('document_type') == 'report'
+            and report_upload_payload.get('suggestion_count', 0) == len(report_upload_payload.get('extraction_suggestions', []))
+            and 'report' in report_upload_payload.get('document_topics', [])
+            and 'emissions' in report_upload_payload.get('document_topics', [])
+            and any(item.get('field_key') == 'scope_2_location_based' for item in report_upload_payload.get('extraction_suggestions', []))
+            and any(item.get('field_key') == 'total_water_withdrawal' for item in report_upload_payload.get('extraction_suggestions', []))
+            and any(item.get('field_key') == 'female_leadership_representation_percent' for item in report_upload_payload.get('extraction_suggestions', [])),
+            report_upload.text,
         )
         investor_upload = client.post(
             f'/company/{company_id}/upload-evidence',
@@ -791,6 +904,85 @@ def run_self_test():
             and len(pdf_payload.get('context_summary', [])) > 0
             and pdf_payload.get('impact_headline') == 'Portfolio impact story',
             pdf_export.text,
+        )
+        check(
+            'GET /reports/{type}/export pdf comparison rows',
+            pdf_export.status_code == 200
+            and isinstance(pdf_payload.get('comparison_rows'), list)
+            and len(pdf_payload.get('comparison_rows', [])) >= 4,
+            pdf_export.text,
+        )
+
+        newsletter_summary = client.post(
+            '/newsletter/generate',
+            json={'audience': 'manager', 'tone': 'board-ready', 'force_refresh': False},
+            headers=manager_headers,
+        )
+        newsletter_payload = newsletter_summary.json() if newsletter_summary.status_code == 200 else {}
+        check(
+            'POST /newsletter/generate manager',
+            newsletter_summary.status_code == 200
+            and newsletter_payload.get('available') is True
+            and bool(newsletter_payload.get('subject_line')),
+            newsletter_summary.text,
+        )
+
+        newsletter_export = client.post(
+            '/newsletter/export',
+            json={'audience': 'manager', 'tone': 'board-ready', 'force_refresh': False},
+            headers=manager_headers,
+        )
+        newsletter_export_payload = newsletter_export.json() if newsletter_export.status_code == 200 else {}
+        check(
+            'POST /newsletter/export manager',
+            newsletter_export.status_code == 200
+            and artifact_is_available(newsletter_export_payload, 'text/plain')
+            and newsletter_export_payload.get('available') is True
+            and bool(newsletter_export_payload.get('subject_line')),
+            newsletter_export.text,
+        )
+
+        newsletter_export_company = client.post(
+            '/newsletter/export',
+            json={'audience': 'manager', 'tone': 'board-ready', 'force_refresh': False},
+            headers=company_headers,
+        )
+        check(
+            'POST /newsletter/export company blocked',
+            newsletter_export_company.status_code == 403,
+            newsletter_export_company.text,
+        )
+
+        newsletter_send_preview = client.post(
+            '/newsletter/send',
+            json={'audience': 'manager', 'tone': 'board-ready', 'force_refresh': False, 'dry_run': True},
+            headers=manager_headers,
+        )
+        newsletter_send_preview_payload = newsletter_send_preview.json() if newsletter_send_preview.status_code == 200 else {}
+        check(
+            'POST /newsletter/send manager dry run',
+            newsletter_send_preview.status_code == 200
+            and newsletter_send_preview_payload.get('delivery_status') == 'dry_run'
+            and newsletter_send_preview_payload.get('available') is True,
+            newsletter_send_preview.text,
+        )
+
+        newsletter_send_company = client.post(
+            '/newsletter/send',
+            json={'audience': 'manager', 'tone': 'board-ready', 'force_refresh': False, 'dry_run': True},
+            headers=company_headers,
+        )
+        check(
+            'POST /newsletter/send company blocked',
+            newsletter_send_company.status_code == 403,
+            newsletter_send_company.text,
+        )
+
+        cron_newsletter_blocked = client.get('/cron/newsletter/manager')
+        check(
+            'GET /cron/newsletter/manager blocked without secret',
+            cron_newsletter_blocked.status_code in {401, 503},
+            cron_newsletter_blocked.text,
         )
 
         manager_after = client.get('/dashboard/manager', headers=manager_headers)

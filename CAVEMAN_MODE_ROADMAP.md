@@ -32,30 +32,30 @@ Legend:
 
 | # | Feature | Status | Notes |
 |---|---|---|---|
-| 1 | AI ESG Narrative Summary | Partial | Narratives exist, with edit, approve, export, and role-based views. Needs richer report integration and broader generation workflows. |
-| 2 | ESG Impact Intelligence Engine | Partial | Impact story cards, metric tooltips, and benchmarks exist. Needs more coverage and deeper PDF/report integration. |
-| 3 | Smart PDF Report Builder | Partial | Export endpoints exist. Needs branded templates, better report assembly, and stronger output control. |
-| 4 | ESG Newsletter Generator | Missing | No dedicated newsletter flow yet. |
-| 5 | AI Document Data Extractor | Partial | Evidence uploads now persist and return initial extraction suggestions. Needs broader document coverage, confidence tuning, and confirm/override flow. |
+| 1 | AI ESG Narrative Summary | Mostly done | Narratives now have a stronger board-ready prompt, normalized AI output, and stable edit/approve/export flows. Richer report integration and broader generation workflows remain the main follow-on work. |
+| 2 | ESG Impact Intelligence Engine | Mostly done | Impact story cards, metric tooltips, benchmarks, trend summaries, and portfolio chart data now land from approved data. Could still benefit from more surfaces that consume the deeper analytics. |
+| 3 | Smart PDF Report Builder | Done | PDF exports now use a branded multi-section builder with KPI cards, portfolio tables, narrative appendix, chart embeds, and attachment handling. |
+| 4 | ESG Newsletter Generator | Done | Newsletter generation now exists with dashboard cards on the manager and investor surfaces, plus SMTP send actions and cron-based delivery routes for automatic mailouts. |
+| 5 | AI Document Data Extractor | Done | Evidence uploads now persist into active submissions, detect document families, and support confirm/override across policy and report uploads with summary metadata. |
 | 6 | Sectoral ESG News & Regulatory Feed | Missing | No live feed or digest system yet. |
-| 7 | Single Shared Component Library | Partial | Shared buttons/cards/tables exist, but still needs tighter standardization. |
-| 8 | Global Status Colour Mapping | Partial | Shared status tones exist, but some one-off logic still remains. |
-| 9 | Typography & Spacing Standards | Partial | Basic tokens exist in CSS, but there are still ad hoc styles. |
+| 7 | Single Shared Component Library | Done | Shared buttons/cards/tables now consume the shared foundation tokens. |
+| 8 | Global Status Colour Mapping | Done | Shared status tones and labels are centralized through the foundation config. |
+| 9 | Typography & Spacing Standards | Done | Typography, spacing, radii, shadows, and the remaining page-local style literals are now tokenized. |
 | 10 | Per-Fund White-Label Theming | Done | Brand profiles and theme tokens now live in shared config and are applied from persisted experience state. |
 | 11 | Light / Dark Mode Support | Done | User theme toggle, persisted appearance state, and theme-token application are wired through the shared experience context. |
-| 12 | Data Visualisation Colour Palette | Partial | Charts exist with color usage, but palette is not fully centralized. |
+| 12 | Data Visualisation Colour Palette | Done | Chart and pillar palettes are centralized in the shared foundation config. |
 | 13 | WebSocket Live Dashboard Updates | Missing | No real-time update channel yet. |
 | 14 | In-Platform Toast Notification System | Missing | No general toast system yet. |
 | 15 | Real-Time Submission Activity Feed | Missing | No live feed or event stream yet. |
 | 16 | Fuzzy Global Search | Done | Global search now uses shared ranking weights, exact/prefix boosts, and role-aware catalog/company filtering. |
 | 17 | Saved Filter Sets | Done | Saved filter presets and last-used filter state are persisted and restored across the main filter views. |
 | 18 | Role-Scoped Search Boundaries | Done | Search results are scoped by role in the backend and verified in self-tests for manager, investor, and company access. |
-| 19 | Zero Hardcoded Data Policy | Partial | Many values are already DB-driven, but some mock/hardcoded surfaces still exist. |
-| 20 | Config-Driven Architecture | Partial | Cycle and admin controls exist, but rules and thresholds still need deeper config ownership. |
-| 21 | Synthetic Test Data Standard | Mostly done | Seed scripts, fixtures, and self-tests already exist. Needs final guardrails and consistency. |
+| 19 | Zero Hardcoded Data Policy | Done | LP/company hardcoded defaults now resolve from DB-backed cycle and metrics data, including the remaining trend and score heuristics. |
+| 20 | Config-Driven Architecture | Done | Core tokens, portal config, active cycle ownership, and the remaining LP/dashboard thresholds now flow from shared data or config. |
+| 21 | Synthetic Test Data Standard | Done | Seed scripts, fixtures, and self-tests now validate the synthetic data contract and cross-file company coverage. |
 | 22 | AI-Powered Anomaly Detection | Missing | No anomaly detection workflow yet. |
 | 23 | Multi-User Collaboration on Submissions | Missing | No shared editing or section ownership system yet. |
-| 24 | Carbon Footprint Calculator | Partial | GHG calculator endpoint and UI hookup exist. Needs broader activity-based inputs and audit-friendly output. |
+| 24 | Carbon Footprint Calculator | Done | GHG calculator now returns a footprint summary, factor metadata, equivalence text, and activity-based breakdowns that can be applied back to the submission form. |
 
 ## Recommended Build Sequence
 
@@ -76,6 +76,9 @@ Why first:
 - These features remove future rework.
 - They make every later feature easier to build.
 - They stop hardcoded values, layout drift, and inconsistent status handling.
+
+Current state:
+- Items 7, 8, 9, 12, 18, 19, 20, and 21 are done.
 
 ### Phase 2: Platform Experience
 Build second:

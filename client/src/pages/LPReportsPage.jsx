@@ -212,6 +212,28 @@ export default function LPReportsPage() {
                 ))}
               </div>
             ) : null}
+            {Array.isArray(download.comparison_rows) && download.comparison_rows.length ? (
+              <div className="space-y-2">
+                <p className="ui-text-strong text-[color:var(--ui-text)]">Current vs previous</p>
+                <div className="grid gap-3 md:grid-cols-2">
+                  {download.comparison_rows.slice(0, 4).map((row) => (
+                    <div key={row.metric_name} className="rounded-lg border border-[color:var(--ui-panel-border)] bg-[color:var(--ui-surface)] px-3 py-2 text-sm text-[color:var(--ui-text)]">
+                      <p className="ui-text-strong">{row.metric_name}</p>
+                      <p className="text-xs text-[color:var(--ui-text-muted)]">
+                        Current: {row.current_value}
+                        {' '}
+                        {row.unit || ''}
+                      </p>
+                      <p className="text-xs text-[color:var(--ui-text-muted)]">
+                        Previous: {row.previous_value}
+                        {' '}
+                        {row.unit || ''}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
           </div>
         </SectionCard>
       ) : null}

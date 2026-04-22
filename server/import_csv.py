@@ -27,6 +27,16 @@ EXPECTED_FILES = {
     'submissions_current': 'esg_submissions_current_year.csv',
 }
 
+EXPECTED_COLUMNS = {
+    'users': {'name', 'email', 'password', 'role'},
+    'companies': {'company_id', 'company_name', 'asset_class', 'sector', 'geography', 'portfolio_contact_name', 'portfolio_contact_email', 'client_visible', 'current_status'},
+    'cycles': {'cycle_year', 'submission_open_date', 'submission_deadline', 'extension_date', 'reminder_days_before_deadline', 'private_equity_template', 'real_estate_template', 'debt_template', 'activate_on_create', 'carry_forward_prefill', 'status'},
+    'review_actions': {'company_id', 'reporting_year', 'review_status', 'reviewer_role', 'review_comment'},
+    'validation_flags': {'company_id', 'reporting_year', 'flag_type', 'field_name', 'issue_description', 'severity'},
+    'submissions_previous': {'company_id', 'reporting_year', 'scope_1_emissions', 'scope_2_location_based', 'scope_2_market_based', 'scope_3_emissions', 'total_ghg_emissions', 'reduction_target_percent', 'reduction_target_year', 'reduction_strategy_description', 'total_energy_consumption', 'renewable_energy_consumption', 'total_water_withdrawal', 'water_recycled_reused', 'total_waste_generated', 'waste_diverted_from_landfill', 'hazardous_waste_generated', 'air_quality_control_measures', 'nox_sox_emissions', 'whs_policy_in_place', 'whs_policy_document_reference', 'trifr', 'total_fatalities', 'total_lost_time_injuries', 'total_incidents_reported', 'total_employees_fte', 'employee_turnover_rate', 'female_representation_percent', 'female_leadership_representation_percent', 'community_investment_spend', 'esg_policy_in_place', 'esg_policy_document_reference', 'board_level_esg_oversight', 'esg_kpis_linked_to_remuneration', 'cybersecurity_policy_in_place', 'cybersecurity_policy_document_reference', 'cyber_incidents_in_reporting_period', 'anti_bribery_corruption_policy', 'confirmed_cases_of_corruption', 'total_board_members', 'independent_board_members_percent', 'female_board_members_percent', 'submission_notes'},
+    'submissions_current': {'company_id', 'reporting_year', 'scope_1_emissions', 'scope_1_emissions_confidence', 'scope_2_location_based', 'scope_2_location_based_confidence', 'scope_2_market_based', 'scope_2_market_based_confidence', 'scope_3_emissions', 'scope_3_emissions_confidence', 'total_ghg_emissions', 'total_ghg_emissions_confidence', 'reduction_target_percent', 'reduction_target_percent_confidence', 'reduction_target_year', 'reduction_target_year_confidence', 'reduction_strategy_description', 'total_energy_consumption', 'total_energy_consumption_confidence', 'renewable_energy_consumption', 'renewable_energy_consumption_confidence', 'total_water_withdrawal', 'total_water_withdrawal_confidence', 'water_recycled_reused', 'water_recycled_reused_confidence', 'total_waste_generated', 'total_waste_generated_confidence', 'waste_diverted_from_landfill', 'waste_diverted_from_landfill_confidence', 'hazardous_waste_generated', 'hazardous_waste_generated_confidence', 'air_quality_control_measures', 'air_quality_control_measures_confidence', 'nox_sox_emissions', 'nox_sox_emissions_confidence', 'whs_policy_in_place', 'whs_policy_in_place_confidence', 'whs_policy_document_reference', 'trifr', 'trifr_confidence', 'total_fatalities', 'total_fatalities_confidence', 'total_lost_time_injuries', 'total_lost_time_injuries_confidence', 'total_incidents_reported', 'total_incidents_reported_confidence', 'total_employees_fte', 'total_employees_fte_confidence', 'employee_turnover_rate', 'employee_turnover_rate_confidence', 'female_representation_percent', 'female_representation_percent_confidence', 'female_leadership_representation_percent', 'female_leadership_representation_percent_confidence', 'community_investment_spend', 'community_investment_spend_confidence', 'esg_policy_in_place', 'esg_policy_in_place_confidence', 'esg_policy_document_reference', 'board_level_esg_oversight', 'board_level_esg_oversight_confidence', 'esg_kpis_linked_to_remuneration', 'esg_kpis_linked_to_remuneration_confidence', 'cybersecurity_policy_in_place', 'cybersecurity_policy_in_place_confidence', 'cybersecurity_policy_document_reference', 'cyber_incidents_in_reporting_period', 'cyber_incidents_in_reporting_period_confidence', 'anti_bribery_corruption_policy', 'anti_bribery_corruption_policy_confidence', 'confirmed_cases_of_corruption', 'confirmed_cases_of_corruption_confidence', 'total_board_members', 'total_board_members_confidence', 'independent_board_members_percent', 'independent_board_members_percent_confidence', 'female_board_members_percent', 'female_board_members_percent_confidence', 'submission_notes'},
+}
+
 
 def get_default_data_dir() -> Path:
     fixtures_dir = Path(__file__).resolve().parent / 'fixtures'
@@ -39,6 +49,44 @@ def load_csv_rows(csv_path: Path):
     with csv_path.open('r', encoding='utf-8-sig', newline='') as handle:
         reader = csv.DictReader(handle)
         return [row for row in reader if any((value or '').strip() for value in row.values())]
+
+
+def validate_csv_schema(csv_path: Path, required_columns: set[str]) -> None:
+    with csv_path.open('r', encoding='utf-8-sig', newline='') as handle:
+        reader = csv.DictReader(handle)
+        fieldnames = set(reader.fieldnames or [])
+    missing = sorted(required_columns - fieldnames)
+    if missing:
+        raise ValueError(f'CSV fixture {csv_path} is missing required columns: {", ".join(missing)}')
+
+
+def validate_fixture_schema(data_dir: Path):
+    for key, filename in EXPECTED_FILES.items():
+        validate_csv_schema(data_dir / filename, EXPECTED_COLUMNS[key])
+
+
+def validate_fixture_consistency(data_dir: Path):
+    companies = load_csv_rows(data_dir / EXPECTED_FILES['companies'])
+    company_ids = [row['company_id'].strip() for row in companies if row.get('company_id')]
+    unique_company_ids = set(company_ids)
+    if len(company_ids) != len(unique_company_ids):
+        duplicates = sorted({company_id for company_id in company_ids if company_ids.count(company_id) > 1})
+        raise ValueError(f'Duplicate company IDs found in {data_dir / EXPECTED_FILES["companies"]}: {", ".join(duplicates)}')
+
+    referenced_files = ('review_actions', 'validation_flags', 'submissions_previous', 'submissions_current')
+    for key in referenced_files:
+        rows = load_csv_rows(data_dir / EXPECTED_FILES[key])
+        unknown_ids = sorted(
+            {
+                (row.get('company_id') or '').strip()
+                for row in rows
+                if (row.get('company_id') or '').strip() and (row.get('company_id') or '').strip() not in unique_company_ids
+            }
+        )
+        if unknown_ids:
+            raise ValueError(
+                f'CSV fixture {data_dir / EXPECTED_FILES[key]} references unknown company IDs: {", ".join(unknown_ids)}'
+            )
 
 
 def to_int(value):
@@ -219,6 +267,8 @@ def ensure_schema_ready():
 
 def import_all(data_dir: Path):
     ensure_required_files(data_dir)
+    validate_fixture_schema(data_dir)
+    validate_fixture_consistency(data_dir)
     Base.metadata.create_all(bind=engine)
     ensure_schema_ready()
 
