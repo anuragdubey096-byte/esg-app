@@ -8,6 +8,16 @@ import { validateSubmissionData } from '../esgValidation'
 
 const BACKEND_URL = 'http://127.0.0.1:8000'
 
+function toApiReviewStatus(statusLabel) {
+  const normalized = String(statusLabel || '').trim().toLowerCase()
+  if (normalized === 'under review') return 'under review'
+  if (normalized === 'approved') return 'approved'
+  if (normalized === 'rejected') return 'rejected'
+  if (normalized === 'resubmission requested') return 'resubmission requested'
+  if (normalized === 'submitted') return 'submitted'
+  return 'under review'
+}
+
 function getValidationSummary(rows) {
   let errors = 0
   let warnings = 0
@@ -68,8 +78,10 @@ export default function ReviewHubPage() {
   }, [selectedCompanyId, submissionRows])
 
   const dataRows = useMemo(() => {
-    if (!selectedCompany.payload) return []
-    const checks = validateSubmissionData(selectedCompany.payload)
+    const payloadForValidation = selectedCompany.payload && typeof selectedCompany.payload === 'object'
+      ? selectedCompany.payload
+      : {}
+    const checks = validateSubmissionData(payloadForValidation)
     return checks.checks.map((check, index) => ({
       id: index + 1,
       metric: check.label,
@@ -105,6 +117,66 @@ export default function ReviewHubPage() {
     } catch (error) {
       setActionMessage(error.message || 'Unable to run backend validation right now.')
     }
+  }
+
+  const managerPost = async (path, method = 'POST', body = null) => {
+    const response = await fetch(`${BACKEND_URL}${path}`, {
+      method,
+      headers: body
+        ? {
+            'Content-Type': 'application/json',
+            'x-user-role': user?.role || '',
+            'x-user-email': user?.email || '',
+          }
+        : {
+            'x-user-role': user?.role || '',
+            'x-user-email': user?.email || '',
+          },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    })
+    if (!response.ok) {
+      const errorPayload = await response.json().catch(() => ({}))
+      throw new Error(errorPayload.detail || `Request failed (${response.status})`)
+    }
+    return response.json().catch(() => ({}))
+  }
+
+  const handleReviewAction = async (targetStatus, successMessage, commentText = '') => {
+    if (!selectedCompany.submissionId) {
+      setActionMessage('No submission is selected for review actions.')
+      return
+    }
+
+    try {
+      const currentStatus = toApiReviewStatus(selectedCompany.status)
+      if (
+        ['approved', 'rejected', 'resubmission requested'].includes(targetStatus)
+        && currentStatus === 'submitted'
+      ) {
+        await managerPost(`/submissions/${selectedCompany.submissionId}/status`, 'PATCH', { status: 'under review' })
+      }
+      await managerPost(`/submissions/${selectedCompany.submissionId}/review`, 'POST', {
+        reviewer_role: 'Manager',
+        review_status: targetStatus,
+        review_comment: commentText || 'Reviewed via Review Hub',
+      })
+      await refresh()
+      setActionMessage(successMessage)
+    } catch (error) {
+      setActionMessage(error.message || 'Unable to update review action right now.')
+    }
+  }
+
+  const handleAddComment = async () => {
+    const comment = window.prompt('Enter reviewer comment', '')
+    if (comment == null) return
+    const trimmed = comment.trim()
+    if (!trimmed) {
+      setActionMessage('Comment was empty, nothing was saved.')
+      return
+    }
+    const currentStatus = toApiReviewStatus(selectedCompany.status)
+    await handleReviewAction(currentStatus, 'Reviewer comment saved.', trimmed)
   }
 
   const columns = [
@@ -174,9 +246,9 @@ export default function ReviewHubPage() {
 
         <div className="action-row">
           <button type="button" className="button" onClick={handleRunValidation}>Run Backend Validation</button>
-          <button type="button" className="button good" onClick={() => setActionMessage('Submission approved and locked.')}>Approve</button>
-          <button type="button" className="button warning" onClick={() => setActionMessage('Resubmission request sent to company owner.')}>Request Resubmission</button>
-          <button type="button" className="button" onClick={() => setActionMessage('Reviewer note saved to audit log.')}>Add Comment</button>
+          <button type="button" className="button good" onClick={() => handleReviewAction('approved', 'Submission approved and logged.')}>Approve</button>
+          <button type="button" className="button warning" onClick={() => handleReviewAction('resubmission requested', 'Resubmission request sent and logged.')}>Request Resubmission</button>
+          <button type="button" className="button" onClick={handleAddComment}>Add Comment</button>
           {actionMessage ? <p className="action-message">{actionMessage}</p> : null}
         </div>
       </SectionCard>
