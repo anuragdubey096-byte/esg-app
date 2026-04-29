@@ -12,6 +12,8 @@ SERVER_DIR = Path(__file__).resolve().parents[1] / 'server'
 if str(SERVER_DIR) not in sys.path:
     sys.path.insert(0, str(SERVER_DIR))
 
+app = FastAPI(title='ESG API Bootstrap')
+
 
 def _fallback_narrative(audience: str, tone: str) -> dict:
     normalized_audience = str(audience or 'lp').strip().lower()
@@ -52,7 +54,8 @@ def _fallback_narrative(audience: str, tone: str) -> dict:
 
 
 try:
-    from main import app as app  # type: ignore[assignment]  # noqa: F401,E402
+    from main import app as main_app  # noqa: E402
+    app = main_app  # type: ignore[assignment]
 except Exception:
     # Keep API alive with critical fallback endpoints even if full app bootstrap fails.
     app = FastAPI(title='ESG API Fallback')
