@@ -32,8 +32,12 @@ def _database_url() -> str:
             return configured.replace('postgres://', 'postgresql+psycopg2://', 1)
         return configured
 
-    # Fallback for local development.
-    sqlite_db_path = BASE_DIR / 'db.sqlite'
+    # Fallback for local development. Vercel's source filesystem is read-only,
+    # so use /tmp for ephemeral SQLite in serverless runtime.
+    if os.getenv('VERCEL'):
+        sqlite_db_path = Path('/tmp/db.sqlite')
+    else:
+        sqlite_db_path = BASE_DIR / 'db.sqlite'
     return f'sqlite:///{sqlite_db_path.as_posix()}'
 
 
