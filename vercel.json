@@ -1,17 +1,19 @@
 {
   "buildCommand": "cd client && npm ci && npm run build",
   "outputDirectory": "client/dist",
-  "routes": [
+  "functions": {
+    "api/index.py": {
+      "maxDuration": 60
+    }
+  },
+  "rewrites": [
     {
-      "handle": "filesystem"
+      "source": "/api/:path*",
+      "destination": "/api/index.py"
     },
     {
-      "src": "/api/(.*)",
-      "dest": "/api/index.py"
-    },
-    {
-      "src": "/(.*)",
-      "dest": "/index.html"
+      "source": "/:path*",
+      "destination": "/index.html"
     }
   ]
 }
