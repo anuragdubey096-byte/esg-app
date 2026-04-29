@@ -1,16 +1,47 @@
+import os
 from pathlib import Path
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-# SQLite stores data in a file named db.sqlite in the server folder.
 BASE_DIR = Path(__file__).resolve().parent
-SQLITE_DB_PATH = BASE_DIR / 'db.sqlite'
-SQLALCHEMY_DATABASE_URL = f'sqlite:///{SQLITE_DB_PATH.as_posix()}'
 
-engine = create_engine(
-    SQLALCHEMY_DATABASE_URL,
-    connect_args={'check_same_thread': False}
-)
+def _load_env_local() -> None:
+    """Load simple KEY=VALUE pairs from server/.env.local if present."""
+    env_file = BASE_DIR / '.env.local'
+    if not env_file.exists():
+        return
+    for raw_line in env_file.read_text(encoding='utf-8').splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        key, value = line.split('=', 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        os.environ.setdefault(key, value)
+
+
+def _database_url() -> str:
+    _load_env_local()
+    configured = os.getenv('DATABASE_URL', '').strip()
+    if configured:
+        # SQLAlchemy works best with explicit drivers.
+        if configured.startswith('postgresql://'):
+            return configured.replace('postgresql://', 'postgresql+psycopg://', 1)
+        if configured.startswith('postgres://'):
+            return configured.replace('postgres://', 'postgresql+psycopg://', 1)
+        return configured
+
+    # Fallback for local development.
+    sqlite_db_path = BASE_DIR / 'db.sqlite'
+    return f'sqlite:///{sqlite_db_path.as_posix()}'
+
+
+SQLALCHEMY_DATABASE_URL = _database_url()
+engine_kwargs = {}
+if SQLALCHEMY_DATABASE_URL.startswith('sqlite:///'):
+    engine_kwargs['connect_args'] = {'check_same_thread': False}
+
+engine = create_engine(SQLALCHEMY_DATABASE_URL, **engine_kwargs)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
