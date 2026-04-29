@@ -1,5 +1,8 @@
 import { useMemo } from 'react'
 import { useOutletContext } from 'react-router-dom'
+import ActivityFeedCard from '../components/ActivityFeedCard'
+import AnomalySummaryCard from '../components/AnomalySummaryCard'
+import ExternalContextFeedCard from '../components/ExternalContextFeedCard'
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts'
 import DataTable from '../components/DataTable'
 import ImpactStoryCard from '../components/ImpactStoryCard'
@@ -8,6 +11,8 @@ import NewsletterCard from '../components/NewsletterCard'
 import SectionCard from '../components/SectionCard'
 import StatusBadge from '../components/StatusBadge'
 import useDashboardData, { getLatestSubmission, normalizeStatus } from '../hooks/useDashboardData'
+import useAnomalySummary from '../hooks/useAnomalySummary'
+import useExternalContextFeed from '../hooks/useExternalContextFeed'
 import useNewsletterSummary from '../hooks/useNewsletterSummary'
 import { API_BASE_URL } from '../lib/api'
 import { STATUS_COLORS } from '../lib/foundation'
@@ -61,6 +66,8 @@ export default function OverviewPage() {
     tone: 'board-ready',
     enabled: Boolean(user),
   })
+  const anomalySummary = useAnomalySummary({ user, enabled: Boolean(user) })
+  const externalContext = useExternalContextFeed({ user, enabled: Boolean(user), limit: 5 })
 
   const managerSummary = useMemo(() => {
     if (summary && typeof summary === 'object' && summary.status_breakdown) {
@@ -250,6 +257,12 @@ export default function OverviewPage() {
         maxInsights={4}
       />
 
+      <ActivityFeedCard
+        user={user}
+        title="Portfolio Activity Feed"
+        subtitle="Live submissions, reviews, reminders, and unlocks"
+      />
+
       <NewsletterCard
         title="Board Newsletter Draft"
         subtitle="Email-ready digest from live portfolio data"
@@ -261,6 +274,23 @@ export default function OverviewPage() {
         onSend={newsletter.sendNewsletter}
         exporting={newsletter.exporting}
         sending={newsletter.sending}
+      />
+
+      <AnomalySummaryCard
+        title="Portfolio Anomaly Watchlist"
+        subtitle="Approved-data checks that may need board or manager follow-up"
+        data={anomalySummary.data}
+        loading={anomalySummary.loading}
+        error={anomalySummary.error}
+        maxItems={4}
+      />
+
+      <ExternalContextFeedCard
+        title="Sector & Regulatory Feed"
+        subtitle="Curated external context for the current portfolio view"
+        data={externalContext.data}
+        loading={externalContext.loading}
+        error={externalContext.error}
       />
 
       <section className="kpi-grid">

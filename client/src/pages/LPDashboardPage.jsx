@@ -1,24 +1,42 @@
 import { useEffect, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import { LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts'
+import ActivityFeedCard from '../components/ActivityFeedCard'
 import KpiCard from '../components/KpiCard'
 import ImpactStoryCard from '../components/ImpactStoryCard'
 import NewsletterCard from '../components/NewsletterCard'
 import NarrativeSummaryCard from '../components/NarrativeSummaryCard'
 import SectionCard from '../components/SectionCard'
+import { useOptionalLiveUpdates } from '../contexts/LiveUpdatesContext'
 import useNarrativeSummary from '../hooks/useNarrativeSummary'
 import useNewsletterSummary from '../hooks/useNewsletterSummary'
 import { API_BASE_URL } from '../lib/api'
 import { CHART_COLORS } from '../lib/foundation'
 import { NARRATIVE_UI_COPY } from '../lib/portalOptions'
 import { UI_LABELS } from '../lib/uiLabels'
-const COLORS = [CHART_COLORS.success, CHART_COLORS.info, CHART_COLORS.warning, CHART_COLORS.danger]
+
+function formatSignedPercent(value) {
+  const numeric = Number(value || 0)
+  if (!Number.isFinite(numeric)) return 'N/A'
+  return `${numeric >= 0 ? '+' : ''}${numeric.toFixed(1)}%`
+}
+
+function formatComparisonValue(value, unit = '') {
+  if (value === null || value === undefined || value === '') return 'N/A'
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return String(value)
+  if (unit === '%') return `${numeric.toFixed(1)}%`
+  if (unit === 'rate') return numeric.toFixed(2)
+  if (unit) return `${numeric.toLocaleString()} ${unit}`
+  return numeric.toLocaleString()
+}
 
 export default function LPDashboardPage() {
   const { user } = useOutletContext()
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const liveUpdates = useOptionalLiveUpdates()
   const narrative = useNarrativeSummary({
     user,
     audience: 'lp',
@@ -60,7 +78,13 @@ export default function LPDashboardPage() {
     }
 
     fetchDashboardData()
-  }, [user])
+  }, [liveUpdates?.lastEvent?.id, user])
+
+  useEffect(() => {
+    if (!liveUpdates?.lastEvent) return
+    narrative.refresh()
+    newsletter.refresh()
+  }, [liveUpdates?.lastEvent?.id, narrative.refresh, newsletter.refresh])
 
   if (loading) {
     return (
@@ -98,8 +122,8 @@ export default function LPDashboardPage() {
   }
 
   const scorecard = data.portfolio_scorecard ?? {
-    overall_esg_score: '—',
-    overall_esg_score_previous: '—',
+    overall_esg_score: 'N/A',
+    overall_esg_score_previous: 'N/A',
     yoy_change_percent: 0,
     pillars: [],
   }
@@ -114,6 +138,17 @@ export default function LPDashboardPage() {
   const policyAdoption = Array.isArray(data.policy_adoption) ? data.policy_adoption : []
   const actionPlanStatus = data.action_plan_status ?? { in_progress: 0, completed: 0 }
   const impactStory = data.impact_story || null
+  const comparisonRows = Array.isArray(impactStory?.comparison_rows)
+    ? impactStory.comparison_rows.map((row) => ({
+        metric: row.metric_name || 'Metric',
+        current: formatComparisonValue(row.current_value, row.unit),
+        previous: formatComparisonValue(row.previous_value, row.unit),
+        delta:
+          row.trend_percent === null || row.trend_percent === undefined
+            ? 'N/A'
+            : formatSignedPercent(row.trend_percent),
+      }))
+    : []
 
   const completionPercent = Number(completion.total_companies)
     ? ((Number(completion.companies_with_approved_submission) / Number(completion.total_companies)) * 100).toFixed(1)
@@ -158,12 +193,18 @@ export default function LPDashboardPage() {
         sending={newsletter.sending}
       />
 
+      <ActivityFeedCard
+        user={user}
+        title="Investor Activity Feed"
+        subtitle="Live reporting, approval, and action-plan activity visible to investor users"
+      />
+
       <SectionCard title="Portfolio ESG Scorecard" subtitle="Live backend snapshot">
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
           <div className="bg-gradient-to-br from-blue-50 to-blue-100 p-6 rounded-lg">
             <p className="text-sm text-gray-600 mb-2">Overall ESG Score</p>
             <p className="ui-text-display text-blue-900">{scorecard.overall_esg_score}</p>
-            <p className="text-sm text-green-600 ui-text-strong mt-2">+{Number(scorecard.yoy_change_percent || 0).toFixed(1)}% YoY</p>
+            <p className="text-sm text-green-600 ui-text-strong mt-2">{formatSignedPercent(scorecard.yoy_change_percent)} YoY</p>
           </div>
 
           {scorecard.pillars.map((pillar) => (
@@ -171,7 +212,7 @@ export default function LPDashboardPage() {
               <p className="text-sm text-gray-600 mb-2">{pillar.name === 'E' ? 'Environmental' : pillar.name === 'S' ? 'Social' : 'Governance'}</p>
               <p className="ui-text-display text-gray-800">{pillar.current_score}</p>
               <p className="text-xs text-gray-500 mt-1">Previously: {pillar.previous_score}</p>
-              <p className="text-sm text-green-600 ui-text-strong mt-2">+{pillar.yoy_change.toFixed(2)}%</p>
+              <p className="text-sm text-green-600 ui-text-strong mt-2">{formatSignedPercent(pillar.yoy_change)}</p>
             </div>
           ))}
         </div>
@@ -198,7 +239,7 @@ export default function LPDashboardPage() {
             key={metric.metric_name}
             title={metric.metric_name}
             value={metric.current_value}
-            trendLabel={`${metric.trend_direction === 'up' ? '↑' : '↓'} ${Math.abs(metric.trend_percent)}% vs prior year`}
+            trendLabel={`${metric.trend_direction === 'up' ? 'Up' : metric.trend_direction === 'down' ? 'Down' : 'Flat'} ${Math.abs(Number(metric.trend_percent || 0)).toFixed(1)}% vs prior year`}
           />
         ))}
       </section>
@@ -271,7 +312,7 @@ export default function LPDashboardPage() {
               <p className="text-sm text-gray-600 mb-1">{metric.metric_name}</p>
               <p className="ui-text-display text-blue-900">{metric.percentage}%</p>
               <p className="text-xs text-gray-500 mt-1">
-                Previous: {metric.previous_year}% ({metric.trend === 'up' ? '↑' : '↓'})
+                Previous: {metric.previous_year}% ({metric.trend === 'up' ? 'Up' : metric.trend === 'down' ? 'Down' : 'Flat'})
               </p>
             </div>
           ))}

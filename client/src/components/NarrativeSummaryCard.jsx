@@ -15,6 +15,12 @@ export default function NarrativeSummaryCard({
 }) {
   const [expanded, setExpanded] = useState(false)
   const summaryBlocks = data?.summary ? buildSummaryBlocks(data.summary) : []
+  const freshnessTone =
+    data?.freshness_status === 'current'
+      ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+      : data?.freshness_status === 'stale'
+        ? 'border-amber-200 bg-amber-50 text-amber-800'
+        : 'border-slate-200 bg-slate-50 text-slate-700'
   const actions = (
     <div className="flex items-center gap-2">
       {onRefresh ? (
@@ -75,6 +81,7 @@ export default function NarrativeSummaryCard({
   }
 
   const metaChips = [
+    data.freshness_label ? data.freshness_label : null,
     data.tone ? `Tone: ${data.tone}` : null,
     data.status ? `Status: ${data.status}` : null,
     data.company_name ? data.company_name : null,
@@ -89,10 +96,18 @@ export default function NarrativeSummaryCard({
     <SectionCard title={title} subtitle={subtitle} actions={actions}>
       {!expanded ? (
         <div className="space-y-3">
+          {data.freshness_label ? (
+            <div className={`inline-flex rounded-full border px-3 py-1 text-xs ui-text-strong ${freshnessTone}`}>
+              {data.freshness_label}
+            </div>
+          ) : null}
           {data.headline ? <h3 className="ui-text-display text-[color:var(--ui-text)]">{data.headline}</h3> : null}
           <p className="text-sm leading-6 text-[color:var(--ui-text)]">
             {buildPreviewSummary(data.summary)}
           </p>
+          {data.freshness_reason ? (
+            <p className="text-xs text-[color:var(--ui-text-muted)]">{data.freshness_reason}</p>
+          ) : null}
           {metaChips.length ? (
             <div className="flex flex-wrap gap-2">
               {metaChips.slice(0, 3).map((chip) => (

@@ -35,6 +35,37 @@ Run `python server/self_test.py` from the project root to verify:
 - ESG submission storage
 - submission status updates
 
+For the full release-grade backend pass, run:
+
+```bash
+cd server
+$env:SELF_TEST_FULL='1'; python -u self_test.py
+```
+
+For a lightweight backend compile check, run:
+
+```bash
+cd server
+python -m py_compile main.py self_test.py schemas.py
+```
+
+For the production frontend build, run:
+
+```bash
+cd client
+npm run build
+```
+
+### Health Checks
+The backend exposes unauthenticated runtime checks that are useful in local dev and after deployment:
+
+- `/health`
+  - liveness-style snapshot with startup, database, storage, frontend-origin, and OpenAI config signals
+- `/health/ready`
+  - readiness-style check that returns `200` only when startup, database access, and production-critical config are in a ready state
+
+On Vercel, these are available under `/api/health` and `/api/health/ready`.
+
 ### CSV Import
 Run `python server/import_csv.py <folder-with-csv-files>` from the project root.
 If your fixture CSVs are in `server/fixtures`, you can simply run `python server/import_csv.py` and it will use that folder automatically.
@@ -71,6 +102,7 @@ Build settings:
 1. Set the Vercel project root directory to the repository root.
 2. Add the env vars above in the Vercel project settings.
 3. Deploy. The React app will be built from `client/`, and the FastAPI app will run from `api/index.py`.
+4. After deploy, verify `/api/health` and `/api/health/ready` both return healthy JSON responses before wider QA.
 
 Alternative:
 - If you prefer separate deployments, you can still deploy `client/` as its own Vercel project and point it at a separately hosted backend using `BACKEND_URL`.

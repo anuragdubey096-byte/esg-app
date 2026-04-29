@@ -39,7 +39,8 @@ export default function CompanyHistoricalDataPage() {
           },
         })
         if (!response.ok) {
-          throw new Error(`Failed to load historical submissions (${response.status})`)
+          const payload = await response.json().catch(() => ({}))
+          throw new Error(payload.detail || `Failed to load historical submissions (${response.status})`)
         }
         const payload = await response.json()
         setCompany(Array.isArray(payload) ? payload[0] : null)

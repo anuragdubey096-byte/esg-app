@@ -52,7 +52,7 @@ export default function ImpactStoryCard({
   story,
   maxInsights = 4,
 }) {
-  if (!story) return null
+  if (!story || typeof story !== 'object' || Object.keys(story).length === 0) return null
 
   const equivalents = Array.isArray(story.equivalents) ? story.equivalents : []
   const highlights = Array.isArray(story.highlights) ? story.highlights : []

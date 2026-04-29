@@ -10,6 +10,7 @@ export default function NarrativeToolbar({
   onExport,
   loading = false,
   canEdit = false,
+  generateLabel = 'Generate',
 }) {
   return (
     <div className="flex flex-wrap items-end gap-3">
@@ -22,7 +23,7 @@ export default function NarrativeToolbar({
       </SelectInput>
       {onGenerate ? (
         <Button variant="secondary" onClick={onGenerate} disabled={loading}>
-          {loading ? 'Generating...' : 'Generate'}
+          {loading ? 'Generating...' : generateLabel}
         </Button>
       ) : null}
       {canEdit ? (

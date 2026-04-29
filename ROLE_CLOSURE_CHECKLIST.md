@@ -33,7 +33,7 @@ Priority rules:
   - [ ] Enforce Standard vs Authorised LP company visibility in LP response payloads.
   - [ ] Fix `/lp/metrics` schema contract mismatch (`Dict[str, float]` vs mixed `period/value` objects).
 - [ ] Role 3:
-  - [ ] Remove hardcoded cycle defaults from company UI (`cycleId=1`) and always bind active/selected cycle from API.
+  - [x] Remove hardcoded cycle defaults from company UI (`cycleId=1`) and always bind active/selected cycle from API.
   - [ ] Ensure submit/edit UX clearly reflects lock state and unlock expiry.
 
 ## P2 (Polish and scale)

@@ -2,20 +2,11 @@ from __future__ import annotations
 
 import csv
 from pathlib import Path
-from typing import Iterable
 
 from models import User, UserRole
 
 DEFAULT_LOGIN_USERS_CSV = Path(__file__).resolve().parent / 'fixtures' / 'users.csv'
 EXPECTED_LOGIN_USER_COLUMNS = {'name', 'email', 'password', 'role'}
-DEFAULT_FALLBACK_USERS: list[tuple[str, str, str, UserRole]] = [
-    ('Portfolio Contact', 'company@example.com', 'password123', UserRole.COMPANY),
-    ('Manager Alice', 'manager@example.com', 'password123', UserRole.MANAGER),
-    ('Admin Alias', 'admin@example.com', 'password123', UserRole.MANAGER),
-    ('Investor Bob', 'investor@example.com', 'password123', UserRole.INVESTOR),
-    ('Healthy Foods Contact', 'healthyfoods@example.com', 'password123', UserRole.COMPANY),
-    ('Acme Target Contact', 'target@example.com', 'password123', UserRole.COMPANY),
-]
 
 
 def load_login_user_rows(csv_path: Path) -> list[dict[str, str]]:
@@ -35,12 +26,11 @@ def load_login_user_rows(csv_path: Path) -> list[dict[str, str]]:
 def seed_login_users_from_csv(
     db,
     csv_path: Path = DEFAULT_LOGIN_USERS_CSV,
-    *,
-    fallback_users: Iterable[tuple[str, str, str, UserRole]] = DEFAULT_FALLBACK_USERS,
 ) -> None:
     rows = load_login_user_rows(csv_path)
 
     if rows:
+        normalized_rows: list[tuple[str, str, str, UserRole]] = []
         for row in rows:
             email = (row.get('email') or '').strip().lower()
             name = (row.get('name') or '').strip()
@@ -53,19 +43,31 @@ def seed_login_users_from_csv(
                 role = UserRole(role_value)
             except ValueError:
                 continue
+            normalized_rows.append((name, email, password, role))
 
-            user = db.query(User).filter(User.email == email).first()
+        if not normalized_rows:
+            return
+
+        emails = {email for _, email, _, _ in normalized_rows}
+        existing_users = db.query(User).filter(User.email.in_(emails)).all()
+        existing_by_email = {user.email: user for user in existing_users}
+
+        changed = False
+        for name, email, password, role in normalized_rows:
+            user = existing_by_email.get(email)
             if user:
-                user.name = name
-                user.password = password
-                user.role = role
+                if user.name != name:
+                    user.name = name
+                    changed = True
+                if user.password != password:
+                    user.password = password
+                    changed = True
+                if user.role != role:
+                    user.role = role
+                    changed = True
             else:
                 db.add(User(name=name, email=email, password=password, role=role))
-        db.commit()
+                changed = True
+        if changed:
+            db.commit()
         return
-
-    for name, email, password, role in fallback_users:
-        user = db.query(User).filter(User.email == email).first()
-        if not user:
-            db.add(User(name=name, email=email, password=password, role=role))
-    db.commit()

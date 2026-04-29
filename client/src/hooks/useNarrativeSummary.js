@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { API_BASE_URL } from '../lib/api'
 import { DEFAULT_REPORT_VIEW } from '../lib/portalOptions'
 
@@ -116,12 +116,14 @@ export default function useNarrativeSummary({ user, audience, companyId, tone = 
     }
   }, [audience, companyId, enabled, historyRefreshToken, user?.email, user?.role])
 
-  const refresh = () => {
+  const refresh = useCallback(() => {
     setRefreshToken((current) => current + 1)
     setHistoryRefreshToken((current) => current + 1)
-  }
+  }, [])
 
-  const refreshHistory = () => setHistoryRefreshToken((current) => current + 1)
+  const refreshHistory = useCallback(() => {
+    setHistoryRefreshToken((current) => current + 1)
+  }, [])
 
   const generate = async ({ audience: nextAudience = audience, companyId: nextCompanyId = companyId, tone: nextTone = tone, forceRefresh = false } = {}) => {
       const response = await fetch(`${API_BASE_URL}/narrative/generate`, {

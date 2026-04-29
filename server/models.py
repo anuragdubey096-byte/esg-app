@@ -213,6 +213,54 @@ class NewsletterDispatchLog(Base):
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
+class ActivityEvent(Base):
+    __tablename__ = 'activity_events'
+
+    id = Column(Integer, primary_key=True, index=True)
+    event_type = Column(String, nullable=False, index=True)
+    title = Column(String, nullable=False)
+    message = Column(Text, nullable=False)
+    severity = Column(String, nullable=False, default='info')
+    actor_role = Column(String, nullable=True)
+    actor_email = Column(String, nullable=True, index=True)
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=True, index=True)
+    submission_id = Column(Integer, ForeignKey('submissions.id'), nullable=True, index=True)
+    cycle_id = Column(Integer, ForeignKey('collection_cycles.id'), nullable=True, index=True)
+    entity_status = Column(String, nullable=True)
+    is_toast = Column(Boolean, nullable=False, default=True)
+    visible_to_investors = Column(Boolean, nullable=False, default=False)
+    metadata_json = Column(Text, nullable=False, default='{}')
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    company = relationship('Company')
+    submission = relationship('Submission')
+    cycle = relationship('CollectionCycle')
+
+
+class SubmissionCollaborationSession(Base):
+    __tablename__ = 'submission_collaboration_sessions'
+
+    id = Column(Integer, primary_key=True, index=True)
+    submission_id = Column(Integer, ForeignKey('submissions.id'), nullable=False, index=True)
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=False, index=True)
+    cycle_id = Column(Integer, ForeignKey('collection_cycles.id'), nullable=False, index=True)
+    section = Column(String, nullable=False, index=True)
+    owner_role = Column(String, nullable=False)
+    owner_email = Column(String, nullable=False, index=True)
+    owner_name = Column(String, nullable=True)
+    status = Column(String, nullable=False, default='active')
+    lock_mode = Column(String, nullable=False, default='soft')
+    release_reason = Column(Text, nullable=True)
+    last_seen_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    submission = relationship('Submission')
+    company = relationship('Company')
+    cycle = relationship('CollectionCycle')
+
+
 class ActionPlan(Base):
     __tablename__ = 'action_plans'
 

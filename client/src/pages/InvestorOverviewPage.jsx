@@ -13,6 +13,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
+import ActivityFeedCard from '../components/ActivityFeedCard'
 import DataTable from '../components/DataTable'
 import KpiCard from '../components/KpiCard'
 import SectionCard from '../components/SectionCard'
@@ -165,6 +166,12 @@ export default function InvestorOverviewPage() {
           />
         </SectionCard>
       </section>
+
+      <ActivityFeedCard
+        user={user}
+        title="Investor Activity Feed"
+        subtitle="Live portfolio workflow events surfaced for investor users"
+      />
     </div>
   )
 }

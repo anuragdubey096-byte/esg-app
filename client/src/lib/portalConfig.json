@@ -502,19 +502,6 @@
               "board pack"
             ]
           }
-        },
-        {
-          "title": "Cycle Config",
-          "subtitle": "Manage reporting windows and reminders",
-          "path": "/admin-settings",
-          "metadata": {
-            "section": "manager",
-            "aliases": [
-              "settings",
-              "configuration",
-              "reminders"
-            ]
-          }
         }
       ],
       "investor": [

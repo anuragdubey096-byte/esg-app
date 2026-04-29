@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { normalizeStatusText } from '../components/ui/status'
+import { useOptionalLiveUpdates } from '../contexts/LiveUpdatesContext'
 import { API_BASE_URL } from '../lib/api'
 
 function getDashboardPath(user) {
@@ -7,6 +8,19 @@ function getDashboardPath(user) {
   if (user.role === 'company') return `/dashboard/company/${user.id}`
   return `/dashboard/${user.role}`
 }
+
+const LIVE_REFRESH_EVENT_TYPES = new Set([
+  'company_created',
+  'company_onboarded',
+  'cycle_created',
+  'cycle_status_changed',
+  'submission_submitted',
+  'submission_status_changed',
+  'submission_review_logged',
+  'action_plan_created',
+  'action_plan_updated',
+  'action_plan_deleted',
+])
 
 export function normalizeStatus(status) {
   return normalizeStatusText(status)
@@ -124,6 +138,8 @@ export default function useDashboardData(user) {
   const [summary, setSummary] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const lastLiveRefreshRef = useRef(0)
+  const liveUpdates = useOptionalLiveUpdates()
 
   const dashboardPath = useMemo(() => getDashboardPath(user), [user])
 
@@ -132,11 +148,20 @@ export default function useDashboardData(user) {
     setError('')
 
     try {
+      const headers = {
+        'x-user-role': user?.role || '',
+        'x-user-email': user?.email || '',
+      }
+      const cyclesPromise = fetch(`${API_BASE_URL}/cycles`, { headers })
+        .then(async (response) => {
+          if (!response.ok) return []
+          const cycleData = await response.json()
+          return Array.isArray(cycleData) ? cycleData : []
+        })
+        .catch(() => [])
+
       const dashboardResponse = await fetch(`${API_BASE_URL}${dashboardPath}`, {
-        headers: {
-          'x-user-role': user?.role || '',
-          'x-user-email': user?.email || '',
-        }
+        headers,
       })
       if (!dashboardResponse.ok) {
         throw new Error('Failed to load dashboard data from backend.')
@@ -157,35 +182,32 @@ export default function useDashboardData(user) {
         setSummary(null)
       }
 
-      try {
-      const cycleResponse = await fetch(`${API_BASE_URL}/cycles`, {
-          headers: {
-            'x-user-role': user?.role || '',
-            'x-user-email': user?.email || '',
-          }
-        })
-        if (cycleResponse.ok) {
-          const cycleData = await cycleResponse.json()
-          setCycles(Array.isArray(cycleData) ? cycleData : [])
-        } else {
-          setCycles([])
-        }
-      } catch {
-        setCycles([])
-      }
+      setLoading(false)
+      const cycleData = await cyclesPromise
+      setCycles(cycleData)
     } catch (requestError) {
       setCompanies([])
       setCycles([])
       setSummary(null)
       setError(requestError.message || 'Unable to fetch dashboard data.')
-    } finally {
       setLoading(false)
     }
-  }, [dashboardPath])
+  }, [dashboardPath, user?.email, user?.role])
 
   useEffect(() => {
     refresh()
   }, [refresh])
+
+  useEffect(() => {
+    const nextEvent = liveUpdates?.lastEvent
+    if (!nextEvent || !user) return
+    const eventType = String(nextEvent?.event_type || '').trim().toLowerCase()
+    if (!LIVE_REFRESH_EVENT_TYPES.has(eventType)) return
+    const now = Date.now()
+    if (now - lastLiveRefreshRef.current < 1200) return
+    lastLiveRefreshRef.current = now
+    refresh()
+  }, [liveUpdates?.lastEvent, refresh, user])
 
   return {
     companies,

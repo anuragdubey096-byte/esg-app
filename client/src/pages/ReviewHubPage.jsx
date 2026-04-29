@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useOutletContext, useSearchParams } from 'react-router-dom'
+import ActivityFeedCard from '../components/ActivityFeedCard'
+import CollaborationPanel from '../components/CollaborationPanel'
 import DataTable from '../components/DataTable'
 import NarrativeEditor from '../components/NarrativeEditor'
 import NarrativeSummaryCard from '../components/NarrativeSummaryCard'
@@ -7,7 +9,8 @@ import NarrativeToolbar from '../components/NarrativeToolbar'
 import SectionCard from '../components/SectionCard'
 import StatusBadge from '../components/StatusBadge'
 import { Button, SelectInput, TextInput } from '../components/ui'
-import useDashboardData, { getLatestSubmission, parseSubmissionPayload, calculateESGScore, normalizeStatus } from '../hooks/useDashboardData'
+import { useOptionalLiveUpdates } from '../contexts/LiveUpdatesContext'
+import useDashboardData, { getLatestSubmission, parseSubmissionPayload, normalizeStatus } from '../hooks/useDashboardData'
 import useNarrativeSummary from '../hooks/useNarrativeSummary'
 import { API_BASE_URL } from '../lib/api'
 import { DEFAULT_REPORT_VIEW, NARRATIVE_UI_COPY } from '../lib/portalOptions'
@@ -32,6 +35,11 @@ function formatDelta(current, previous) {
   if (currentNum === null || previousNum === null || previousNum === 0) return 'n/a'
   const pct = Number((((currentNum - previousNum) / previousNum) * 100).toFixed(2))
   return `${pct > 0 ? '+' : ''}${pct}%`
+}
+
+function formatScore(value) {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed.toFixed(1) : 'N/A'
 }
 
 function getValidationSummary(rows) {
@@ -65,11 +73,15 @@ export default function ReviewHubPage() {
   const [loadingValidation, setLoadingValidation] = useState(false)
   const [validationErrorMessage, setValidationErrorMessage] = useState('')
   const [activeDecisionField, setActiveDecisionField] = useState('')
+  const [activeReviewSection, setActiveReviewSection] = useState('Environmental')
+  const [collaboration, setCollaboration] = useState(null)
+  const [collaborationMessage, setCollaborationMessage] = useState('')
   const [narrativeTone, setNarrativeTone] = useState(DEFAULT_REPORT_VIEW.narrativeTone)
   const [narrativeDraft, setNarrativeDraft] = useState(null)
   const [narrativeMessage, setNarrativeMessage] = useState('')
   const [narrativeBusy, setNarrativeBusy] = useState(false)
   const targetFieldKey = searchParams.get('field') || ''
+  const liveUpdates = useOptionalLiveUpdates()
 
   useEffect(() => {
     const companyIdParam = searchParams.get('companyId')
@@ -87,6 +99,8 @@ export default function ReviewHubPage() {
       const previousPayload = parseSubmissionPayload(previous)
       const status = normalizeStatus(latest?.status || 'Not Started')
       const previousStatus = normalizeStatus(previous?.status || 'Not Started')
+      const backendEsgScore = Number(c.reporting_esg_score)
+      const previousEsgScore = toNumber(previousPayload?.esg_score)
       return {
         id: c.id,
         companyName: c.name,
@@ -94,8 +108,8 @@ export default function ReviewHubPage() {
         geography: c.geography,
         status,
         previousStatus,
-        esgScore: calculateESGScore(status, payload),
-        previousEsgScore: calculateESGScore(previousStatus, previousPayload),
+        esgScore: Number.isFinite(backendEsgScore) ? backendEsgScore : null,
+        previousEsgScore,
         submissionId: latest?.id || null,
         payload,
         previousPayload
@@ -104,7 +118,7 @@ export default function ReviewHubPage() {
   }, [companies])
 
   const selectedCompany = useMemo(() => {
-    return submissionRows.find((row) => row.id === Number(selectedCompanyId)) || submissionRows[0] || { companyName: 'No submissions yet', sector: '--', geography: '--', status: 'Not Started', esgScore: 0, submissionId: null, payload: {} }
+    return submissionRows.find((row) => row.id === Number(selectedCompanyId)) || submissionRows[0] || { companyName: 'No submissions yet', sector: '--', geography: '--', status: 'Not Started', esgScore: null, previousEsgScore: null, submissionId: null, payload: {} }
   }, [selectedCompanyId, submissionRows])
   const narrative = useNarrativeSummary({
     user,
@@ -180,7 +194,19 @@ export default function ReviewHubPage() {
     return () => {
       active = false
     }
-  }, [selectedCompany?.submissionId, user?.email, user?.role])
+  }, [selectedCompany?.submissionId, user?.email, user?.role, liveUpdates?.lastEvent?.id])
+
+  useEffect(() => {
+    if (!liveUpdates?.lastEvent || !selectedCompany?.submissionId) return
+    if (
+      liveUpdates.lastEvent.submission_id
+      && Number(liveUpdates.lastEvent.submission_id) !== Number(selectedCompany.submissionId)
+    ) {
+      return
+    }
+    refreshDashboard()
+    narrative.refresh()
+  }, [liveUpdates?.lastEvent?.id, narrative.refresh, refreshDashboard, selectedCompany?.submissionId])
 
   const handleMetricDecision = async (fieldKey, decision) => {
     if (!selectedCompany?.submissionId) return
@@ -347,6 +373,12 @@ export default function ReviewHubPage() {
   }
 
   const canEditNarrative = String(user?.role || '').toLowerCase() === 'manager'
+  const narrativeFreshnessTone =
+    narrative.data?.freshness_status === 'current'
+      ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+      : narrative.data?.freshness_status === 'stale'
+        ? 'border-amber-200 bg-amber-50 text-amber-800'
+        : 'border-slate-200 bg-slate-50 text-slate-700'
 
   const dataRows = useMemo(() => {
     if (!selectedCompany.payload) return []
@@ -375,6 +407,7 @@ export default function ReviewHubPage() {
         return {
           id: index + 1,
           fieldKey: key,
+          section: backendIssues[0]?.section || 'General',
           metric: humanizeKey(key),
           currentValue: formatValue(currentValue),
           previousValue: formatValue(previousValue),
@@ -386,10 +419,84 @@ export default function ReviewHubPage() {
       })
   }, [selectedCompany, validationByField])
 
+  const reviewSections = useMemo(() => {
+    const sections = Array.from(new Set(dataRows.map((row) => row.section || 'General').filter(Boolean)))
+    return sections.length ? sections : ['General']
+  }, [dataRows])
+
+  useEffect(() => {
+    if (!reviewSections.includes(activeReviewSection)) {
+      setActiveReviewSection(reviewSections[0] || 'General')
+    }
+  }, [activeReviewSection, reviewSections])
+
+  useEffect(() => {
+    if (!selectedCompany?.submissionId || !activeReviewSection) {
+      setCollaboration(null)
+      setCollaborationMessage('')
+      return undefined
+    }
+    let cancelled = false
+
+    const claimSection = async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/submissions/${selectedCompany.submissionId}/collaboration/claim`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-user-role': user?.role || '',
+            'x-user-email': user?.email || '',
+          },
+          body: JSON.stringify({ section: activeReviewSection }),
+        })
+        const payload = await response.json().catch(() => ({}))
+        if (!response.ok) {
+          if (response.status === 409) {
+            if (!cancelled) {
+              setCollaboration(payload)
+              setCollaborationMessage(payload.detail || 'This review section is already claimed by another active editor.')
+            }
+            return
+          }
+          throw new Error(payload.detail || `Failed to claim review section (${response.status})`)
+        }
+        if (!cancelled) {
+          setCollaboration(payload)
+          setCollaborationMessage('')
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setCollaborationMessage(error.message || 'Unable to refresh collaboration state.')
+        }
+      }
+    }
+
+    claimSection()
+    const timerId = window.setInterval(claimSection, 30000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timerId)
+      fetch(`${API_BASE_URL}/submissions/${selectedCompany.submissionId}/collaboration/release`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-user-role': user?.role || '',
+          'x-user-email': user?.email || '',
+        },
+        body: JSON.stringify({ section: activeReviewSection, force: false }),
+      }).catch(() => {})
+    }
+  }, [activeReviewSection, selectedCompany?.submissionId, user?.email, user?.role])
+
   const targetAlertRow = useMemo(() => {
     if (!targetFieldKey) return null
     return dataRows.find((row) => row.fieldKey === targetFieldKey) || null
   }, [dataRows, targetFieldKey])
+
+  useEffect(() => {
+    if (!targetAlertRow?.section) return
+    setActiveReviewSection(targetAlertRow.section)
+  }, [targetAlertRow?.section])
 
   useEffect(() => {
     if (!targetFieldKey || !dataRows.length) return undefined
@@ -403,7 +510,16 @@ export default function ReviewHubPage() {
     return () => window.clearTimeout(timer)
   }, [targetFieldKey, dataRows.length])
 
-  const summary = getValidationSummary(dataRows)
+  const visibleRows = useMemo(
+    () => dataRows.filter((row) => (activeReviewSection ? row.section === activeReviewSection : true)),
+    [activeReviewSection, dataRows],
+  )
+  const summary = getValidationSummary(visibleRows)
+  const activeSectionOwner = useMemo(() => {
+    const items = Array.isArray(collaboration?.active_sections) ? collaboration.active_sections : []
+    return items.find((item) => item.section === activeReviewSection) || null
+  }, [activeReviewSection, collaboration?.active_sections])
+  const reviewBlocked = Boolean(activeSectionOwner && !activeSectionOwner.is_you)
 
   const columns = [
     {
@@ -432,6 +548,7 @@ export default function ReviewHubPage() {
           onChange={(event) => setRowComments((current) => ({ ...current, [row.fieldKey]: event.target.value }))}
           aria-label={`${row.metric} comment`}
           placeholder="Optional reviewer note"
+          disabled={reviewBlocked}
         />
       ),
     },
@@ -442,14 +559,14 @@ export default function ReviewHubPage() {
         <div className="action-row">
           <Button
             onClick={() => handleMetricDecision(row.fieldKey, 'pass')}
-            disabled={activeDecisionField === row.fieldKey}
+            disabled={activeDecisionField === row.fieldKey || reviewBlocked}
             variant="primary"
           >
             Pass
           </Button>
           <Button
             onClick={() => handleMetricDecision(row.fieldKey, 'fail')}
-            disabled={activeDecisionField === row.fieldKey}
+            disabled={activeDecisionField === row.fieldKey || reviewBlocked}
             variant="secondary"
           >
             Fail
@@ -529,28 +646,47 @@ export default function ReviewHubPage() {
         <div className="two-col-grid compact">
           <article className="compare-card">
             <p className="eyebrow">Current Submission</p>
-            <h4>ESG Score {selectedCompany.esgScore}</h4>
+            <h4>ESG Score {formatScore(selectedCompany.esgScore)}</h4>
             <p>Submission ID: {selectedCompany.submissionId || 'n/a'}</p>
             <p>Status: {selectedCompany.status}</p>
           </article>
           <article className="compare-card muted">
             <p className="eyebrow">Prior Submission</p>
-            <h4>ESG Score {selectedCompany.previousEsgScore || 0}</h4>
+            <h4>ESG Score {formatScore(selectedCompany.previousEsgScore)}</h4>
             <p>Status: {selectedCompany.previousStatus}</p>
             <p className="text-xs text-gray-500">Backend payload comparison only.</p>
           </article>
         </div>
 
+        <div className="mb-4 flex flex-wrap gap-2">
+          {reviewSections.map((section) => (
+            <Button
+              key={section}
+              type="button"
+              variant={activeReviewSection === section ? 'primary' : 'secondary'}
+              onClick={() => setActiveReviewSection(section)}
+            >
+              {section}
+            </Button>
+          ))}
+        </div>
+
+        <CollaborationPanel
+          collaboration={collaboration}
+          activeSection={activeReviewSection}
+          conflictMessage={collaborationMessage}
+        />
+
         <DataTable
           columns={columns}
-          rows={dataRows}
+          rows={visibleRows}
           pageSize={7}
           rowClassName={(row) => (row.fieldKey === targetFieldKey ? 'row-target-alert' : '')}
         />
 
         <div className="action-row">
-          <Button type="button" variant="primary" onClick={() => submitReview('approved', 'Submission approved from Review Hub.')}>Approve</Button>
-          <Button type="button" variant="secondary" onClick={() => submitReview('resubmission requested', 'Resubmission requested from Review Hub.')}>Request Resubmission</Button>
+          <Button type="button" variant="primary" onClick={() => submitReview('approved', 'Submission approved from Review Hub.')} disabled={reviewBlocked}>Approve</Button>
+          <Button type="button" variant="secondary" onClick={() => submitReview('resubmission requested', 'Resubmission requested from Review Hub.')} disabled={reviewBlocked}>Request Resubmission</Button>
           <Button type="button" variant="ghost" onClick={() => setActionMessage('Reviewer note saved to audit log.')}>Add Comment</Button>
           {actionMessage ? <p className="action-message">{actionMessage}</p> : null}
         </div>
@@ -570,6 +706,12 @@ export default function ReviewHubPage() {
         subtitle={NARRATIVE_UI_COPY.pages.reviewHubNarrativeControlsSubtitle}
       >
         <div className="space-y-4">
+          {narrative.data ? (
+            <div className={`rounded-xl border px-4 py-3 text-sm ${narrativeFreshnessTone}`}>
+              <p className="ui-text-strong">{narrative.data.freshness_label || 'No approved narrative'}</p>
+              <p className="mt-1">{narrative.data.freshness_reason || narrative.data.message || 'Narrative refresh state is unavailable.'}</p>
+            </div>
+          ) : null}
           <NarrativeToolbar
             tone={narrativeTone}
             onToneChange={setNarrativeTone}
@@ -579,6 +721,7 @@ export default function ReviewHubPage() {
             onExport={exportNarrative}
             loading={narrativeBusy}
             canEdit={canEditNarrative}
+            generateLabel="Regenerate from latest approved data"
           />
           {canEditNarrative ? (
             <NarrativeEditor value={narrativeDraft || {}} onChange={setNarrativeDraft} disabled={narrativeBusy} />
@@ -586,6 +729,14 @@ export default function ReviewHubPage() {
           {narrativeMessage ? <p className="text-sm text-slate-600">{narrativeMessage}</p> : null}
         </div>
       </SectionCard>
+
+      <ActivityFeedCard
+        user={user}
+        title="Review Activity Feed"
+        subtitle="Live submission reviews, approvals, unlocks, and active section ownership"
+        companyId={selectedCompany?.id || null}
+        submissionId={selectedCompany?.submissionId || null}
+      />
     </div>
   )
 }

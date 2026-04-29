@@ -561,6 +561,25 @@ small {
   overflow: hidden;
 }
 
+.skip-link {
+  position: absolute;
+  left: var(--ui-space-3);
+  top: -120px;
+  z-index: 90;
+  border-radius: var(--ui-radius-sm);
+  background: var(--ui-brand-primary);
+  color: #fff;
+  padding: var(--ui-space-2) var(--ui-space-3);
+  font-size: var(--ui-font-body-sm);
+  font-weight: 600;
+  text-decoration: none;
+  box-shadow: var(--ui-shadow-elevated);
+}
+
+.skip-link:focus {
+  top: var(--ui-space-3);
+}
+
 .top-navbar {
   position: sticky;
   top: 0;

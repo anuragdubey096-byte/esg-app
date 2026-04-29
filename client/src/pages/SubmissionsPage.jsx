@@ -1,18 +1,17 @@
 import { useEffect, useMemo, useState, useRef } from 'react'
 import { useOutletContext, useSearchParams } from 'react-router-dom'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts'
+import ActivityFeedCard from '../components/ActivityFeedCard'
 import DataTable from '../components/DataTable'
 import SectionCard from '../components/SectionCard'
 import StatusBadge from '../components/StatusBadge'
 import { Button } from '../components/ui'
+import { useOptionalLiveUpdates } from '../contexts/LiveUpdatesContext'
 import { CONFIDENCE_OPTIONS, ESG_FORM_SECTIONS, createInitialFormValues } from '../esgFormConfig'
 import { validateSubmissionData } from '../esgValidation'
 import useDashboardData, {
-  calculateESGScore,
   getLatestSubmission,
   getPreferredCycle,
-  getProgressFromStatus,
-  getRiskLevel,
   normalizeStatus,
   parseSubmissionPayload,
 } from '../hooks/useDashboardData'
@@ -144,7 +143,8 @@ function createPrefilledFormValues(company) {
 export default function SubmissionsPage() {
   const { user } = useOutletContext()
   const [searchParams] = useSearchParams()
-  const { companies, cycles, loading, error, refresh } = useDashboardData(user)
+  const { companies, cycles, summary, loading, error, refresh } = useDashboardData(user)
+  const liveUpdates = useOptionalLiveUpdates()
   const { cycleId: activeCycleId, loading: activeCycleLoading, error: activeCycleError } = useCompanyActiveCycleId(user)
   const [status, setStatus] = useState('All')
   const [sector, setSector] = useState('All')
@@ -358,32 +358,37 @@ export default function SubmissionsPage() {
 
   const rows = useMemo(() => {
     const preferredCycle = getPreferredCycle(cycles)
-    const deadline = preferredCycle?.submission_deadline || '--'
+    const defaultDeadline = preferredCycle?.submission_deadline || '--'
+    const progressRows = Array.isArray(summary?.progress_rows) ? summary.progress_rows : []
+    const progressByCompanyId = new Map(
+      progressRows.map((row) => [Number(row.company_id), row])
+    )
 
     return companies.map((company) => {
       const latest = getLatestSubmission(company)
       const statusLabel = normalizeStatus(latest?.status || company?.current_status || 'Not Started')
-      const payload = parseSubmissionPayload(latest)
-      const esgScore = calculateESGScore(statusLabel, payload)
-      const progress = getProgressFromStatus(statusLabel)
-      const risk = getRiskLevel({ status: statusLabel, esgScore, deadline })
+      const backendProgress = progressByCompanyId.get(Number(company.id)) || null
+      const backendProgressValue = Number(
+        company.reporting_completion_percent ?? backendProgress?.completion_percent
+      )
+      const backendEsgValue = Number(company.reporting_esg_score)
 
       return {
         id: company.id,
         companyName: company.name,
         status: statusLabel,
         currentStatus: company.current_status,
-        progress,
-        deadline,
-        esgScore,
-        risk,
+        progress: Number.isFinite(backendProgressValue) ? backendProgressValue : null,
+        deadline: company.reporting_deadline || backendProgress?.deadline || defaultDeadline,
+        esgScore: Number.isFinite(backendEsgValue) ? backendEsgValue : null,
+        risk: company.reporting_risk_level || backendProgress?.risk_level || 'N/A',
         sector: company.sector || 'Unassigned',
         geography: company.geography || 'Unknown',
         submissionId: latest?.id,
         flags: company.validation_flags?.length || 0,
       }
     })
-  }, [companies, cycles])
+  }, [companies, cycles, summary?.progress_rows])
 
   const options = useMemo(() => ({
     statuses: ['All', ...new Set(rows.map((row) => row.status))],
@@ -399,7 +404,7 @@ export default function SubmissionsPage() {
       const searchTerm = search.trim().toLowerCase()
       const searchMatch =
         !searchTerm ||
-        [row.companyName, row.sector, row.geography, row.status, String(row.esgScore)]
+        [row.companyName, row.sector, row.geography, row.status, row.esgScore ?? 'N/A']
           .join(' ')
           .toLowerCase()
           .includes(searchTerm)
@@ -411,10 +416,10 @@ export default function SubmissionsPage() {
   const columns = [
     { key: 'companyName', label: 'Company Name', sortable: true },
     { key: 'status', label: 'Status', sortable: true, render: (row) => <StatusBadge value={row.status} /> },
-    { key: 'progress', label: 'Progress %', sortable: true, render: (row) => `${row.progress}%` },
+    { key: 'progress', label: 'Progress %', sortable: true, render: (row) => (row.progress == null ? 'N/A' : `${row.progress}%`) },
     { key: 'deadline', label: 'Deadline', sortable: true },
-    { key: 'esgScore', label: 'ESG Score', sortable: true },
-    { key: 'risk', label: 'Risk Indicator', sortable: true, render: (row) => <StatusBadge value={row.risk} /> },
+    { key: 'esgScore', label: 'ESG Score', sortable: true, render: (row) => (row.esgScore == null ? 'N/A' : row.esgScore) },
+    { key: 'risk', label: 'Risk Indicator', sortable: true, render: (row) => (row.risk === 'N/A' ? 'N/A' : <StatusBadge value={row.risk} />) },
   ]
 
   if (user?.role === 'manager') {
@@ -531,6 +536,11 @@ export default function SubmissionsPage() {
       setSelectedCompanyId(companies[0].id)
     }
   }, [companies, selectedCompanyId, user?.role])
+
+  useEffect(() => {
+    if (!liveUpdates?.lastEvent || user?.role === 'company') return
+    refresh()
+  }, [liveUpdates?.lastEvent?.id, refresh, user?.role])
 
   useEffect(() => {
     if (user?.role !== 'company') return
@@ -1231,6 +1241,19 @@ export default function SubmissionsPage() {
         )}
 
         <DataTable columns={columns} rows={filteredRows} pageSize={12} rowClassName={rowClassName} />
+
+        <div className="mt-6">
+          <ActivityFeedCard
+            user={user}
+            title={user?.role === 'investor' ? 'Investor Activity Feed' : 'Submission Activity Feed'}
+            subtitle={
+              user?.role === 'investor'
+                ? 'Live portfolio workflow events visible to investor users'
+                : 'Recent submission, review, reminder, and onboarding activity'
+            }
+            companyId={user?.role === 'manager' ? focusedCompanyId || null : null}
+          />
+        </div>
       </SectionCard>
     </div>
   )

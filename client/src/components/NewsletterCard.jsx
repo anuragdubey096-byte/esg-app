@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import SectionCard from './SectionCard'
 import EmptyState from './ui/EmptyState'
 import { Button, ListSection } from './ui'
+import { useOptionalLiveUpdates } from '../contexts/LiveUpdatesContext'
 import { NARRATIVE_UI_COPY } from '../lib/portalOptions'
 import { splitSentences } from '../lib/text'
 
@@ -17,15 +18,26 @@ export default function NewsletterCard({
   exporting = false,
   sending = false,
 }) {
+  const liveUpdates = useOptionalLiveUpdates()
   const [expanded, setExpanded] = useState(false)
   const [copying, setCopying] = useState(false)
   const summaryBlocks = useMemo(() => splitSentences(data?.summary || ''), [data?.summary])
+
+  const notify = (title, message, severity = 'info') => {
+    if (liveUpdates?.notify) {
+      liveUpdates.notify({ title, message, severity })
+      return
+    }
+    window.alert(message)
+  }
 
   const metaChips = [
     data?.audience ? `Audience: ${data.audience}` : null,
     data?.tone ? `Tone: ${data.tone}` : null,
     data?.source_company_count ? `${data.source_company_count} companies` : null,
     data?.source_years?.length ? `Years: ${data.source_years.join(', ')}` : null,
+    data?.anomaly_summary?.headline ? 'Anomaly watchlist' : null,
+    data?.external_context_items?.length ? `${data.external_context_items.length} context signals` : null,
     data?.cached ? 'Cached' : null,
     data?.fallback_used ? 'Fallback text' : null,
   ].filter(Boolean)
@@ -41,6 +53,19 @@ export default function NewsletterCard({
     if (data.watchouts?.length) sections.push('', 'Watchouts:', ...data.watchouts.map((item) => `- ${item}`))
     if (data.recommendations?.length) sections.push('', 'Recommendations:', ...data.recommendations.map((item) => `- ${item}`))
     if (data.call_to_action) sections.push('', 'Call to Action:', data.call_to_action)
+    if (data.anomaly_summary?.headline || data.anomaly_summary?.summary) {
+      sections.push('', 'Anomaly Watchlist:')
+      if (data.anomaly_summary.headline) sections.push(data.anomaly_summary.headline)
+      if (data.anomaly_summary.summary) sections.push(data.anomaly_summary.summary)
+    }
+    if (data.external_context_items?.length) {
+      sections.push('', 'Sector & Regulatory Context:')
+      sections.push(
+        ...data.external_context_items
+          .slice(0, 3)
+          .map((item) => `${item.item_type === 'regulation' ? 'Regulatory watch' : item.sector || 'Sector context'}: ${item.title}`)
+      )
+    }
     return sections.join('\n').trim()
   }, [data])
 
@@ -49,9 +74,9 @@ export default function NewsletterCard({
     setCopying(true)
     try {
       await navigator.clipboard.writeText(emailCopy)
-      window.alert('Newsletter draft copied to clipboard.')
+      notify('Newsletter copied', 'Newsletter draft copied to clipboard.', 'success')
     } catch {
-      window.alert('Unable to copy the newsletter draft on this browser.')
+      notify('Copy failed', 'Unable to copy the newsletter draft on this browser.', 'error')
     } finally {
       setCopying(false)
     }
@@ -61,9 +86,9 @@ export default function NewsletterCard({
     if (!onExport) return
     try {
       await onExport()
-      window.alert('Newsletter export is ready.')
+      notify('Export ready', 'Newsletter export is ready.', 'success')
     } catch (err) {
-      window.alert(err?.message || 'Unable to export newsletter draft.')
+      notify('Export failed', err?.message || 'Unable to export newsletter draft.', 'error')
     }
   }
 
@@ -71,9 +96,9 @@ export default function NewsletterCard({
     if (!onSend) return
     try {
       await onSend()
-      window.alert('Newsletter email send has been queued or completed.')
+      notify('Newsletter sent', 'Newsletter email send has been queued or completed.', 'success')
     } catch (err) {
-      window.alert(err?.message || 'Unable to send newsletter draft.')
+      notify('Send failed', err?.message || 'Unable to send newsletter draft.', 'error')
     }
   }
 
@@ -215,6 +240,31 @@ export default function NewsletterCard({
             <ListSection title={NARRATIVE_UI_COPY.newsletter.watchoutsTitle} items={data.watchouts} />
             <ListSection title={NARRATIVE_UI_COPY.newsletter.nextStepsTitle} items={data.recommendations} />
           </div>
+
+          {data.anomaly_summary?.headline || data.anomaly_summary?.summary ? (
+            <div className="rounded-xl border border-amber-200 bg-amber-50/80 px-4 py-3 text-sm text-amber-950">
+              <p className="text-xs uppercase tracking-wide text-amber-700">Anomaly Watchlist</p>
+              {data.anomaly_summary.headline ? <p className="mt-1 ui-text-strong">{data.anomaly_summary.headline}</p> : null}
+              {data.anomaly_summary.summary ? <p className="mt-2 leading-6">{data.anomaly_summary.summary}</p> : null}
+            </div>
+          ) : null}
+
+          {Array.isArray(data.external_context_items) && data.external_context_items.length ? (
+            <div className="space-y-3">
+              <p className="text-xs uppercase tracking-wide text-[color:var(--ui-text-muted)]">Sector & Regulatory Context</p>
+              <div className="grid gap-3 lg:grid-cols-3">
+                {data.external_context_items.slice(0, 3).map((item) => (
+                  <div key={item.id} className="rounded-xl border border-[color:var(--ui-panel-border)] bg-[color:var(--ui-surface-muted)] px-4 py-3 text-sm text-[color:var(--ui-text)]">
+                    <p className="ui-text-strong">{item.title}</p>
+                    <p className="mt-2 text-xs text-[color:var(--ui-text-muted)]">
+                      {item.item_type === 'regulation' ? 'Regulatory watch' : item.sector || 'Sector context'}
+                    </p>
+                    {item.action_prompt ? <p className="mt-2 leading-6">{item.action_prompt}</p> : null}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
         </div>
       )}
     </SectionCard>

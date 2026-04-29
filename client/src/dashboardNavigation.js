@@ -42,12 +42,6 @@ const PORTAL_NAV_CONFIG = {
       icon: 'D',
       title: 'Reports',
     },
-    {
-      to: '/admin-settings',
-      label: 'Cycle Config',
-      icon: 'T',
-      title: 'Reporting Cycle Configuration',
-    },
   ],
   investor: [
     {

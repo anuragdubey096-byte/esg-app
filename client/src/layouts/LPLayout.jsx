@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import { Outlet, useLocation } from 'react-router-dom'
+import SkipLink from '../components/SkipLink'
 import Sidebar from '../components/Sidebar'
 import TopNavbar from '../components/TopNavbar'
 import { Button } from '../components/ui'
@@ -54,6 +55,7 @@ export default function LPLayout({ user, onLogout }) {
 
   return (
     <div className={`admin-shell ${collapsed ? 'collapsed' : ''}`}>
+      <SkipLink targetId="primary-content" />
       <Sidebar
         collapsed={collapsed}
         items={navItems}
@@ -70,7 +72,7 @@ export default function LPLayout({ user, onLogout }) {
       />
       <div className="admin-main">
         <TopNavbar title={pageTitle} user={user} onLogout={onLogout} onMenuToggle={toggleSidebar} />
-        <main className="page-container">
+        <main id="primary-content" tabIndex="-1" className="page-container">
           <Outlet context={{ user }} />
         </main>
       </div>

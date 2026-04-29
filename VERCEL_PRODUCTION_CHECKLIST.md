@@ -50,13 +50,26 @@ Only needed for split deployments or advanced setups:
 
 - Frontend build passes
 - Backend Python files compile
-- Narrative smoke test passes
+- Full backend self-test passes
 - Vercel config parses as valid JSON
+
+Recommended commands:
+
+```powershell
+cd client
+npm run build
+
+cd ..\server
+python -m py_compile main.py self_test.py schemas.py
+$env:SELF_TEST_FULL='1'; python -u self_test.py
+```
 
 ## 6. Post-deploy verification
 
 Check these live after deployment:
 
+- `/api/health` returns JSON with healthy startup and database checks
+- `/api/health/ready` returns `200`
 - Frontend home page loads
 - Login works for admin, LP, and company users
 - `/api` routes return JSON, not HTML
@@ -71,6 +84,7 @@ Check these live after deployment:
 - Missing `BLOB_READ_WRITE_TOKEN`
 - Missing `OPENAI_API_KEY`
 - Wrong `FRONTEND_ORIGIN`
+- `/api/health/ready` failing because production storage or origin env vars are missing
 - Accidentally deploying from `client/` when you meant to use the root project
 - Using SQLite in production
 - Caching an old browser bundle after deploy

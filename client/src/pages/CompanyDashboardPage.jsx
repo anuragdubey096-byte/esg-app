@@ -1,8 +1,15 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useOutletContext } from 'react-router-dom'
+import ActivityFeedCard from '../components/ActivityFeedCard'
+import AnomalySummaryCard from '../components/AnomalySummaryCard'
+import ExternalContextFeedCard from '../components/ExternalContextFeedCard'
+import ImpactStoryCard from '../components/ImpactStoryCard'
 import SectionCard from '../components/SectionCard'
 import KpiCard from '../components/KpiCard'
 import { Button } from '../components/ui'
+import { useOptionalLiveUpdates } from '../contexts/LiveUpdatesContext'
+import useAnomalySummary from '../hooks/useAnomalySummary'
+import useExternalContextFeed from '../hooks/useExternalContextFeed'
 import { API_BASE_URL } from '../lib/api'
 import { UI_LABELS } from '../lib/uiLabels'
 
@@ -12,36 +19,47 @@ export default function CompanyDashboardPage() {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const liveUpdates = useOptionalLiveUpdates()
+  const anomalySummary = useAnomalySummary({ user, enabled: Boolean(user), companyScoped: true })
+  const externalContext = useExternalContextFeed({ user, enabled: Boolean(user), companyId: data?.company_id || null, limit: 4 })
+
+  const fetchDashboard = async () => {
+    try {
+      setLoading(true)
+      const response = await fetch(`${API_BASE_URL}/company/dashboard`, {
+        headers: {
+          'X-User-Role': user?.role || 'company',
+          'X-User-Email': user?.email || '',
+          'Content-Type': 'application/json',
+        },
+      })
+
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}))
+        throw new Error(payload.detail || `Failed to fetch dashboard: ${response.status}`)
+      }
+
+      const dashboardData = await response.json()
+      setData(dashboardData)
+      setError(null)
+    } catch (err) {
+      console.error('Error fetching dashboard:', err)
+      setError(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }
 
   useEffect(() => {
-    const fetchDashboard = async () => {
-      try {
-        setLoading(true)
-        const response = await fetch(`${API_BASE_URL}/company/dashboard`, {
-          headers: {
-            'X-User-Role': user?.role || 'company',
-            'X-User-Email': user?.email || '',
-            'Content-Type': 'application/json',
-          },
-        })
-
-        if (!response.ok) {
-          throw new Error(`Failed to fetch dashboard: ${response.status}`)
-        }
-
-        const dashboardData = await response.json()
-        setData(dashboardData)
-        setError(null)
-      } catch (err) {
-        console.error('Error fetching dashboard:', err)
-        setError(err.message)
-      } finally {
-        setLoading(false)
-      }
-    }
-
     fetchDashboard()
   }, [user])
+
+  useEffect(() => {
+    if (!liveUpdates?.lastEvent) return
+    fetchDashboard()
+    anomalySummary.refresh()
+    externalContext.refresh()
+  }, [liveUpdates?.lastEvent])
 
   if (loading) {
     return (
@@ -61,7 +79,7 @@ export default function CompanyDashboardPage() {
         <SectionCard title={UI_LABELS.pages.companyDashboard.title} subtitle={UI_LABELS.pages.companyDashboard.errorSubtitle}>
           <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-800">
             <p className="ui-text-strong">Error: {error}</p>
-            <p className="text-sm mt-2">{UI_LABELS.common.backendApiReachable}</p>
+            <p className="text-sm mt-2">Check role access, account-company mapping, and backend availability.</p>
           </div>
         </SectionCard>
       </div>
@@ -102,15 +120,6 @@ export default function CompanyDashboardPage() {
     amber: 'bg-amber-100 text-amber-800',
   }
 
-  const statusEmojis = {
-    'NOT STARTED': '🚀',
-    'IN PROGRESS': '⚡',
-    'SUBMITTED': '✅',
-    'APPROVED': '🎉',
-    'REJECTED': '❌',
-    'RESUBMISSION REQUIRED': '⚠️',
-  }
-
   const urgencyColors = {
     green: 'border-l-4 border-green-500',
     amber: 'border-l-4 border-yellow-500',
@@ -125,8 +134,6 @@ export default function CompanyDashboardPage() {
             <div>
               <p className="text-sm ui-text-strong opacity-75">Current Status</p>
               <p className="ui-text-display mt-2">
-                {statusEmojis[submissionStatus] || ''}
-                {' '}
                 {submissionStatus}
               </p>
               <p className="text-sm mt-3 opacity-80">For: {companyName}</p>
@@ -169,7 +176,7 @@ export default function CompanyDashboardPage() {
             {daysRemaining < 7 && (
               <div className="text-right">
                 <div className="inline-block bg-red-500 text-white px-4 py-2 rounded-full ui-text-strong animate-pulse">
-                  ⏰ URGENT
+                  URGENT
                 </div>
               </div>
             )}
@@ -282,6 +289,39 @@ export default function CompanyDashboardPage() {
           trend={null}
         />
       </div>
+
+      {data.impact_story ? (
+        <ImpactStoryCard
+          title="Company Impact Intelligence"
+          subtitle="Benchmarked meaning from the latest approved submission"
+          story={data.impact_story}
+          maxInsights={4}
+        />
+      ) : null}
+
+      <AnomalySummaryCard
+        title="Company Anomaly Watchlist"
+        subtitle="Approved-data issues that may need action before the next review cycle"
+        data={anomalySummary.data}
+        loading={anomalySummary.loading}
+        error={anomalySummary.error}
+        maxItems={4}
+      />
+
+      <ExternalContextFeedCard
+        title="Sector & Regulatory Feed"
+        subtitle="Context signals tailored to this company and sector"
+        data={externalContext.data}
+        loading={externalContext.loading}
+        error={externalContext.error}
+      />
+
+      <ActivityFeedCard
+        user={user}
+        title="Company Activity Feed"
+        subtitle="Live workflow updates for your reporting cycle"
+        companyId={data.company_id}
+      />
     </div>
   )
 }

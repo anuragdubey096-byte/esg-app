@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useOutletContext, useSearchParams } from 'react-router-dom'
+import ActivityFeedCard from '../components/ActivityFeedCard'
+import CollaborationPanel from '../components/CollaborationPanel'
 import SectionCard from '../components/SectionCard'
 import { Button, ConfidenceFlagSelector, SelectInput, TextareaInput, TextInput } from '../components/ui'
 import useCompanyActiveCycleId from '../hooks/useCompanyActiveCycleId'
@@ -20,6 +22,8 @@ export default function CompanySubmissionPage() {
   const [saving, setSaving] = useState(false)
   const [saveMessage, setSaveMessage] = useState('')
   const [lastSavedAt, setLastSavedAt] = useState(null)
+  const [collaboration, setCollaboration] = useState(null)
+  const [collaborationMessage, setCollaborationMessage] = useState('')
 
   const requestedCycleId = searchParams.get('cycleId') || ''
   const { cycleId: activeCycleId, loading: cycleLoading, error: cycleError } = useCompanyActiveCycleId(user)
@@ -41,11 +45,13 @@ export default function CompanySubmissionPage() {
       )
 
       if (!response.ok) {
-        throw new Error(`Failed to fetch submission: ${response.status}`)
+        const payload = await response.json().catch(() => ({}))
+        throw new Error(payload.detail || `Failed to fetch submission: ${response.status}`)
       }
 
       const submissionData = await response.json()
       setData(submissionData)
+      setCollaboration(submissionData?.collaboration || null)
       setError(null)
     } catch (err) {
       console.error('Error fetching submission:', err)
@@ -60,6 +66,60 @@ export default function CompanySubmissionPage() {
     fetchSubmission(activeSection)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSection, cycleId, user])
+
+  useEffect(() => {
+    if (!cycleId || !data?.submission_id || !activeSection) return undefined
+    let cancelled = false
+
+    const claimSection = async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/company/submission/${cycleId}/collaboration/claim`, {
+          method: 'POST',
+          headers: {
+            'X-User-Role': user?.role || 'company',
+            'X-User-Email': user?.email || '',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ section: activeSection }),
+        })
+        const payload = await response.json().catch(() => ({}))
+        if (!response.ok) {
+          if (response.status === 409) {
+            if (!cancelled) {
+              setCollaborationMessage(payload.detail || 'This section is currently claimed by another active editor.')
+            }
+            return
+          }
+          throw new Error(payload.detail || `Failed to claim section (${response.status})`)
+        }
+        if (!cancelled) {
+          setCollaboration(payload)
+          setCollaborationMessage('')
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setCollaborationMessage(err.message || 'Unable to refresh collaboration state.')
+        }
+      }
+    }
+
+    claimSection()
+    const timerId = window.setInterval(claimSection, 30000)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(timerId)
+      fetch(`${API_BASE_URL}/company/submission/${cycleId}/collaboration/release`, {
+        method: 'POST',
+        headers: {
+          'X-User-Role': user?.role || 'company',
+          'X-User-Email': user?.email || '',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ section: activeSection, force: false }),
+      }).catch(() => {})
+    }
+  }, [activeSection, cycleId, data?.submission_id, user?.email, user?.role])
 
   const handleFieldUpdate = async (fieldKey, value, confidenceLevel, explanation = '') => {
     try {
@@ -110,6 +170,12 @@ export default function CompanySubmissionPage() {
       return acc
     }, {})
   }, [data])
+
+  const activeSectionOwner = useMemo(() => {
+    const items = Array.isArray(collaboration?.active_sections) ? collaboration.active_sections : []
+    return items.find((item) => item.section === activeSection) || null
+  }, [activeSection, collaboration?.active_sections])
+  const editingBlocked = Boolean(activeSectionOwner && !activeSectionOwner.is_you)
 
   if (cycleLoading || (loading && Boolean(cycleId))) {
     return (
@@ -203,6 +269,12 @@ export default function CompanySubmissionPage() {
         )}
       </SectionCard>
 
+      <CollaborationPanel
+        collaboration={collaboration}
+        activeSection={activeSection}
+        conflictMessage={collaborationMessage}
+      />
+
       {Object.entries(groupedFields).map(([subsection, fields]) => (
         <SectionCard
           key={subsection}
@@ -211,11 +283,25 @@ export default function CompanySubmissionPage() {
         >
           <div className="space-y-5">
             {fields.map((field) => (
-              <FieldEntry key={field.field_key} field={field} onUpdate={handleFieldUpdate} saving={saving} />
+              <FieldEntry
+                key={field.field_key}
+                field={field}
+                onUpdate={handleFieldUpdate}
+                saving={saving}
+                editingBlocked={editingBlocked}
+              />
             ))}
           </div>
         </SectionCard>
       ))}
+
+      <ActivityFeedCard
+        user={user}
+        title="Submission Activity Feed"
+        subtitle="Recent edits, submissions, unlocks, and review milestones"
+        companyId={data.company_id}
+        submissionId={data.submission_id}
+      />
 
       <div className="sticky bottom-0 z-10 col-span-1 rounded-xl border border-gray-200 bg-white/95 p-4 shadow-sm backdrop-blur lg:col-span-full">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -249,7 +335,7 @@ export default function CompanySubmissionPage() {
   )
 }
 
-function FieldEntry({ field, onUpdate, saving }) {
+function FieldEntry({ field, onUpdate, saving, editingBlocked = false }) {
   const [value, setValue] = useState(field.value ?? '')
   const [confidence, setConfidence] = useState(field.confidence_level || 'Estimated')
   const [explanation, setExplanation] = useState(field.explanation || '')
@@ -323,10 +409,10 @@ function FieldEntry({ field, onUpdate, saving }) {
         <div className="flex items-end">
           <Button
             onClick={handleSave}
-            disabled={saving || field.read_only}
+            disabled={saving || field.read_only || editingBlocked}
             className="w-full rounded-lg bg-blue-600 px-4 py-2 ui-text-strong text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-400"
           >
-            {field.read_only ? 'Read Only' : saving ? 'Saving...' : 'Save'}
+            {field.read_only ? 'Read Only' : editingBlocked ? 'Claimed by teammate' : saving ? 'Saving...' : 'Save'}
           </Button>
         </div>
       </div>

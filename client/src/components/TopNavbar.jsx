@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useExperience } from '../contexts/ExperienceContext'
+import { useOptionalLiveUpdates } from '../contexts/LiveUpdatesContext'
 import { API_BASE_URL } from '../lib/api'
 import { Button } from './ui'
 
@@ -32,18 +33,24 @@ function SearchResult({ result, onSelect }) {
 
 export default function TopNavbar({ title, user, onLogout, onMenuToggle }) {
   const navigate = useNavigate()
-  const { appearance, brandId, activeBrand, brandOptions, setBrandId, toggleAppearance } = useExperience()
+  const { appearance, activeBrand, toggleAppearance } = useExperience()
   const [query, setQuery] = useState('')
   const [results, setResults] = useState([])
   const [searchOpen, setSearchOpen] = useState(false)
   const [searchLoading, setSearchLoading] = useState(false)
   const [searchError, setSearchError] = useState('')
+  const [notificationsOpen, setNotificationsOpen] = useState(false)
   const searchRef = useRef(null)
+  const notificationsRef = useRef(null)
+  const liveUpdates = useOptionalLiveUpdates()
 
   useEffect(() => {
     const handleOutsideClick = (event) => {
       if (searchRef.current && !searchRef.current.contains(event.target)) {
         setSearchOpen(false)
+      }
+      if (notificationsRef.current && !notificationsRef.current.contains(event.target)) {
+        setNotificationsOpen(false)
       }
     }
 
@@ -116,6 +123,22 @@ export default function TopNavbar({ title, user, onLogout, onMenuToggle }) {
     navigate(nextPath)
   }
 
+  const handleNotificationsToggle = () => {
+    const nextOpen = !notificationsOpen
+    setNotificationsOpen(nextOpen)
+    if (nextOpen) {
+      liveUpdates?.markNotificationsRead?.()
+    }
+  }
+
+  const connectionLabel = {
+    connected: 'Live',
+    connecting: 'Connecting',
+    disconnected: 'Reconnecting',
+    error: 'Offline',
+    idle: 'Idle',
+  }[liveUpdates?.connectionState || 'idle']
+
   return (
     <header className="top-navbar">
       <div className="brand-block">
@@ -137,21 +160,6 @@ export default function TopNavbar({ title, user, onLogout, onMenuToggle }) {
 
       <div className="top-actions">
         <div className="experience-controls">
-          <label className="brand-select-wrap" htmlFor="brand-select">
-            <span>Brand</span>
-            <select
-              id="brand-select"
-              value={brandId}
-              onChange={(event) => setBrandId(event.target.value)}
-            >
-              {brandOptions.map((brand) => (
-                <option key={brand.id} value={brand.id}>
-                  {brand.label}
-                </option>
-              ))}
-            </select>
-          </label>
-
           <Button
             variant="secondary"
             type="button"
@@ -190,10 +198,52 @@ export default function TopNavbar({ title, user, onLogout, onMenuToggle }) {
           ) : null}
         </div>
 
-        <Button variant="secondary" className="ui-icon-button" type="button" aria-label="Notifications">
-          N
-          <span className="dot" />
-        </Button>
+        <div className="relative" ref={notificationsRef}>
+          <Button
+            variant="secondary"
+            className="ui-icon-button"
+            type="button"
+            aria-label="Notifications"
+            onClick={handleNotificationsToggle}
+          >
+            N
+            <span className={`dot ${liveUpdates?.unreadCount ? 'opacity-100' : 'opacity-0'}`} />
+          </Button>
+
+          {notificationsOpen ? (
+            <div className="absolute right-0 top-14 z-50 w-[min(420px,calc(100vw-2rem))] rounded-3xl border border-slate-200 bg-white p-4 shadow-2xl">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm ui-text-strong text-[color:var(--ui-text-strong)]">Activity Feed</p>
+                  <p className="text-xs uppercase tracking-wide text-slate-500">{connectionLabel}</p>
+                </div>
+                <span className="rounded-full bg-slate-100 px-3 py-1 text-xs ui-text-strong text-slate-600">
+                  {liveUpdates?.recentEvents?.length || 0} recent
+                </span>
+              </div>
+
+              <div className="mt-4 max-h-[420px] space-y-3 overflow-y-auto pr-1">
+                {(liveUpdates?.recentEvents || []).length ? (
+                  liveUpdates.recentEvents.map((item) => (
+                    <article key={item.id} className="rounded-2xl border border-slate-200 bg-slate-50/80 px-4 py-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm ui-text-strong text-[color:var(--ui-text-strong)]">{item.title}</p>
+                          <p className="mt-1 text-sm text-[color:var(--ui-text)]">{item.message}</p>
+                        </div>
+                        <span className="text-xs uppercase tracking-wide text-slate-500">
+                          {new Date(item.created_at || Date.now()).toLocaleTimeString()}
+                        </span>
+                      </div>
+                    </article>
+                  ))
+                ) : (
+                  <p className="text-sm text-slate-500">No live events yet.</p>
+                )}
+              </div>
+            </div>
+          ) : null}
+        </div>
 
         <div className="profile-pill">
           <span className="avatar">{(user?.name || 'A').slice(0, 1).toUpperCase()}</span>

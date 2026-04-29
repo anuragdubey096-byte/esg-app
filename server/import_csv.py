@@ -8,10 +8,20 @@ from sqlalchemy import inspect
 from database import SessionLocal, engine
 from models import (
     Base,
+    ActivityEvent,
+    ActionPlan,
     CollectionCycle,
     Company,
+    NarrativeSummary,
+    NewsletterDispatchLog,
+    ReminderLog,
+    SubmissionCollaborationSession,
+    SubmissionDataField,
     Submission,
+    SubmissionUnlock,
+    SupportingDocument,
     User,
+    ValidationError,
     ReviewAction,
     ValidationFlag,
 )
@@ -115,8 +125,19 @@ def ensure_required_files(data_dir: Path):
 
 
 def clear_database(db):
+    # Delete in dependency-safe order to keep fixture reload deterministic.
+    db.query(SubmissionCollaborationSession).delete()
+    db.query(ActivityEvent).delete()
+    db.query(NewsletterDispatchLog).delete()
+    db.query(SupportingDocument).delete()
+    db.query(ValidationError).delete()
+    db.query(SubmissionDataField).delete()
+    db.query(SubmissionUnlock).delete()
+    db.query(ReminderLog).delete()
+    db.query(NarrativeSummary).delete()
     db.query(ReviewAction).delete()
     db.query(ValidationFlag).delete()
+    db.query(ActionPlan).delete()
     db.query(Submission).delete()
     db.query(CollectionCycle).delete()
     db.query(Company).delete()

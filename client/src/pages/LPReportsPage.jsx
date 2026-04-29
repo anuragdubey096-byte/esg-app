@@ -1,8 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
+import ActivityFeedCard from '../components/ActivityFeedCard'
+import AnomalySummaryCard from '../components/AnomalySummaryCard'
+import ExternalContextFeedCard from '../components/ExternalContextFeedCard'
+import ImpactStoryCard from '../components/ImpactStoryCard'
 import NarrativeSummaryCard from '../components/NarrativeSummaryCard'
 import SectionCard from '../components/SectionCard'
 import { Button } from '../components/ui'
+import { useOptionalLiveUpdates } from '../contexts/LiveUpdatesContext'
 import useNarrativeSummary from '../hooks/useNarrativeSummary'
 import { API_BASE_URL } from '../lib/api'
 import { DEFAULT_REPORT_VIEW, resolveReportFrameworkId } from '../lib/portalOptions'
@@ -20,6 +25,7 @@ export default function LPReportsPage() {
   const [selectedYear, setSelectedYear] = useState(null)
   const [message, setMessage] = useState('')
   const [download, setDownload] = useState(null)
+  const liveUpdates = useOptionalLiveUpdates()
   const narrative = useNarrativeSummary({
     user,
     audience: 'lp',
@@ -55,7 +61,12 @@ export default function LPReportsPage() {
     }
 
     fetchReportsData()
-  }, [user])
+  }, [liveUpdates?.lastEvent?.id, user])
+
+  useEffect(() => {
+    if (!liveUpdates?.lastEvent) return
+    narrative.refresh()
+  }, [liveUpdates?.lastEvent?.id, narrative.refresh])
 
   const availableReports = data?.available_reports || []
   const historicalArchive = data?.historical_archive || {}
@@ -187,11 +198,16 @@ export default function LPReportsPage() {
             <p className="text-sm text-[color:var(--ui-text)]">
               {download.narrative_included
                 ? `Narrative insert attached: ${download.narrative_headline || 'Approved narrative'}`
-                : 'No narrative insert was attached to this export.'}
+                : `${download.narrative_status_label || 'No approved narrative'}: ${download.narrative_status_reason || 'No narrative insert was attached to this export.'}`}
             </p>
             {download.impact_headline ? (
               <p className="text-sm text-[color:var(--ui-text)]">
                 Impact focus: {download.impact_headline}
+              </p>
+            ) : null}
+            {download.trend_summary ? (
+              <p className="text-sm text-[color:var(--ui-text)]">
+                {download.trend_summary}
               </p>
             ) : null}
             {Array.isArray(download.context_summary) && download.context_summary.length ? (
@@ -236,6 +252,32 @@ export default function LPReportsPage() {
             ) : null}
           </div>
         </SectionCard>
+      ) : null}
+
+      {download?.impact_story ? (
+        <ImpactStoryCard
+          title="Investor Impact Package"
+          subtitle="The intelligence block returned with the latest generated export"
+          story={download.impact_story}
+          maxInsights={4}
+        />
+      ) : null}
+
+      {download?.anomaly_summary ? (
+        <AnomalySummaryCard
+          title="Investor Anomaly Package"
+          subtitle="Approved-data anomaly screening returned with the latest export"
+          data={download.anomaly_summary}
+          maxItems={4}
+        />
+      ) : null}
+
+      {Array.isArray(download?.external_context_items) && download.external_context_items.length ? (
+        <ExternalContextFeedCard
+          title="Investor Context Package"
+          subtitle="Sector and regulatory context included with the latest export"
+          data={{ items: download.external_context_items }}
+        />
       ) : null}
 
       <SectionCard title="Historical Archives" subtitle="Generated files grouped by year">
@@ -295,6 +337,12 @@ export default function LPReportsPage() {
           {message}
         </div>
       ) : null}
+
+      <ActivityFeedCard
+        user={user}
+        title="Investor Activity Feed"
+        subtitle="Live portfolio events that can change report readiness and export context"
+      />
     </div>
   )
 }

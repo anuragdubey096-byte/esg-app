@@ -13,6 +13,7 @@ import CompanySubmissionReviewPage from './pages/CompanySubmissionReviewPage'
 import CompanyActionPlansPage from './pages/CompanyActionPlansPage'
 import CompanyHistoricalDataPage from './pages/CompanyHistoricalDataPage'
 import { ExperienceProvider } from './contexts/ExperienceContext'
+import { LiveUpdatesProvider } from './contexts/LiveUpdatesContext'
 
 export default function App() {
   const [user, setUser] = useState(null)
@@ -22,41 +23,43 @@ export default function App() {
 
   return (
     <ExperienceProvider>
-      {!user ? (
-        <LoginPage onLogin={setUser} />
-      ) : !isLP && !isCompany ? (
-        <Dashboard user={user} onLogout={() => setUser(null)} />
-      ) : (
-        <BrowserRouter>
-          <ScrollToTop />
-          <Routes>
-            {/* LP (Limited Partner) Routes */}
-            {isLP && (
-              <Route path="/" element={<LPLayout user={user} onLogout={() => setUser(null)} />}>
-                <Route index element={<Navigate to="/lp/dashboard" replace />} />
-                <Route path="lp/dashboard" element={<LPDashboardPage />} />
-                <Route path="lp/metrics" element={<LPMetricsPage />} />
-                <Route path="lp/reports" element={<LPReportsPage />} />
-                <Route path="*" element={<Navigate to="/lp/dashboard" replace />} />
-              </Route>
-            )}
+      <LiveUpdatesProvider user={user}>
+        {!user ? (
+          <LoginPage onLogin={setUser} />
+        ) : !isLP && !isCompany ? (
+          <Dashboard user={user} onLogout={() => setUser(null)} />
+        ) : (
+          <BrowserRouter>
+            <ScrollToTop />
+            <Routes>
+              {/* LP (Limited Partner) Routes */}
+              {isLP && (
+                <Route path="/" element={<LPLayout user={user} onLogout={() => setUser(null)} />}>
+                  <Route index element={<Navigate to="/lp/dashboard" replace />} />
+                  <Route path="lp/dashboard" element={<LPDashboardPage />} />
+                  <Route path="lp/metrics" element={<LPMetricsPage />} />
+                  <Route path="lp/reports" element={<LPReportsPage />} />
+                  <Route path="*" element={<Navigate to="/lp/dashboard" replace />} />
+                </Route>
+              )}
 
-            {/* Company (Portfolio Company) Routes */}
-            {isCompany && (
-              <Route path="/" element={<CompanyLayout user={user} onLogout={() => setUser(null)} />}>
-                <Route index element={<Navigate to="/company/dashboard" replace />} />
-                <Route path="company/dashboard" element={<CompanyDashboardPage />} />
-                <Route path="company/submission" element={<CompanySubmissionPage />} />
-                <Route path="company/submission/review" element={<CompanySubmissionReviewPage />} />
-                <Route path="company/action-plans" element={<CompanyActionPlansPage />} />
-                <Route path="company/historical" element={<CompanyHistoricalDataPage />} />
-                <Route path="*" element={<Navigate to="/company/dashboard" replace />} />
-              </Route>
-            )}
+              {/* Company (Portfolio Company) Routes */}
+              {isCompany && (
+                <Route path="/" element={<CompanyLayout user={user} onLogout={() => setUser(null)} />}>
+                  <Route index element={<Navigate to="/company/dashboard" replace />} />
+                  <Route path="company/dashboard" element={<CompanyDashboardPage />} />
+                  <Route path="company/submission" element={<CompanySubmissionPage />} />
+                  <Route path="company/submission/review" element={<CompanySubmissionReviewPage />} />
+                  <Route path="company/action-plans" element={<CompanyActionPlansPage />} />
+                  <Route path="company/historical" element={<CompanyHistoricalDataPage />} />
+                  <Route path="*" element={<Navigate to="/company/dashboard" replace />} />
+                </Route>
+              )}
 
-          </Routes>
-        </BrowserRouter>
-      )}
+            </Routes>
+          </BrowserRouter>
+        )}
+      </LiveUpdatesProvider>
     </ExperienceProvider>
   )
 }

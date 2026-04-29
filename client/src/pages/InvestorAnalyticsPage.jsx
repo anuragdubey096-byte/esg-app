@@ -12,11 +12,16 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
+import ActivityFeedCard from '../components/ActivityFeedCard'
+import AnomalySummaryCard from '../components/AnomalySummaryCard'
+import ExternalContextFeedCard from '../components/ExternalContextFeedCard'
 import ImpactStoryCard from '../components/ImpactStoryCard'
 import KpiCard from '../components/KpiCard'
 import SectionCard from '../components/SectionCard'
 import { CHART_COLORS, STATUS_COLORS } from '../lib/foundation'
+import useAnomalySummary from '../hooks/useAnomalySummary'
 import useDashboardData from '../hooks/useDashboardData'
+import useExternalContextFeed from '../hooks/useExternalContextFeed'
 
 function formatTrend(value) {
   if (value == null) return 'n/a'
@@ -26,6 +31,8 @@ function formatTrend(value) {
 export default function InvestorAnalyticsPage() {
   const { user } = useOutletContext()
   const { summary, loading, error } = useDashboardData(user)
+  const anomalySummary = useAnomalySummary({ user, enabled: Boolean(user) })
+  const externalContext = useExternalContextFeed({ user, enabled: Boolean(user), limit: 4 })
 
   const analytics = summary || {}
   const scoreBreakdown = analytics.score_breakdown || { E: 0, S: 0, G: 0 }
@@ -144,6 +151,23 @@ export default function InvestorAnalyticsPage() {
         maxInsights={4}
       />
 
+      <AnomalySummaryCard
+        title="Investor Anomaly Watchlist"
+        subtitle="Portfolio-level approved-data anomalies surfaced for investor review"
+        data={anomalySummary.data}
+        loading={anomalySummary.loading}
+        error={anomalySummary.error}
+        maxItems={4}
+      />
+
+      <ExternalContextFeedCard
+        title="Sector & Regulatory Feed"
+        subtitle="External context most relevant to investor-facing portfolio review"
+        data={externalContext.data}
+        loading={externalContext.loading}
+        error={externalContext.error}
+      />
+
       <section className="two-col-grid">
         <SectionCard title="Submission Funnel" subtitle="Portfolio reporting lifecycle">
           <div className="chart-wrap">
@@ -217,6 +241,12 @@ export default function InvestorAnalyticsPage() {
           </div>
         </SectionCard>
       </section>
+
+      <ActivityFeedCard
+        user={user}
+        title="Investor Activity Feed"
+        subtitle="Live portfolio workflow events surfaced for investor users"
+      />
     </div>
   )
 }

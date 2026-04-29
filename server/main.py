@@ -3,10 +3,12 @@ import io
 import json
 import hashlib
 import html as html_lib
+import asyncio
 import os
 import re
 import smtplib
 import time
+import threading
 import zipfile
 from difflib import SequenceMatcher
 from datetime import date, datetime, timedelta, timezone
@@ -15,7 +17,7 @@ from urllib.parse import quote_plus
 from email.message import EmailMessage
 from xml.etree import ElementTree as ET
 from typing import Any, Dict, List, Optional, Tuple
-from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Header, Query
+from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Header, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, text, inspect
@@ -57,6 +59,8 @@ from models import (
     SupportingDocument,
     ValidationError,
     NewsletterDispatchLog,
+    ActivityEvent,
+    SubmissionCollaborationSession,
 )
 from schemas import (
     ActionPlanCreateRequest,
@@ -83,7 +87,18 @@ from schemas import (
     SubmissionUnlockInfo,
     ReminderRequest,
     ReminderInfo,
+    ActivityEventResponse,
+    ActivityFeedResponse,
+    ExternalContextItemResponse,
+    ExternalContextFeedResponse,
+    AnomalyItemResponse,
+    AnomalySummaryResponse,
+    CollaborationClaimRequest,
+    CollaborationReleaseRequest,
+    CollaborationSessionResponse,
+    SubmissionCollaborationResponse,
     ReportExportResponse,
+    ReportPreviewResponse,
     NewsletterGenerateRequest,
     NewsletterExportResponse,
     NewsletterSendResponse,
@@ -118,13 +133,33 @@ from schemas import (
 )
 from new_esg_module import router as new_esg_router
 from storage import ensure_local_export_dir, is_blob_storage_enabled, list_export_artifacts, save_export_artifact
+from non_prod_guard import build_non_prod_company_clause
 
 load_local_env()
 
 BASE_DIR = Path(__file__).resolve().parent
 EXPORT_DIR = ensure_local_export_dir() if not is_blob_storage_enabled() else BASE_DIR / 'exports'
+STARTUP_STATUS = {
+    'completed': False,
+    'error': None,
+    'completed_at': None,
+    'duration_ms': None,
+    'steps': [],
+    'maintenance': {
+        'status': 'not_started',
+        'completed_at': None,
+        'error': None,
+        'duration_ms': None,
+        'steps': [],
+    },
+}
 
 ALLOWED_REPORT_TYPES = {'edci', 'sfdr'}
+NARRATIVE_STATE_LABELS = {
+    'current': 'Current narrative',
+    'stale': 'Stale narrative',
+    'missing': 'No approved narrative',
+}
 ALLOWED_CYCLE_STATUSES = {'draft', 'active', 'closed'}
 ALLOWED_REVIEW_STATUSES = {'submitted', 'under review', 'approved', 'rejected', 'resubmission requested'}
 ALLOWED_REVIEW_TRANSITIONS = {
@@ -151,11 +186,105 @@ NARRATIVE_TONE_LABELS = {
     'exec-summary': 'Executive summary',
 }
 OPENAI_DEFAULT_MODEL = os.getenv('OPENAI_MODEL', 'gpt-4o-mini')
-ANALYTICS_CACHE_TTL_SECONDS = 20
+ANALYTICS_CACHE_TTL_SECONDS = max(10, int(os.getenv('ANALYTICS_CACHE_TTL_SECONDS', '60') or '60'))
+EXCLUDE_NON_PROD_UI_ENTITIES = str(os.getenv('EXCLUDE_NON_PROD_UI_ENTITIES', '1')).strip().lower() not in {'0', 'false', 'no'}
+COLLABORATION_TTL_SECONDS = 90
+MIN_REPORTING_CYCLE_YEAR = int(os.getenv('MIN_REPORTING_CYCLE_YEAR', '2000') or '2000')
+MAX_REPORTING_CYCLE_YEARS_AHEAD = int(os.getenv('MAX_REPORTING_CYCLE_YEARS_AHEAD', '10') or '10')
 
 CONFIDENCE_OPTIONS = ['High', 'Medium', 'Low', 'Estimated', 'Not Available', 'Measured']
 POLICY_STATUS_OPTIONS = ['Yes', 'No', 'In Progress', 'Not Applicable']
 _TIMED_COMPUTE_CACHE: Dict[str, dict] = {}
+
+EXTERNAL_CONTEXT_REGULATORY_TEMPLATES: List[Dict[str, Any]] = [
+    {
+        'id': 'climate_disclosure',
+        'title': 'Climate disclosure expectations are tightening across institutional reporting',
+        'summary': 'Disclosure scrutiny is rising around emissions baselines, transition plans, and evidence-backed narrative claims.',
+        'priority': 'high',
+        'geography': 'Global',
+        'related_topics': ['climate disclosure', 'transition planning', 'assurance'],
+        'impact_hint': 'Weak evidence trails and stale emissions narratives are more likely to be challenged.',
+        'action_prompt': 'Refresh approved-data disclosures and confirm that report inserts still match the latest reporting year.',
+    },
+    {
+        'id': 'supply_chain_due_diligence',
+        'title': 'Supply-chain and human-rights due diligence remain active board topics',
+        'summary': 'Portfolio companies are increasingly expected to show how labour, supplier, and governance controls are documented and monitored.',
+        'priority': 'medium',
+        'geography': 'Global',
+        'related_topics': ['human rights', 'supplier risk', 'policy controls'],
+        'impact_hint': 'Missing policy evidence or weak oversight can create avoidable diligence friction.',
+        'action_prompt': 'Confirm policy references, board oversight, and follow-up actions are visible in the latest approved submission.',
+    },
+    {
+        'id': 'greenwashing_controls',
+        'title': 'Anti-greenwashing risk is pushing teams toward evidence-backed ESG claims',
+        'summary': 'Narratives, investor updates, and dashboard callouts need stronger alignment with approved underlying data and benchmark context.',
+        'priority': 'high',
+        'geography': 'Global',
+        'related_topics': ['greenwashing', 'marketing claims', 'investor communications'],
+        'impact_hint': 'Overstated progress claims can create reputational and regulatory risk.',
+        'action_prompt': 'Use approved data only in newsletters, reports, and investor updates, and keep benchmark explanations concise and auditable.',
+    },
+    {
+        'id': 'cyber_governance',
+        'title': 'Cyber governance is staying inside the ESG and risk conversation',
+        'summary': 'Boards and investors increasingly expect cyber incidents, policy coverage, and oversight to sit inside the same reporting discussion as other governance controls.',
+        'priority': 'medium',
+        'geography': 'Global',
+        'related_topics': ['cybersecurity', 'board oversight', 'governance'],
+        'impact_hint': 'A cyber policy gap or incident without clear governance response can stand out quickly.',
+        'action_prompt': 'Check cybersecurity policy coverage, incident counts, and board oversight before the next portfolio update.',
+    },
+]
+
+EXTERNAL_CONTEXT_SECTOR_TEMPLATES: Dict[str, List[Dict[str, Any]]] = {
+    'technology': [
+        {
+            'id': 'tech_energy_intensity',
+            'title': 'Technology operators are under growing pressure to explain energy intensity',
+            'summary': 'Investors increasingly want clearer context on electricity demand, renewable sourcing, and the operational footprint behind digital growth.',
+            'priority': 'medium',
+            'related_topics': ['energy use', 'renewables', 'digital infrastructure'],
+            'impact_hint': 'Energy growth without a matching renewable plan can become a watchlist topic quickly.',
+            'action_prompt': 'Highlight electricity trends, renewable uptake, and any active decarbonization actions in the next update.',
+        },
+    ],
+    'consumer goods': [
+        {
+            'id': 'consumer_packaging_supply_chain',
+            'title': 'Consumer goods reporting is leaning harder into packaging, suppliers, and workforce signals',
+            'summary': 'Teams are being asked for clearer proof of waste diversion, supplier oversight, and workforce stability in addition to core emissions numbers.',
+            'priority': 'medium',
+            'related_topics': ['waste diversion', 'suppliers', 'workforce'],
+            'impact_hint': 'Packaging and labour questions often surface together during investor diligence.',
+            'action_prompt': 'Bring waste, supplier, and workforce trends into the same board-ready summary instead of treating them as separate follow-ups.',
+        },
+    ],
+    'renewable energy': [
+        {
+            'id': 'renewable_execution',
+            'title': 'Renewable-energy businesses are still being asked to prove operational resilience, not just climate alignment',
+            'summary': 'Safety execution, governance controls, and delivery discipline remain important even when the sector narrative is already climate-positive.',
+            'priority': 'high',
+            'related_topics': ['operational resilience', 'safety', 'governance'],
+            'impact_hint': 'A climate-positive sector does not offset weak safety or governance execution.',
+            'action_prompt': 'Balance the emissions story with safety, oversight, and execution quality in the next report or investor note.',
+        },
+    ],
+    'testing': [
+        {
+            'id': 'testing_data_quality',
+            'title': 'Testing and service-heavy businesses are being judged on data quality as much as emissions scale',
+            'summary': 'Measured confidence, stable year-on-year fields, and evidence-backed policy references matter when physical emissions are relatively low.',
+            'priority': 'medium',
+            'related_topics': ['data quality', 'assurance', 'policy evidence'],
+            'impact_hint': 'Low-impact sectors still need high-trust reporting discipline.',
+            'action_prompt': 'Use measured confidence and document references to strengthen comparability in the next cycle.',
+        },
+    ],
+}
 
 # Legacy field aliases -> canonical keys (for old drafts/backward compatibility)
 LEGACY_FIELD_ALIASES = {
@@ -790,9 +919,6 @@ app.add_middleware(
     allow_headers=['*'],
 )
 
-# Create database tables automatically when the app starts.
-Base.metadata.create_all(bind=engine)
-
 # A helper to get a database session inside path operations.
 def get_db():
     db = SessionLocal()
@@ -895,7 +1021,211 @@ def find_request_user(db: Session, email: str | None) -> User | None:
     return None
 
 
-def table_has_column(db: Session, table_name: str, column_name: str) -> bool:
+def find_company_for_user(db: Session, user: User | None) -> Company | None:
+    if not user:
+        return None
+    return db.query(Company).filter(Company.user_id == user.id).first()
+
+
+def cleanup_expired_collaboration_sessions(db: Session):
+    now = datetime.utcnow()
+    sessions = (
+        db.query(SubmissionCollaborationSession)
+        .filter(
+            SubmissionCollaborationSession.status == 'active',
+            SubmissionCollaborationSession.expires_at <= now,
+        )
+        .all()
+    )
+    if not sessions:
+        return
+    for session in sessions:
+        session.status = 'released'
+        session.release_reason = session.release_reason or 'expired'
+        session.updated_at = now
+    db.commit()
+
+
+def _serialize_activity_event(record: ActivityEvent) -> ActivityEventResponse:
+    company_name = None
+    if getattr(record, 'company', None) is not None:
+        company_name = record.company.name
+    metadata = parse_json_or_default(record.metadata_json, {})
+    return ActivityEventResponse(
+        id=record.id,
+        event_type=record.event_type,
+        title=record.title,
+        message=record.message,
+        severity=record.severity or 'info',
+        actor_role=record.actor_role,
+        actor_email=record.actor_email,
+        company_id=record.company_id,
+        company_name=company_name,
+        submission_id=record.submission_id,
+        cycle_id=record.cycle_id,
+        entity_status=record.entity_status,
+        is_toast=bool(record.is_toast),
+        visible_to_investors=bool(record.visible_to_investors),
+        metadata=metadata if isinstance(metadata, dict) else {},
+        created_at=record.created_at.isoformat() if record.created_at else datetime.utcnow().isoformat(),
+    )
+
+
+def _serialize_collaboration_session(
+    session: SubmissionCollaborationSession,
+    *,
+    viewer_email: str | None,
+) -> CollaborationSessionResponse:
+    normalized_viewer_email = (viewer_email or '').strip().lower()
+    owner_email = (session.owner_email or '').strip().lower()
+    return CollaborationSessionResponse(
+        id=session.id,
+        submission_id=session.submission_id,
+        company_id=session.company_id,
+        cycle_id=session.cycle_id,
+        section=session.section,
+        owner_role=session.owner_role,
+        owner_email=session.owner_email,
+        owner_name=session.owner_name,
+        status=session.status,
+        lock_mode=session.lock_mode or 'soft',
+        is_you=bool(normalized_viewer_email and normalized_viewer_email == owner_email),
+        expires_at=session.expires_at.isoformat(),
+        last_seen_at=session.last_seen_at.isoformat(),
+        created_at=session.created_at.isoformat(),
+        updated_at=session.updated_at.isoformat(),
+    )
+
+
+def _viewer_company_id_for_live_access(db: Session, *, role: str, email: str | None) -> Optional[int]:
+    if role != 'company':
+        return None
+    user = find_request_user(db, email)
+    company = find_company_for_user(db, user)
+    return company.id if company else None
+
+
+def _activity_event_visible_to_role(
+    record: ActivityEvent,
+    *,
+    role: str,
+    viewer_email: str | None,
+    viewer_company_id: Optional[int],
+) -> bool:
+    normalized_role = normalize_role(role)
+    if normalized_role == 'manager':
+        return True
+    if normalized_role == 'investor':
+        return bool(record.visible_to_investors)
+    if normalized_role == 'company':
+        if viewer_company_id is None:
+            return False
+        return record.company_id == viewer_company_id
+    return False
+
+
+def _build_submission_collaboration(
+    db: Session,
+    *,
+    submission: Submission,
+    viewer_role: str,
+    viewer_email: str | None,
+) -> SubmissionCollaborationResponse:
+    cleanup_expired_collaboration_sessions(db)
+    sessions = (
+        db.query(SubmissionCollaborationSession)
+        .filter(
+            SubmissionCollaborationSession.submission_id == submission.id,
+            SubmissionCollaborationSession.status == 'active',
+        )
+        .order_by(SubmissionCollaborationSession.section.asc(), SubmissionCollaborationSession.updated_at.desc())
+        .all()
+    )
+
+    deduped_by_section: Dict[str, SubmissionCollaborationSession] = {}
+    for session in sessions:
+        deduped_by_section.setdefault(session.section, session)
+
+    active_sections = [
+        _serialize_collaboration_session(session, viewer_email=viewer_email)
+        for session in deduped_by_section.values()
+    ]
+    current_user_sections = [item.section for item in active_sections if item.is_you]
+    return SubmissionCollaborationResponse(
+        submission_id=submission.id,
+        company_id=submission.company_id,
+        cycle_id=submission.cycle_id or 0,
+        lock_mode='soft',
+        active_sections=active_sections,
+        current_user_sections=current_user_sections,
+        viewer_role=normalize_role(viewer_role),
+        viewer_email=viewer_email,
+    )
+
+
+def _queue_activity_event(
+    db: Session,
+    *,
+    event_type: str,
+    title: str,
+    message: str,
+    severity: str = 'info',
+    actor_role: str | None = None,
+    actor_email: str | None = None,
+    company: Company | None = None,
+    submission: Submission | None = None,
+    cycle: CollectionCycle | None = None,
+    entity_status: str | None = None,
+    is_toast: bool = True,
+    visible_to_investors: bool = False,
+    metadata: Dict[str, Any] | None = None,
+) -> ActivityEvent:
+    record = ActivityEvent(
+        event_type=event_type,
+        title=title,
+        message=message,
+        severity=severity,
+        actor_role=normalize_role(actor_role),
+        actor_email=(actor_email or '').strip().lower() or None,
+        company_id=company.id if company else (submission.company_id if submission else None),
+        submission_id=submission.id if submission else None,
+        cycle_id=cycle.id if cycle else (submission.cycle_id if submission else None),
+        entity_status=entity_status,
+        is_toast=is_toast,
+        visible_to_investors=visible_to_investors,
+        metadata_json=json.dumps(metadata or {}),
+    )
+    db.add(record)
+    db.flush()
+    return record
+
+
+def _load_table_columns_map(db: Session, target_tables: Optional[List[str]] = None) -> Dict[str, set[str]]:
+    bind = db.get_bind() or engine
+    inspector = inspect(bind)
+    table_names = set(inspector.get_table_names())
+    if target_tables is None:
+        target_tables = sorted(table_names)
+    columns_by_table: Dict[str, set[str]] = {}
+    for table_name in target_tables:
+        if table_name not in table_names:
+            continue
+        columns_by_table[table_name] = {column.get('name') for column in inspector.get_columns(table_name)}
+    return columns_by_table
+
+
+def _mark_table_column(columns_by_table: Dict[str, set[str]], table_name: str, column_name: str):
+    columns_by_table.setdefault(table_name, set()).add(column_name)
+
+
+def table_has_column(
+    db: Session,
+    table_name: str,
+    column_name: str,
+    columns_by_table: Optional[Dict[str, set[str]]] = None,
+) -> bool:
+    if columns_by_table is not None:
+        return column_name in columns_by_table.get(table_name, set())
     bind = db.get_bind() or engine
     inspector = inspect(bind)
     if table_name not in inspector.get_table_names():
@@ -903,62 +1233,156 @@ def table_has_column(db: Session, table_name: str, column_name: str) -> bool:
     return any(column.get('name') == column_name for column in inspector.get_columns(table_name))
 
 
-def ensure_submission_cycle_column(db: Session):
-    if table_has_column(db, 'submissions', 'cycle_id'):
+def ensure_submission_cycle_column(db: Session, columns_by_table: Optional[Dict[str, set[str]]] = None):
+    if table_has_column(db, 'submissions', 'cycle_id', columns_by_table):
         return
     db.execute(text('ALTER TABLE submissions ADD COLUMN cycle_id INTEGER'))
     db.commit()
+    if columns_by_table is not None:
+        _mark_table_column(columns_by_table, 'submissions', 'cycle_id')
 
 
-def ensure_user_lp_columns(db: Session):
-    changed = False
-    if not table_has_column(db, 'users', 'lp_type'):
-        db.execute(text('ALTER TABLE users ADD COLUMN lp_type VARCHAR'))
-        changed = True
-    if not table_has_column(db, 'users', 'company_permissions'):
-        db.execute(text('ALTER TABLE users ADD COLUMN company_permissions VARCHAR'))
-        changed = True
-    if not table_has_column(db, 'users', 'portfolio_id'):
-        db.execute(text('ALTER TABLE users ADD COLUMN portfolio_id INTEGER'))
-        changed = True
-    if changed:
-        db.commit()
+def ensure_user_lp_columns(
+    db: Session,
+    columns_by_table: Optional[Dict[str, set[str]]] = None,
+    *,
+    ensure_columns: bool = True,
+    normalize: bool = True,
+):
+    if ensure_columns:
+        changed = False
+        if not table_has_column(db, 'users', 'lp_type', columns_by_table):
+            db.execute(text('ALTER TABLE users ADD COLUMN lp_type VARCHAR'))
+            if columns_by_table is not None:
+                _mark_table_column(columns_by_table, 'users', 'lp_type')
+            changed = True
+        if not table_has_column(db, 'users', 'company_permissions', columns_by_table):
+            db.execute(text('ALTER TABLE users ADD COLUMN company_permissions VARCHAR'))
+            if columns_by_table is not None:
+                _mark_table_column(columns_by_table, 'users', 'company_permissions')
+            changed = True
+        if not table_has_column(db, 'users', 'portfolio_id', columns_by_table):
+            db.execute(text('ALTER TABLE users ADD COLUMN portfolio_id INTEGER'))
+            if columns_by_table is not None:
+                _mark_table_column(columns_by_table, 'users', 'portfolio_id')
+            changed = True
+        if changed:
+            db.commit()
 
-    db.execute(text("UPDATE users SET lp_type = 'STANDARD' WHERE lp_type IS NULL OR TRIM(lp_type) = ''"))
-    db.execute(text("UPDATE users SET lp_type = 'STANDARD' WHERE LOWER(lp_type) = 'standard'"))
-    db.execute(text("UPDATE users SET lp_type = 'AUTHORISED' WHERE LOWER(lp_type) = 'authorised'"))
-    db.execute(text("UPDATE users SET company_permissions = '[]' WHERE company_permissions IS NULL OR TRIM(company_permissions) = ''"))
+    if not normalize:
+        return
+
+    normalization_needed = db.execute(
+        text(
+            """
+            SELECT 1
+            FROM users
+            WHERE lp_type IS NULL
+               OR TRIM(CAST(lp_type AS TEXT)) = ''
+               OR LOWER(CAST(lp_type AS TEXT)) IN ('standard', 'authorised')
+               OR company_permissions IS NULL
+               OR TRIM(CAST(company_permissions AS TEXT)) = ''
+            LIMIT 1
+            """
+        )
+    ).first()
+    if not normalization_needed:
+        return
+
+    db.execute(
+        text(
+            """
+            UPDATE users
+            SET
+                lp_type = CASE
+                    WHEN lp_type IS NULL OR TRIM(CAST(lp_type AS TEXT)) = '' OR LOWER(CAST(lp_type AS TEXT)) = 'standard' THEN 'STANDARD'
+                    WHEN LOWER(CAST(lp_type AS TEXT)) = 'authorised' THEN 'AUTHORISED'
+                    ELSE lp_type
+                END,
+                company_permissions = CASE
+                    WHEN company_permissions IS NULL OR TRIM(CAST(company_permissions AS TEXT)) = '' THEN '[]'
+                    ELSE company_permissions
+                END
+            WHERE lp_type IS NULL
+               OR TRIM(CAST(lp_type AS TEXT)) = ''
+               OR LOWER(CAST(lp_type AS TEXT)) IN ('standard', 'authorised')
+               OR company_permissions IS NULL
+               OR TRIM(CAST(company_permissions AS TEXT)) = ''
+            """
+        )
+    )
     db.commit()
 
 
-def ensure_action_plan_columns(db: Session):
-    changed = False
-    if not table_has_column(db, 'action_plans', 'description'):
-        db.execute(text('ALTER TABLE action_plans ADD COLUMN description TEXT'))
-        changed = True
-    if not table_has_column(db, 'action_plans', 'linked_metric'):
-        db.execute(text('ALTER TABLE action_plans ADD COLUMN linked_metric VARCHAR'))
-        changed = True
-    if not table_has_column(db, 'action_plans', 'created_at'):
-        db.execute(text('ALTER TABLE action_plans ADD COLUMN created_at DATETIME'))
-        changed = True
-    if not table_has_column(db, 'action_plans', 'updated_at'):
-        db.execute(text('ALTER TABLE action_plans ADD COLUMN updated_at DATETIME'))
-        changed = True
-    if changed:
-        db.commit()
+def ensure_action_plan_columns(
+    db: Session,
+    columns_by_table: Optional[Dict[str, set[str]]] = None,
+    *,
+    ensure_columns: bool = True,
+    backfill_timestamps: bool = True,
+):
+    if ensure_columns:
+        changed = False
+        if not table_has_column(db, 'action_plans', 'description', columns_by_table):
+            db.execute(text('ALTER TABLE action_plans ADD COLUMN description TEXT'))
+            if columns_by_table is not None:
+                _mark_table_column(columns_by_table, 'action_plans', 'description')
+            changed = True
+        if not table_has_column(db, 'action_plans', 'linked_metric', columns_by_table):
+            db.execute(text('ALTER TABLE action_plans ADD COLUMN linked_metric VARCHAR'))
+            if columns_by_table is not None:
+                _mark_table_column(columns_by_table, 'action_plans', 'linked_metric')
+            changed = True
+        if not table_has_column(db, 'action_plans', 'created_at', columns_by_table):
+            db.execute(text('ALTER TABLE action_plans ADD COLUMN created_at DATETIME'))
+            if columns_by_table is not None:
+                _mark_table_column(columns_by_table, 'action_plans', 'created_at')
+            changed = True
+        if not table_has_column(db, 'action_plans', 'updated_at', columns_by_table):
+            db.execute(text('ALTER TABLE action_plans ADD COLUMN updated_at DATETIME'))
+            if columns_by_table is not None:
+                _mark_table_column(columns_by_table, 'action_plans', 'updated_at')
+            changed = True
+        if changed:
+            db.commit()
+
+    if not backfill_timestamps:
+        return
+
+    needs_backfill = db.execute(
+        text('SELECT 1 FROM action_plans WHERE created_at IS NULL OR updated_at IS NULL LIMIT 1')
+    ).first()
+    if not needs_backfill:
+        return
 
     now_iso = datetime.utcnow().isoformat()
-    db.execute(text("UPDATE action_plans SET created_at = :now WHERE created_at IS NULL"), {'now': now_iso})
-    db.execute(text("UPDATE action_plans SET updated_at = :now WHERE updated_at IS NULL"), {'now': now_iso})
+    db.execute(
+        text(
+            """
+            UPDATE action_plans
+            SET
+                created_at = COALESCE(created_at, :now),
+                updated_at = COALESCE(updated_at, :now)
+            WHERE created_at IS NULL OR updated_at IS NULL
+            """
+        ),
+        {'now': now_iso},
+    )
     db.commit()
 
 
-def ensure_narrative_columns(db: Session):
-    inspector = inspect(engine)
-    if 'narrative_summaries' not in inspector.get_table_names():
+def ensure_narrative_columns(db: Session, columns_by_table: Optional[Dict[str, set[str]]] = None):
+    if columns_by_table is not None:
+        if 'narrative_summaries' not in columns_by_table:
+            return
+        columns = set(columns_by_table.get('narrative_summaries', set()))
+    else:
+        inspector = inspect(engine)
+        if 'narrative_summaries' not in inspector.get_table_names():
+            return
+        columns = {column['name'] for column in inspector.get_columns('narrative_summaries')}
+    if not columns:
         return
-    columns = {column['name'] for column in inspector.get_columns('narrative_summaries')}
     statements = {
         'tone': "ALTER TABLE narrative_summaries ADD COLUMN tone VARCHAR DEFAULT 'board-ready'",
         'status': "ALTER TABLE narrative_summaries ADD COLUMN status VARCHAR DEFAULT 'generated'",
@@ -976,14 +1400,118 @@ def ensure_narrative_columns(db: Session):
     for column_name, statement in statements.items():
         if column_name not in columns:
             db.execute(text(statement))
+            if columns_by_table is not None:
+                _mark_table_column(columns_by_table, 'narrative_summaries', column_name)
             changed = True
     if changed:
         db.commit()
 
 
-def get_active_cycle(db: Session) -> CollectionCycle | None:
-    return (
+def _max_reporting_cycle_year() -> int:
+    return datetime.utcnow().year
+
+
+def _is_valid_reporting_cycle_year(year: int | None) -> bool:
+    if year is None:
+        return False
+    try:
+        year_value = int(year)
+    except (TypeError, ValueError):
+        return False
+    current_year = datetime.utcnow().year
+    return year_value in {current_year, current_year - 1}
+
+
+def _apply_valid_cycle_year_filter(query):
+    current_year = datetime.utcnow().year
+    previous_year = current_year - 1
+    return query.filter(
+        CollectionCycle.cycle_year >= previous_year,
+        CollectionCycle.cycle_year <= current_year,
+    )
+
+
+def _normalize_reporting_period(period: str | None) -> tuple[str, int]:
+    current_year = datetime.utcnow().year
+    previous_year = current_year - 1
+    normalized = str(period or '').strip().lower()
+    if normalized in {'', 'current cycle', 'current year', f'fy{current_year}', str(current_year)}:
+        return (f'FY{current_year}', current_year)
+    if normalized in {'previous year', f'fy{previous_year}', str(previous_year)}:
+        return (f'FY{previous_year}', previous_year)
+
+    match = re.search(r'fy\s*(\d{4})', normalized, flags=re.IGNORECASE)
+    if match:
+        selected_year = int(match.group(1))
+        if selected_year in {current_year, previous_year}:
+            return (f'FY{selected_year}', selected_year)
+
+    raise HTTPException(
+        status_code=422,
+        detail=f'period must be FY{current_year} (current year) or FY{previous_year} (previous year)',
+    )
+
+
+def ensure_current_previous_cycles(db: Session):
+    current_year = datetime.utcnow().year
+    previous_year = current_year - 1
+    changed = False
+
+    current_cycle = db.query(CollectionCycle).filter(CollectionCycle.cycle_year == current_year).first()
+    if not current_cycle:
+        current_cycle = CollectionCycle(
+            cycle_year=current_year,
+            submission_open_date=f'{current_year}-01-01',
+            submission_deadline=f'{current_year}-12-31',
+            extension_date=None,
+            reminder_schedule=json.dumps([30, 14, 7]),
+            template_config=json.dumps({'private_equity': '', 'real_estate': '', 'debt': ''}),
+            prefill_summary=json.dumps({'carry_forward_prefill': True, 'prefill_company_count': 0}),
+            status='active',
+            created_by_user_id=None,
+        )
+        db.add(current_cycle)
+        changed = True
+    elif normalize_cycle_status(current_cycle.status) != 'active':
+        current_cycle.status = 'active'
+        changed = True
+
+    previous_cycle = db.query(CollectionCycle).filter(CollectionCycle.cycle_year == previous_year).first()
+    if not previous_cycle:
+        previous_cycle = CollectionCycle(
+            cycle_year=previous_year,
+            submission_open_date=f'{previous_year}-01-01',
+            submission_deadline=f'{previous_year}-12-31',
+            extension_date=None,
+            reminder_schedule=json.dumps([30, 14, 7]),
+            template_config=json.dumps({'private_equity': '', 'real_estate': '', 'debt': ''}),
+            prefill_summary=json.dumps({'carry_forward_prefill': False, 'prefill_company_count': 0}),
+            status='closed',
+            created_by_user_id=None,
+        )
+        db.add(previous_cycle)
+        changed = True
+    elif normalize_cycle_status(previous_cycle.status) == 'active':
+        previous_cycle.status = 'closed'
+        changed = True
+
+    other_active_cycles = (
         db.query(CollectionCycle)
+        .filter(CollectionCycle.status == 'active', CollectionCycle.cycle_year != current_year)
+        .all()
+    )
+    for cycle in other_active_cycles:
+        cycle.status = 'draft'
+        changed = True
+
+    if changed:
+        db.commit()
+
+
+def get_active_cycle(db: Session) -> CollectionCycle | None:
+    ensure_current_previous_cycles(db)
+    return (
+        _apply_valid_cycle_year_filter(db.query(CollectionCycle))
         .filter(CollectionCycle.status == 'active')
         .order_by(CollectionCycle.cycle_year.desc())
         .first()
@@ -991,7 +1519,12 @@ def get_active_cycle(db: Session) -> CollectionCycle | None:
 
 
 def get_latest_cycle(db: Session) -> CollectionCycle | None:
-    return db.query(CollectionCycle).order_by(CollectionCycle.id.desc()).first()
+    ensure_current_previous_cycles(db)
+    return (
+        _apply_valid_cycle_year_filter(db.query(CollectionCycle))
+        .order_by(CollectionCycle.cycle_year.desc(), CollectionCycle.id.desc())
+        .first()
+    )
 
 
 def get_or_create_reserved_cycle(db: Session) -> CollectionCycle:
@@ -1021,15 +1554,33 @@ def get_or_create_reserved_cycle(db: Session) -> CollectionCycle:
 
 
 def migrate_legacy_user_roles(db: Session):
-    rows = db.execute(text('SELECT id, role FROM users')).mappings().all()
-    for row in rows:
-        normalized = normalize_role(row.get('role'))
-        enum_name = to_user_role_enum(normalized).name
-        if str(row.get('role')) != enum_name:
-            db.execute(
-                text('UPDATE users SET role = :role WHERE id = :user_id'),
-                {'role': enum_name, 'user_id': row['id']},
-            )
+    legacy_present = db.execute(
+        text(
+            """
+            SELECT 1
+            FROM users
+            WHERE LOWER(CAST(role AS TEXT)) IN ('admin', 'manager', 'managerrole', 'company', 'companyrole', 'investor')
+            LIMIT 1
+            """
+        )
+    ).first()
+    if not legacy_present:
+        return
+
+    db.execute(
+        text(
+            """
+            UPDATE users
+            SET role = CASE
+                WHEN LOWER(CAST(role AS TEXT)) IN ('admin', 'manager', 'managerrole') THEN 'MANAGER'
+                WHEN LOWER(CAST(role AS TEXT)) IN ('company', 'companyrole') THEN 'COMPANY'
+                WHEN LOWER(CAST(role AS TEXT)) = 'investor' THEN 'INVESTOR'
+                ELSE role
+            END
+            WHERE LOWER(CAST(role AS TEXT)) IN ('admin', 'manager', 'managerrole', 'company', 'companyrole', 'investor')
+            """
+        )
+    )
     db.commit()
 
 
@@ -1059,33 +1610,32 @@ def fix_cycle_statuses_and_active_conflicts(db: Session):
 
 def ensure_submission_cycle_backfill(db: Session):
     fallback_cycle = get_active_cycle(db) or get_latest_cycle(db) or get_or_create_reserved_cycle(db)
-    orphan_submissions = db.query(Submission).filter(Submission.cycle_id.is_(None)).all()
-    if orphan_submissions:
-        for submission in orphan_submissions:
-            submission.cycle_id = fallback_cycle.id
+    orphan_count = (
+        db.query(Submission)
+        .filter(Submission.cycle_id.is_(None))
+        .update({Submission.cycle_id: fallback_cycle.id}, synchronize_session=False)
+    )
+    if orphan_count:
         db.commit()
 
-    valid_cycle_ids = {cycle.id for cycle in db.query(CollectionCycle).all()}
-    changed = False
-    for submission in db.query(Submission).filter(Submission.cycle_id.is_not(None)).all():
-        if submission.cycle_id not in valid_cycle_ids:
-            submission.cycle_id = fallback_cycle.id
-            changed = True
-    if changed:
+    valid_cycle_ids = [cycle_id for (cycle_id,) in db.query(CollectionCycle.id).all()]
+    invalid_query = db.query(Submission).filter(Submission.cycle_id.is_not(None))
+    if valid_cycle_ids:
+        invalid_query = invalid_query.filter(~Submission.cycle_id.in_(valid_cycle_ids))
+    invalid_count = invalid_query.update({Submission.cycle_id: fallback_cycle.id}, synchronize_session=False)
+    if invalid_count:
         db.commit()
 
 
 def deactivate_expired_unlocks(db: Session):
     now = datetime.utcnow()
-    unlocks = (
+    updated = (
         db.query(SubmissionUnlock)
         .filter(SubmissionUnlock.active.is_(True), SubmissionUnlock.expires_at <= now)
-        .all()
+        .update({SubmissionUnlock.active: False}, synchronize_session=False)
     )
-    if not unlocks:
+    if not updated:
         return
-    for unlock in unlocks:
-        unlock.active = False
     db.commit()
 
 
@@ -1471,24 +2021,296 @@ def get_lp_accessible_company_ids(user: User) -> List[int]:
     return []
 
 
+def _env_enabled(name: str, *, default: bool) -> bool:
+    value = str(os.getenv(name) or '').strip().lower()
+    if not value:
+        return default
+    if value in {'1', 'true', 'yes', 'on'}:
+        return True
+    if value in {'0', 'false', 'no', 'off'}:
+        return False
+    return default
+
+
+def _should_seed_sample_data(db: Session) -> bool:
+    if not _env_enabled('SEED_SAMPLE_DATA_ON_STARTUP', default=True):
+        return False
+    has_user = db.query(User.id).first() is not None
+    has_company = db.query(Company.id).first() is not None
+    has_cycle = db.query(CollectionCycle.id).first() is not None
+    return not (has_user and has_company and has_cycle)
+
+
+def _core_schema_is_current(db: Session) -> bool:
+    checks = [
+        'SELECT id, role, lp_type, company_permissions, portfolio_id FROM users LIMIT 1',
+        'SELECT id, cycle_id FROM submissions LIMIT 1',
+        'SELECT id, description, linked_metric, created_at, updated_at FROM action_plans LIMIT 1',
+        'SELECT id, tone, status, framework_tags_json, generation_context_json, generated_payload_json, edited_payload_json, published_payload_json, approved_by_role, approved_at, edited_by_role, edited_at FROM narrative_summaries LIMIT 1',
+    ]
+    try:
+        for statement in checks:
+            db.execute(text(statement))
+        return True
+    except Exception:
+        return False
+
+
+def _set_startup_maintenance_status(
+    *,
+    status: str,
+    completed_at: Optional[str] = None,
+    error: Optional[str] = None,
+    duration_ms: Optional[float] = None,
+    steps: Optional[List[dict]] = None,
+):
+    STARTUP_STATUS['maintenance'] = {
+        'status': status,
+        'completed_at': completed_at,
+        'error': error,
+        'duration_ms': duration_ms,
+        'steps': steps or [],
+    }
+
+
+def _run_deferred_startup_maintenance():
+    db = SessionLocal()
+    maintenance_begin = time.perf_counter()
+    maintenance_steps: List[dict] = []
+
+    def run_step(name: str, fn):
+        step_begin = time.perf_counter()
+        fn()
+        maintenance_steps.append(
+            {
+                'name': name,
+                'duration_ms': round((time.perf_counter() - step_begin) * 1000, 2),
+            }
+        )
+
+    try:
+        run_step(
+            'schema.normalize_user_lp_columns',
+            lambda: ensure_user_lp_columns(db, ensure_columns=False, normalize=True),
+        )
+        run_step(
+            'schema.backfill_action_plan_timestamps',
+            lambda: ensure_action_plan_columns(db, ensure_columns=False, backfill_timestamps=True),
+        )
+        run_step('migrations.legacy_user_roles', lambda: migrate_legacy_user_roles(db))
+        run_step('cycles.fix_active_conflicts', lambda: fix_cycle_statuses_and_active_conflicts(db))
+        run_step('submissions.ensure_cycle_backfill', lambda: ensure_submission_cycle_backfill(db))
+        run_step('locks.deactivate_expired_unlocks', lambda: deactivate_expired_unlocks(db))
+        _set_startup_maintenance_status(
+            status='completed',
+            completed_at=datetime.utcnow().replace(microsecond=0).isoformat() + 'Z',
+            error=None,
+            duration_ms=round((time.perf_counter() - maintenance_begin) * 1000, 2),
+            steps=maintenance_steps,
+        )
+    except Exception as exc:
+        _set_startup_maintenance_status(
+            status='failed',
+            completed_at=datetime.utcnow().replace(microsecond=0).isoformat() + 'Z',
+            error=str(exc),
+            duration_ms=round((time.perf_counter() - maintenance_begin) * 1000, 2),
+            steps=maintenance_steps,
+        )
+    finally:
+        db.close()
+
+
 @app.on_event('startup')
 def startup_event():
     db = SessionLocal()
+    startup_begin = time.perf_counter()
+    startup_steps: List[dict] = []
+    STARTUP_STATUS['steps'] = []
+    STARTUP_STATUS['duration_ms'] = None
+
+    def run_step(name: str, fn):
+        step_begin = time.perf_counter()
+        fn()
+        startup_steps.append(
+            {
+                'name': name,
+                'duration_ms': round((time.perf_counter() - step_begin) * 1000, 2),
+            }
+        )
+
     try:
-        ensure_submission_cycle_column(db)
-        ensure_user_lp_columns(db)
-        ensure_action_plan_columns(db)
-        ensure_narrative_columns(db)
-        Base.metadata.create_all(bind=engine)
+        defer_maintenance = _env_enabled('STARTUP_DEFER_MAINTENANCE', default=True)
+        if str(os.getenv('SELF_TEST_FULL') or '').strip().lower() in {'1', 'true', 'yes'}:
+            defer_maintenance = False
+        _set_startup_maintenance_status(status='running' if defer_maintenance else 'not_started')
+        schema_state = {'current': False}
+        run_step('schema.preflight', lambda: schema_state.update({'current': _core_schema_is_current(db)}))
+
+        if schema_state['current']:
+            startup_steps.append({'name': 'schema.migrations(skipped)', 'duration_ms': 0.0})
+        else:
+            columns_by_table: Dict[str, set[str]] = {}
+            startup_schema_tables = [
+                'users',
+                'companies',
+                'submissions',
+                'collection_cycles',
+                'action_plans',
+                'narrative_summaries',
+            ]
+            run_step(
+                'schema.snapshot',
+                lambda: columns_by_table.update(_load_table_columns_map(db, startup_schema_tables)),
+            )
+            run_step('schema.ensure_submission_cycle_column', lambda: ensure_submission_cycle_column(db, columns_by_table))
+            run_step(
+                'schema.ensure_user_lp_columns',
+                lambda: ensure_user_lp_columns(
+                    db,
+                    columns_by_table,
+                    ensure_columns=True,
+                    normalize=not defer_maintenance,
+                ),
+            )
+            run_step(
+                'schema.ensure_action_plan_columns',
+                lambda: ensure_action_plan_columns(
+                    db,
+                    columns_by_table,
+                    ensure_columns=True,
+                    backfill_timestamps=not defer_maintenance,
+                ),
+            )
+            run_step('schema.ensure_narrative_columns', lambda: ensure_narrative_columns(db, columns_by_table))
+
+            core_tables = {'users', 'companies', 'submissions', 'collection_cycles'}
+            missing_tables = [table_name for table_name in sorted(core_tables) if table_name not in columns_by_table]
+            if missing_tables:
+                run_step('schema.create_all', lambda: Base.metadata.create_all(bind=engine))
+            else:
+                startup_steps.append({'name': 'schema.create_all(skipped)', 'duration_ms': 0.0})
+
         skip_sample_seed = str(os.getenv('SELF_TEST_FAST', '')).strip().lower() in {'1', 'true', 'yes', 'fast'}
-        if not skip_sample_seed:
-            seed_sample_data(db)
-        migrate_legacy_user_roles(db)
-        fix_cycle_statuses_and_active_conflicts(db)
-        ensure_submission_cycle_backfill(db)
-        deactivate_expired_unlocks(db)
+        if not skip_sample_seed and _should_seed_sample_data(db):
+            run_step('bootstrap.seed_sample_data', lambda: seed_sample_data(db))
+        else:
+            startup_steps.append({'name': 'bootstrap.seed_sample_data(skipped)', 'duration_ms': 0.0})
+
+        if defer_maintenance:
+            startup_steps.append({'name': 'maintenance.deferred(background)', 'duration_ms': 0.0})
+        else:
+            run_step('migrations.legacy_user_roles', lambda: migrate_legacy_user_roles(db))
+            run_step('cycles.fix_active_conflicts', lambda: fix_cycle_statuses_and_active_conflicts(db))
+            run_step('submissions.ensure_cycle_backfill', lambda: ensure_submission_cycle_backfill(db))
+            run_step('locks.deactivate_expired_unlocks', lambda: deactivate_expired_unlocks(db))
+            _set_startup_maintenance_status(
+                status='completed',
+                completed_at=datetime.utcnow().replace(microsecond=0).isoformat() + 'Z',
+                error=None,
+                duration_ms=0.0,
+                steps=[],
+            )
+
+        STARTUP_STATUS['completed'] = True
+        STARTUP_STATUS['error'] = None
+        STARTUP_STATUS['completed_at'] = datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
+        STARTUP_STATUS['duration_ms'] = round((time.perf_counter() - startup_begin) * 1000, 2)
+        STARTUP_STATUS['steps'] = startup_steps
+        if defer_maintenance:
+            threading.Thread(
+                target=_run_deferred_startup_maintenance,
+                name='deferred-startup-maintenance',
+                daemon=True,
+            ).start()
+    except Exception as exc:
+        STARTUP_STATUS['completed'] = False
+        STARTUP_STATUS['error'] = str(exc)
+        STARTUP_STATUS['completed_at'] = None
+        STARTUP_STATUS['duration_ms'] = round((time.perf_counter() - startup_begin) * 1000, 2)
+        STARTUP_STATUS['steps'] = startup_steps
+        _set_startup_maintenance_status(status='failed', completed_at=None, error=str(exc), duration_ms=None, steps=[])
+        raise
     finally:
         db.close()
+
+
+def _runtime_health_snapshot(db: Session) -> dict:
+    database_ok = True
+    database_error = None
+    try:
+        db.execute(text('SELECT 1'))
+    except Exception as exc:
+        database_ok = False
+        database_error = str(exc)
+
+    vercel_runtime = str(os.getenv('VERCEL') or '').strip() == '1'
+    blob_enabled = is_blob_storage_enabled()
+    frontend_origin = str(os.getenv('FRONTEND_ORIGIN') or '').strip()
+    openai_configured = bool(str(os.getenv('OPENAI_API_KEY') or '').strip())
+
+    checks = {
+        'startup': {
+            'ok': bool(STARTUP_STATUS['completed']) and not STARTUP_STATUS['error'],
+            'completed_at': STARTUP_STATUS['completed_at'],
+            'duration_ms': STARTUP_STATUS.get('duration_ms'),
+            'steps': STARTUP_STATUS.get('steps') or [],
+            'error': STARTUP_STATUS['error'],
+        },
+        'maintenance': {
+            'status': (STARTUP_STATUS.get('maintenance') or {}).get('status'),
+            'completed_at': (STARTUP_STATUS.get('maintenance') or {}).get('completed_at'),
+            'duration_ms': (STARTUP_STATUS.get('maintenance') or {}).get('duration_ms'),
+            'steps': (STARTUP_STATUS.get('maintenance') or {}).get('steps') or [],
+            'error': (STARTUP_STATUS.get('maintenance') or {}).get('error'),
+        },
+        'database': {
+            'ok': database_ok,
+            'error': database_error,
+        },
+        'storage': {
+            'ok': blob_enabled if vercel_runtime else True,
+            'mode': 'blob' if blob_enabled else 'filesystem',
+            'error': None if (blob_enabled or not vercel_runtime) else 'BLOB_READ_WRITE_TOKEN is required on Vercel for export storage.',
+        },
+        'frontend_origin': {
+            'ok': bool(frontend_origin) if vercel_runtime else True,
+            'value': frontend_origin or None,
+            'error': None if (frontend_origin or not vercel_runtime) else 'FRONTEND_ORIGIN must be set in production.',
+        },
+        'openai': {
+            'ok': openai_configured,
+            'configured': openai_configured,
+            'error': None if openai_configured else 'OPENAI_API_KEY is not configured. AI-assisted features will fall back where possible.',
+        },
+    }
+    ready = all(
+        bool(checks[key]['ok'])
+        for key in ('startup', 'database', 'storage', 'frontend_origin')
+    )
+    overall = 'ok' if ready else 'degraded'
+    return {
+        'status': overall,
+        'ready': ready,
+        'environment': 'vercel' if vercel_runtime else 'local',
+        'timestamp': datetime.utcnow().replace(microsecond=0).isoformat() + 'Z',
+        'checks': checks,
+    }
+
+
+@app.get('/health')
+def health(db: Session = Depends(get_db)):
+    snapshot = _runtime_health_snapshot(db)
+    snapshot['message'] = 'Application health snapshot'
+    return snapshot
+
+
+@app.get('/health/ready')
+def health_ready(db: Session = Depends(get_db)):
+    snapshot = _runtime_health_snapshot(db)
+    if not snapshot['ready']:
+        raise HTTPException(status_code=503, detail=snapshot)
+    snapshot['message'] = 'Application is ready to serve requests'
+    return snapshot
 
 @app.post('/login', response_model=UserResponse)
 def login(request: LoginRequest, db: Session = Depends(get_db)):
@@ -1525,16 +2347,10 @@ def sso_login(provider: str, payload: SSOLoginRequest | None = None, db: Session
         user = db.query(User).filter(User.email == provider_default_email).first()
 
     if not user:
-        # Create a bootstrap user if seed data is unavailable.
-        user = User(
-            name='SSO User',
-            email=provider_default_email,
-            password='password123',
-            role=UserRole.MANAGER if normalized_provider == 'google' else UserRole.INVESTOR,
+        raise HTTPException(
+            status_code=404,
+            detail='No configured SSO account found. Load fixture users from server/fixtures/users.csv.',
         )
-        db.add(user)
-        db.commit()
-        db.refresh(user)
 
     return serialize_user(user)
 
@@ -1546,7 +2362,11 @@ def list_users(db: Session = Depends(get_db)):
 
 
 @app.post('/companies', response_model=CompanyCreateResponse, dependencies=[Depends(require_manager)])
-def create_company(payload: CompanyCreateRequest, db: Session = Depends(get_db)):
+def create_company(
+    payload: CompanyCreateRequest,
+    db: Session = Depends(get_db),
+    user_email: str | None = Depends(get_user_email),
+):
     existing_user = db.query(User).filter(User.email == payload.contact_email).first()
     if existing_user:
         raise HTTPException(status_code=400, detail='A user with this contact email already exists')
@@ -1571,6 +2391,22 @@ def create_company(payload: CompanyCreateRequest, db: Session = Depends(get_db))
     db.commit()
     db.refresh(company)
 
+    _queue_activity_event(
+        db,
+        event_type='company_created',
+        title='Company added',
+        message=f'{company.name} was added to the portfolio workspace.',
+        severity='success',
+        actor_role='manager',
+        actor_email=user_email,
+        company=company,
+        entity_status=company.current_status,
+        is_toast=True,
+        visible_to_investors=False,
+        metadata={'sector': company.sector or '', 'status': company.current_status or ''},
+    )
+    db.commit()
+
     return CompanyCreateResponse(
         id=company.id,
         name=company.name,
@@ -1581,7 +2417,18 @@ def create_company(payload: CompanyCreateRequest, db: Session = Depends(get_db))
 
 
 @app.post('/cycles', response_model=CycleInfo, dependencies=[Depends(require_manager)])
-def create_cycle(payload: CycleCreateRequest, db: Session = Depends(get_db)):
+def create_cycle(
+    payload: CycleCreateRequest,
+    db: Session = Depends(get_db),
+    user_email: str | None = Depends(get_user_email),
+):
+    if not _is_valid_reporting_cycle_year(payload.cycle_year):
+        current_year = datetime.utcnow().year
+        raise HTTPException(
+            status_code=422,
+            detail=f'cycle_year must be {current_year} (current year) or {current_year - 1} (previous year)',
+        )
+
     existing_cycle = db.query(CollectionCycle).filter(CollectionCycle.cycle_year == payload.cycle_year).first()
     if existing_cycle:
         raise HTTPException(status_code=400, detail='A cycle for this year already exists')
@@ -1617,16 +2464,40 @@ def create_cycle(payload: CycleCreateRequest, db: Session = Depends(get_db)):
     db.add(cycle)
     db.commit()
     db.refresh(cycle)
+    _queue_activity_event(
+        db,
+        event_type='cycle_created',
+        title='Reporting cycle created',
+        message=f'FY{cycle.cycle_year} reporting cycle was created as {cycle.status}.',
+        severity='success',
+        actor_role='manager',
+        actor_email=user_email,
+        cycle=cycle,
+        entity_status=cycle.status,
+        is_toast=True,
+        visible_to_investors=False,
+        metadata={'cycle_year': cycle.cycle_year, 'status': cycle.status},
+    )
+    db.commit()
     return serialize_cycle(cycle)
 
 
 @app.get('/cycles', response_model=List[CycleInfo], dependencies=[Depends(require_manager)])
 def list_cycles(db: Session = Depends(get_db)):
-    cycles = db.query(CollectionCycle).order_by(CollectionCycle.cycle_year.desc()).all()
+    cycles = (
+        _apply_valid_cycle_year_filter(db.query(CollectionCycle))
+        .order_by(CollectionCycle.cycle_year.desc(), CollectionCycle.id.desc())
+        .all()
+    )
     return [serialize_cycle(cycle) for cycle in cycles]
 
 @app.patch('/cycles/{cycle_id}/status', response_model=CycleInfo, dependencies=[Depends(require_manager)])
-def update_cycle_status(cycle_id: int, payload: CycleStatusUpdateRequest, db: Session = Depends(get_db)):
+def update_cycle_status(
+    cycle_id: int,
+    payload: CycleStatusUpdateRequest,
+    db: Session = Depends(get_db),
+    user_email: str | None = Depends(get_user_email),
+):
     cycle = db.query(CollectionCycle).filter(CollectionCycle.id == cycle_id).first()
     if not cycle:
         raise HTTPException(status_code=404, detail='Cycle not found')
@@ -1647,17 +2518,50 @@ def update_cycle_status(cycle_id: int, payload: CycleStatusUpdateRequest, db: Se
                 active_cycle.status = 'draft'
 
     cycle.status = next_status
+    previous_status = current_status
+    _queue_activity_event(
+        db,
+        event_type='cycle_status_changed',
+        title='Reporting cycle updated',
+        message=f'FY{cycle.cycle_year} reporting cycle moved from {previous_status} to {next_status}.',
+        severity='info' if next_status != 'active' else 'success',
+        actor_role='manager',
+        actor_email=user_email,
+        cycle=cycle,
+        entity_status=next_status,
+        is_toast=True,
+        visible_to_investors=next_status in {'active', 'closed'},
+        metadata={'cycle_year': cycle.cycle_year, 'previous_status': previous_status, 'status': next_status},
+    )
     db.commit()
     db.refresh(cycle)
     return serialize_cycle(cycle)
 
 
 @app.post('/company/{company_id}/onboarding/complete', dependencies=[Depends(require_manager)])
-def complete_onboarding(company_id: int, db: Session = Depends(get_db)):
+def complete_onboarding(
+    company_id: int,
+    db: Session = Depends(get_db),
+    user_email: str | None = Depends(get_user_email),
+):
     company = db.query(Company).filter(Company.id == company_id).first()
     if not company:
         raise HTTPException(status_code=404, detail='Company not found')
     company.current_status = 'active'
+    _queue_activity_event(
+        db,
+        event_type='company_onboarded',
+        title='Company onboarding completed',
+        message=f'{company.name} is now active in the portfolio.',
+        severity='success',
+        actor_role='manager',
+        actor_email=user_email,
+        company=company,
+        entity_status=company.current_status,
+        is_toast=True,
+        visible_to_investors=True,
+        metadata={'status': company.current_status},
+    )
     db.commit()
     return {"message": "Onboarding complete. Company is now active in the portfolio."}
 
@@ -1695,6 +2599,22 @@ def add_submission(
         enforce_transition(latest_for_cycle.status, 'submitted')
         latest_for_cycle.esg_data = json.dumps(submission.model_dump())
         latest_for_cycle.status = 'submitted'
+        _queue_activity_event(
+            db,
+            event_type='submission_submitted',
+            title='Submission resubmitted',
+            message=f'{company.name} resubmitted ESG data for FY{target_cycle.cycle_year}.',
+            severity='success',
+            actor_role=role,
+            actor_email=user_email,
+            company=company,
+            submission=latest_for_cycle,
+        cycle=target_cycle,
+        entity_status=latest_for_cycle.status,
+        is_toast=True,
+        visible_to_investors=True,
+        metadata={'cycle_year': target_cycle.cycle_year, 'resubmission': True},
+    )
         db.commit()
         db.refresh(latest_for_cycle)
         return latest_for_cycle
@@ -1706,6 +2626,23 @@ def add_submission(
         status='submitted',
     )
     db.add(submission_record)
+    db.flush()
+    _queue_activity_event(
+        db,
+        event_type='submission_submitted',
+        title='Submission submitted',
+        message=f'{company.name} submitted ESG data for FY{target_cycle.cycle_year}.',
+        severity='success',
+        actor_role=role,
+        actor_email=user_email,
+        company=company,
+        submission=submission_record,
+        cycle=target_cycle,
+        entity_status='submitted',
+        is_toast=True,
+        visible_to_investors=True,
+        metadata={'cycle_year': target_cycle.cycle_year},
+    )
     db.commit()
     db.refresh(submission_record)
     return submission_record
@@ -1732,7 +2669,8 @@ def company_dashboard(
 def update_submission_status(
     submission_id: int,
     payload: SubmissionStatusUpdateRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user_email: str | None = Depends(get_user_email),
 ):
     next_status = normalize_submission_status(payload.status)
     if next_status not in ALLOWED_REVIEW_STATUSES:
@@ -1744,6 +2682,24 @@ def update_submission_status(
 
     enforce_transition(submission.status, next_status)
     submission.status = next_status
+    company = db.query(Company).filter(Company.id == submission.company_id).first()
+    cycle = submission.cycle or resolve_submission_cycle(db)
+    _queue_activity_event(
+        db,
+        event_type='submission_status_changed',
+        title='Submission status changed',
+        message=f'{company.name if company else "A company"} moved to {next_status.title()}.',
+        severity='info' if next_status != 'approved' else 'success',
+        actor_role='manager',
+        actor_email=user_email,
+        company=company,
+        submission=submission,
+        cycle=cycle,
+        entity_status=next_status,
+        is_toast=True,
+        visible_to_investors=next_status == 'approved',
+        metadata={'status': next_status},
+    )
     db.commit()
     db.refresh(submission)
     return submission
@@ -1768,6 +2724,21 @@ def create_action_plan(
         status='planned'
     )
     db.add(plan)
+    db.flush()
+    _queue_activity_event(
+        db,
+        event_type='action_plan_created',
+        title='Action plan created',
+        message=f'{company.name} added action plan "{plan.initiative_name}".',
+        severity='info',
+        actor_role=role,
+        actor_email=user_email,
+        company=company,
+        cycle=resolve_submission_cycle(db),
+        is_toast=True,
+        visible_to_investors=True,
+        metadata={'action_plan_id': plan.id, 'status': plan.status, 'owner': plan.assigned_owner or ''},
+    )
     db.commit()
     db.refresh(plan)
     return plan
@@ -2585,7 +3556,12 @@ def upload_evidence(
     )
 
 @app.post('/submissions/{submission_id}/review', dependencies=[Depends(require_manager)])
-def review_submission(submission_id: int, payload: ReviewSubmissionRequest, db: Session = Depends(get_db)):
+def review_submission(
+    submission_id: int,
+    payload: ReviewSubmissionRequest,
+    db: Session = Depends(get_db),
+    user_email: str | None = Depends(get_user_email),
+):
     submission = db.query(Submission).filter(Submission.id == submission_id).first()
     if not submission:
         raise HTTPException(status_code=404, detail='Submission not found')
@@ -2605,6 +3581,23 @@ def review_submission(submission_id: int, payload: ReviewSubmissionRequest, db: 
         review_comment=payload.review_comment,
     )
     db.add(review_action)
+    company = db.query(Company).filter(Company.id == submission.company_id).first()
+    _queue_activity_event(
+        db,
+        event_type='submission_review_logged',
+        title='Review recorded',
+        message=f'{company.name if company else "A company"} review is now {next_status.title()}.',
+        severity='success' if next_status == 'approved' else 'info',
+        actor_role=payload.reviewer_role or 'manager',
+        actor_email=user_email,
+        company=company,
+        submission=submission,
+        cycle=submission.cycle,
+        entity_status=next_status,
+        is_toast=True,
+        visible_to_investors=next_status == 'approved',
+        metadata={'review_comment': payload.review_comment or '', 'status': next_status},
+    )
     db.commit()
     db.refresh(submission)
     return {"message": "Review logged successfully", "status": submission.status}
@@ -2615,9 +3608,16 @@ def validate_submission(submission_id: int, db: Session = Depends(get_db)):
     if not submission:
         raise HTTPException(status_code=404, detail='Submission not found')
     
-    data = json.loads(submission.esg_data)
+    data = parse_json_or_default(submission.esg_data, {})
+    if not isinstance(data, dict):
+        data = {}
     flags_created = 0
     reporting_year = submission.cycle.cycle_year if submission.cycle else datetime.utcnow().year
+
+    def _numeric_value(field_name: str) -> Optional[float]:
+        if field_name not in data:
+            return None
+        return _as_float(data.get(field_name))
     
     # Define required fields for validation
     required_fields = [
@@ -2640,37 +3640,46 @@ def validate_submission(submission_id: int, db: Session = Depends(get_db)):
     
     # Data quality checks - only if fields exist
     if all(field in data and data[field] is not None for field in ['scope_1_emissions', 'scope_2_location_based', 'scope_2_market_based', 'scope_3_emissions', 'total_ghg_emissions']):
-        scope_1 = float(data['scope_1_emissions'])
-        scope_2_loc = float(data['scope_2_location_based'])
-        scope_2_mkt = float(data['scope_2_market_based'])
-        scope_3 = float(data['scope_3_emissions'])
-        total_ghg = float(data['total_ghg_emissions'])
-        
-        # Check for negative emissions
-        if scope_1 < 0 or scope_2_loc < 0 or scope_3 < 0:
+        scope_1 = _numeric_value('scope_1_emissions')
+        scope_2_loc = _numeric_value('scope_2_location_based')
+        scope_2_mkt = _numeric_value('scope_2_market_based')
+        scope_3 = _numeric_value('scope_3_emissions')
+        total_ghg = _numeric_value('total_ghg_emissions')
+
+        if None in {scope_1, scope_2_loc, scope_2_mkt, scope_3, total_ghg}:
             db.add(ValidationFlag(
                 company_id=submission.company_id, reporting_year=reporting_year,
                 flag_type='Data Quality', field_name='emissions',
-                issue_description='Negative emissions detected. Scopes 1, 2, and 3 should be non-negative.',
+                issue_description='Emission fields contain non-numeric values and could not be validated.',
                 severity='High'
             ))
             flags_created += 1
+        else:
+            # Check for negative emissions
+            if scope_1 < 0 or scope_2_loc < 0 or scope_3 < 0:
+                db.add(ValidationFlag(
+                    company_id=submission.company_id, reporting_year=reporting_year,
+                    flag_type='Data Quality', field_name='emissions',
+                    issue_description='Negative emissions detected. Scopes 1, 2, and 3 should be non-negative.',
+                    severity='High'
+                ))
+                flags_created += 1
         
-        # Check GHG total consistency (allow 5% tolerance for rounding)
-        calculated_total = scope_1 + scope_2_loc + scope_3
-        if calculated_total > 0 and abs(total_ghg - calculated_total) / calculated_total > 0.05:
-            db.add(ValidationFlag(
-                company_id=submission.company_id, reporting_year=reporting_year,
-                flag_type='Data Quality', field_name='total_ghg_emissions',
-                issue_description=f'Total GHG emissions ({total_ghg}) does not match sum of scopes ({calculated_total:.1f}). Variance: {abs(total_ghg - calculated_total) / calculated_total:.1%}',
-                severity='Medium'
-            ))
-            flags_created += 1
+            # Check GHG total consistency (allow 5% tolerance for rounding)
+            calculated_total = scope_1 + scope_2_loc + scope_3
+            if calculated_total > 0 and abs(total_ghg - calculated_total) / calculated_total > 0.05:
+                db.add(ValidationFlag(
+                    company_id=submission.company_id, reporting_year=reporting_year,
+                    flag_type='Data Quality', field_name='total_ghg_emissions',
+                    issue_description=f'Total GHG emissions ({total_ghg}) does not match sum of scopes ({calculated_total:.1f}). Variance: {abs(total_ghg - calculated_total) / calculated_total:.1%}',
+                    severity='Medium'
+                ))
+                flags_created += 1
     
     # Check energy consumption consistency
     if 'total_energy_consumption' in data and 'renewable_energy_consumption' in data:
-        total_energy = data['total_energy_consumption']
-        renewable_energy = data['renewable_energy_consumption']
+        total_energy = _numeric_value('total_energy_consumption')
+        renewable_energy = _numeric_value('renewable_energy_consumption')
         if total_energy is not None and renewable_energy is not None:
             if renewable_energy > total_energy:
                 db.add(ValidationFlag(
@@ -2683,8 +3692,8 @@ def validate_submission(submission_id: int, db: Session = Depends(get_db)):
     
     # Check water recycling consistency
     if 'total_water_withdrawal' in data and 'water_recycled_reused' in data:
-        total_water = data['total_water_withdrawal']
-        recycled_water = data['water_recycled_reused']
+        total_water = _numeric_value('total_water_withdrawal')
+        recycled_water = _numeric_value('water_recycled_reused')
         if total_water is not None and recycled_water is not None:
             if recycled_water > total_water:
                 db.add(ValidationFlag(
@@ -2697,8 +3706,8 @@ def validate_submission(submission_id: int, db: Session = Depends(get_db)):
     
     # Check waste diversion consistency
     if 'total_waste_generated' in data and 'waste_diverted_from_landfill' in data:
-        total_waste = data['total_waste_generated']
-        diverted_waste = data['waste_diverted_from_landfill']
+        total_waste = _numeric_value('total_waste_generated')
+        diverted_waste = _numeric_value('waste_diverted_from_landfill')
         if total_waste is not None and diverted_waste is not None:
             if diverted_waste > total_waste:
                 db.add(ValidationFlag(
@@ -2717,8 +3726,16 @@ def validate_submission(submission_id: int, db: Session = Depends(get_db)):
     ]
     for field in percentage_fields:
         if field in data and data[field] is not None:
-            value = float(data[field])
-            if value < 0 or value > 100:
+            value = _numeric_value(field)
+            if value is None:
+                db.add(ValidationFlag(
+                    company_id=submission.company_id, reporting_year=reporting_year,
+                    flag_type='Data Quality', field_name=field,
+                    issue_description=f'Percentage field "{field}" contains a non-numeric value.',
+                    severity='High'
+                ))
+                flags_created += 1
+            elif value < 0 or value > 100:
                 db.add(ValidationFlag(
                     company_id=submission.company_id, reporting_year=reporting_year,
                     flag_type='Data Quality', field_name=field,
@@ -2729,8 +3746,8 @@ def validate_submission(submission_id: int, db: Session = Depends(get_db)):
     
     # Check female leadership vs overall female representation (proportionality)
     if 'female_representation_percent' in data and 'female_leadership_representation_percent' in data:
-        female_overall = data['female_representation_percent']
-        female_leadership = data['female_leadership_representation_percent']
+        female_overall = _numeric_value('female_representation_percent')
+        female_leadership = _numeric_value('female_leadership_representation_percent')
         if female_overall is not None and female_leadership is not None:
             if female_leadership > female_overall + 5:  # Allow 5% tolerance
                 db.add(ValidationFlag(
@@ -2748,9 +3765,11 @@ def validate_submission(submission_id: int, db: Session = Depends(get_db)):
     ).order_by(Submission.id.desc()).first()
     
     if prev_submission:
-        prev_data = json.loads(prev_submission.esg_data)
+        prev_data = parse_json_or_default(prev_submission.esg_data, {})
+        if not isinstance(prev_data, dict):
+            prev_data = {}
         for field in ['total_ghg_emissions', 'total_energy_consumption', 'total_water_withdrawal']:
-            curr_val, prev_val = data.get(field), prev_data.get(field)
+            curr_val, prev_val = _as_float(data.get(field)), _as_float(prev_data.get(field))
             if curr_val is not None and prev_val is not None and prev_val > 0:
                 variance = (curr_val - prev_val) / prev_val
                 if abs(variance) > 0.30:
@@ -2913,17 +3932,6 @@ def normalize_manager_bucket(status: str | None) -> str:
     return mapping.get(normalized, 'Not Started')
 
 
-def get_progress_from_bucket(bucket: str) -> int:
-    return {
-        'Not Started': 8,
-        'In Progress': 45,
-        'Submitted': 72,
-        'Under Review': 84,
-        'Approved': 100,
-        'Resubmission Requested': 58,
-    }.get(bucket, 8)
-
-
 def build_manager_summary(db: Session, companies: List[Company]) -> dict:
     cache_key = 'build_manager_summary'
     cached = _get_timed_cache(cache_key)
@@ -2943,6 +3951,7 @@ def build_manager_summary(db: Session, companies: List[Company]) -> dict:
     }
     upcoming_deadlines = []
     progress_rows = []
+    reporting_field_keys = list(FIELD_META_BY_KEY.keys())
 
     for company in companies:
         submissions = company.submissions or []
@@ -2951,7 +3960,14 @@ def build_manager_summary(db: Session, companies: List[Company]) -> dict:
         status_source = latest_submission.status if latest_submission else company.current_status
         bucket = normalize_manager_bucket(status_source)
         status_breakdown[bucket] += 1
-        completion = get_progress_from_bucket(bucket)
+        latest_payload = parse_submission(latest_submission) if latest_submission else {}
+        completed_fields = sum(
+            1
+            for field_key in reporting_field_keys
+            if latest_payload.get(field_key) is not None and str(latest_payload.get(field_key)).strip() != ''
+        )
+        completion = round((completed_fields / max(len(reporting_field_keys), 1)) * 100)
+        esg_score = round(score_company_payload(latest_payload)[0], 2) if latest_payload else None
         days_remaining = cycle_days_remaining
 
         progress_rows.append({
@@ -2961,6 +3977,8 @@ def build_manager_summary(db: Session, companies: List[Company]) -> dict:
             'sector': company.sector,
             'status': bucket,
             'completion_percent': completion,
+            'esg_score': esg_score,
+            'risk_level': getattr(company, 'reporting_risk_level', None),
             'last_activity': f'Submission #{latest_submission.id}' if latest_submission else 'No submission yet',
             'deadline': cycle_deadline,
             'actions': ['Validate', 'Approve', 'Request Resubmission', 'Reject', 'Unlock', 'Send Reminder'],
@@ -2975,6 +3993,8 @@ def build_manager_summary(db: Session, companies: List[Company]) -> dict:
                 'sector': company.sector,
                 'status': bucket,
                 'completion_percent': completion,
+                'esg_score': esg_score,
+                'risk_level': getattr(company, 'reporting_risk_level', None),
                 'deadline': cycle_deadline,
                 'days_remaining': days_remaining,
             })
@@ -3001,32 +4021,48 @@ def slugify(value: str) -> str:
 
 
 def build_report_rows(db: Session, portfolio: str, period: str):
-    active_cycle = get_active_cycle(db) or get_latest_cycle(db) or get_or_create_reserved_cycle(db)
-    companies_query = db.query(Company)
+    normalized_period, period_year = _normalize_reporting_period(period)
+    selected_cycle = (
+        _apply_valid_cycle_year_filter(db.query(CollectionCycle))
+        .filter(CollectionCycle.cycle_year == period_year)
+        .order_by(CollectionCycle.id.desc())
+        .first()
+    )
+    if not selected_cycle:
+        selected_cycle = get_active_cycle(db) or get_latest_cycle(db) or get_or_create_reserved_cycle(db)
+    companies_query = _query_ui_visible_companies(db).options(selectinload(Company.submissions))
     normalized_portfolio = (portfolio or 'all').strip()
     if normalized_portfolio and normalized_portfolio.lower() not in {'all', 'all portfolio companies'}:
         companies_query = companies_query.filter(Company.name == normalized_portfolio)
     companies = companies_query.order_by(Company.name.asc()).all()
+    reporting_field_keys = list(FIELD_META_BY_KEY.keys())
 
     rows = []
     for company in companies:
-        cycle_submissions = [item for item in company.submissions if item.cycle_id == active_cycle.id]
+        cycle_submissions = [item for item in company.submissions if item.cycle_id == selected_cycle.id]
         latest_submission = (cycle_submissions or company.submissions)[-1] if (cycle_submissions or company.submissions) else None
         bucket = normalize_manager_bucket(latest_submission.status if latest_submission else company.current_status)
         payload = parse_submission(latest_submission)
+        completed_fields = sum(
+            1
+            for field_key in reporting_field_keys
+            if payload.get(field_key) is not None and str(payload.get(field_key)).strip() != ''
+        )
+        completion_percent = round((completed_fields / max(len(reporting_field_keys), 1)) * 100)
+        esg_score = round(score_company_payload(payload)[0], 2) if payload else None
         rows.append({
             'company_name': company.name,
             'asset_class': company.asset_class or '',
             'sector': company.sector,
             'status': bucket,
-            'completion_percent': get_progress_from_bucket(bucket),
+            'completion_percent': completion_percent,
             'total_ghg_emissions': round(safe_number(payload.get('total_ghg_emissions')), 2),
             'female_representation_percent': round(safe_number(payload.get('female_representation_percent')), 2),
-            'esg_score': round(clamp(50 + safe_number(payload.get('reduction_target_percent')) * 0.25), 2),
-            'period': period,
-            'cycle_year': active_cycle.cycle_year,
+            'esg_score': esg_score,
+            'period': normalized_period,
+            'cycle_year': selected_cycle.cycle_year,
         })
-    return rows, active_cycle
+    return rows, selected_cycle, normalized_period
 
 
 def build_csv_export_bytes(rows: List[dict]) -> bytes:
@@ -3543,6 +4579,9 @@ def build_pdf_export_bytes(
     context_lines: Optional[List[str]] = None,
     narrative_lines: Optional[List[str]] = None,
     attachment_lines: Optional[List[str]] = None,
+    impact_story: Optional[dict] = None,
+    anomaly_summary: Optional[dict] = None,
+    external_context_items: Optional[List[dict]] = None,
 ) -> bytes:
     status_counts: Dict[str, int] = {}
     for row in rows:
@@ -3582,6 +4621,9 @@ def build_pdf_export_bytes(
     subtitle = ' | '.join(subtitle_bits)
     generated_at = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
     builder = _PdfReportBuilder(title=title, subtitle=subtitle, generated_at=generated_at)
+    impact_story = impact_story or {}
+    anomaly_summary = anomaly_summary or {}
+    external_context_items = [item for item in (external_context_items or []) if isinstance(item, dict)]
 
     builder.add_heading('Executive Summary', level=1)
     cards = [
@@ -3612,13 +4654,50 @@ def build_pdf_export_bytes(
 
     if report_type.strip().lower() in {'edci', 'sfdr'}:
         builder.add_heading('Impact Intelligence', level=2)
-        impact_summary = (context_lines or [])[0] if context_lines else ''
+        impact_summary = str(impact_story.get('summary') or '').strip() or ((context_lines or [])[0] if context_lines else '')
         if impact_summary:
             builder.add_paragraph(impact_summary, size=10)
-        if context_lines and len(context_lines) > 1:
-            builder.add_bullets(context_lines[1:4], size=10)
+        impact_bullets = list(
+            dict.fromkeys(
+                [
+                    *[str(item).strip() for item in (impact_story.get('highlights') or [])[:2] if str(item).strip()],
+                    str(impact_story.get('trend_summary') or '').strip(),
+                    f"Anomaly watchlist: {str(anomaly_summary.get('headline') or '').strip()}" if anomaly_summary.get('headline') else '',
+                    *[
+                        line
+                        for line in [
+                            f"{'Regulatory watch' if item.get('item_type') == 'regulation' else (item.get('sector') or 'Sector context')}: {str(item.get('title') or '').strip()}"
+                            for item in external_context_items[:2]
+                            if str(item.get('title') or '').strip()
+                        ]
+                    ],
+                ]
+            )
+        )
+        impact_bullets = [line for line in impact_bullets if line]
+        if impact_bullets:
+            builder.add_bullets(impact_bullets[:5], size=10)
         if narrative_lines:
             builder.add_paragraph('An approved narrative insert is attached to this PDF package.', size=10)
+
+        if anomaly_summary.get('headline') or anomaly_summary.get('summary'):
+            builder.add_callout(
+                'Anomaly Watchlist',
+                str(anomaly_summary.get('headline') or 'No anomaly summary available').strip(),
+                str(anomaly_summary.get('summary') or 'No anomaly summary was supplied for this export.').strip(),
+                accent=(0.64, 0.33, 0.07),
+            )
+
+        if external_context_items:
+            builder.add_heading('Sector & Regulatory Context', level=2)
+            builder.add_bullets(
+                [
+                    f"{str(item.get('title') or '').strip()} - {str(item.get('action_prompt') or item.get('impact_hint') or item.get('summary') or '').strip()}"
+                    for item in external_context_items[:4]
+                    if str(item.get('title') or '').strip()
+                ],
+                size=10,
+            )
     else:
         builder.add_heading('Report Context', level=2)
         if context_lines:
@@ -3638,7 +4717,12 @@ def build_pdf_export_bytes(
     builder.add_table('Company performance table', table_columns, sorted_rows)
 
     builder.add_heading('Benchmark Callouts', level=2)
-    benchmark_lines = list(dict.fromkeys((context_lines or [])[:6]))
+    benchmark_lines = list(
+        dict.fromkeys(
+            [str(item).strip() for item in (impact_story.get('benchmark_callouts') or []) if str(item).strip()]
+            or (context_lines or [])[:8]
+        )
+    )
     if benchmark_lines:
         builder.add_bullets(benchmark_lines, size=10)
     else:
@@ -3702,31 +4786,58 @@ def _build_report_export_context(
     narrative_lines: List[str] = []
     narrative_headline = None
     narrative_included = False
-
-    if narrative_id is not None:
-        narrative_record = _get_narrative_record_or_404(db, narrative_id)
-        narrative_lines = _render_narrative_file_lines(narrative_record)
+    trend_summary = None
+    narrative_record = _get_narrative_record_or_404(db, narrative_id) if narrative_id is not None else None
+    narrative_state = _build_report_narrative_state(
+        db,
+        portfolio=portfolio,
+        period=period,
+        narrative_record=narrative_record,
+    )
+    if narrative_record is not None:
         narrative_headline = narrative_record.headline
-        narrative_included = True
-        context_lines.append(f'Narrative insert: {narrative_record.headline or "Approved narrative attached"}')
+        context_lines.append(f'Narrative status: {narrative_state["narrative_status_label"]}')
+        if narrative_state.get('narrative_status_reason'):
+            context_lines.append(narrative_state['narrative_status_reason'])
+        if narrative_state['narrative_status'] == 'current':
+            narrative_lines = _render_narrative_file_lines(narrative_record)
+            narrative_included = True
+            context_lines.append(f'Narrative insert: {narrative_record.headline or "Approved narrative attached"}')
+    else:
+        context_lines.append(f'Narrative status: {narrative_state["narrative_status_label"]}')
 
     impact_headline = None
     benchmark_callouts: List[str] = []
     comparison_rows: List[dict] = []
+    impact_story: dict = {}
+    external_context_items: List[dict] = []
+    anomaly_summary: dict = {}
     attachment_lines: List[str] = []
-    if report_name in {'edci', 'sfdr'}:
-        analytics = build_investor_analytics(db)
-        companies = db.query(Company).order_by(Company.name.asc()).all()
-        impact_story = _build_impact_intelligence(db, analytics, companies)
+    impact_story = _build_report_impact_story(db, report_name=report_name, portfolio=portfolio, rows=rows)
+    if impact_story:
         impact_headline = impact_story.get('headline')
         context_lines.append(impact_story.get('summary', ''))
         context_lines.extend((impact_story.get('highlights') or [])[:2])
-        context_lines.append(impact_story.get('trend_summary', ''))
+        trend_summary = impact_story.get('trend_summary')
+        context_lines.append(trend_summary or '')
         benchmark_callouts = (impact_story.get('benchmark_callouts') or [])[:3]
         comparison_rows = impact_story.get('comparison_rows') or []
     elif rows:
         top_row = rows[0]
         context_lines.append(f"Top row: {top_row['company_name']} | {top_row['sector']} | ESG {top_row['esg_score']}")
+
+    external_context_items, anomaly_summary = _report_scope_signal_payload(db, portfolio=portfolio)
+    if anomaly_summary.get('headline'):
+        context_lines.append(f"Anomaly watchlist: {anomaly_summary['headline']}")
+    if anomaly_summary.get('summary'):
+        context_lines.append(str(anomaly_summary.get('summary') or '').strip())
+    context_lines.extend(
+        [
+            line
+            for line in (_format_external_context_export_line(item) for item in external_context_items[:2])
+            if line
+        ]
+    )
 
     row_company_names = {str(row.get('company_name') or '').strip() for row in rows if str(row.get('company_name') or '').strip()}
     attachment_company_ids: set[int] = set()
@@ -3735,7 +4846,7 @@ def _build_report_export_context(
         if narrative_record.company_id:
             attachment_company_ids.add(narrative_record.company_id)
     if row_company_names:
-        for company in db.query(Company).filter(Company.name.in_(sorted(row_company_names))).all():
+        for company in _query_ui_visible_companies(db).filter(Company.name.in_(sorted(row_company_names))).all():
             attachment_company_ids.add(company.id)
 
     if attachment_company_ids:
@@ -3762,9 +4873,16 @@ def _build_report_export_context(
         'narrative_lines': narrative_lines,
         'narrative_headline': narrative_headline,
         'narrative_included': narrative_included,
+        'narrative_status': narrative_state['narrative_status'],
+        'narrative_status_label': narrative_state['narrative_status_label'],
+        'narrative_status_reason': narrative_state.get('narrative_status_reason'),
         'impact_headline': impact_headline,
         'benchmark_callouts': benchmark_callouts,
         'comparison_rows': comparison_rows,
+        'trend_summary': trend_summary,
+        'impact_story': impact_story,
+        'external_context_items': external_context_items,
+        'anomaly_summary': anomaly_summary,
         'attachment_lines': attachment_lines,
     }
 
@@ -3824,6 +4942,24 @@ def unlock_submission(
         expiry_hours=payload.expiry_hours,
         manager_user=manager_user,
     )
+    company = db.query(Company).filter(Company.id == submission.company_id).first()
+    _queue_activity_event(
+        db,
+        event_type='submission_unlock_granted',
+        title='Submission unlocked',
+        message=f'{company.name if company else "A company"} was unlocked for edits.',
+        severity='warning',
+        actor_role='manager',
+        actor_email=user_email,
+        company=company,
+        submission=submission,
+        cycle=submission.cycle,
+        entity_status=submission.status,
+        is_toast=True,
+        visible_to_investors=False,
+        metadata={'reason': payload.reason, 'expiry_hours': payload.expiry_hours},
+    )
+    db.commit()
     return SubmissionUnlockInfo(
         id=unlock.id,
         submission_id=unlock.submission_id,
@@ -3869,6 +5005,23 @@ def unlock_company_for_cycle(
         expiry_hours=payload.expiry_hours,
         manager_user=manager_user,
     )
+    _queue_activity_event(
+        db,
+        event_type='submission_unlock_granted',
+        title='Submission unlocked',
+        message=f'{company.name} was unlocked for edits.',
+        severity='warning',
+        actor_role='manager',
+        actor_email=user_email,
+        company=company,
+        submission=submission,
+        cycle=submission.cycle,
+        entity_status=submission.status,
+        is_toast=True,
+        visible_to_investors=False,
+        metadata={'reason': payload.reason, 'expiry_hours': payload.expiry_hours},
+    )
+    db.commit()
     return SubmissionUnlockInfo(
         id=unlock.id,
         submission_id=unlock.submission_id,
@@ -3912,6 +5065,22 @@ def send_reminder(
     db.add(reminder)
     db.commit()
     db.refresh(reminder)
+    _queue_activity_event(
+        db,
+        event_type='reminder_sent',
+        title='Reminder sent',
+        message=f'Reminder sent to {company.name} for FY{cycle.cycle_year}.',
+        severity='info',
+        actor_role='manager',
+        actor_email=user_email,
+        company=company,
+        cycle=cycle,
+        entity_status=company.current_status,
+        is_toast=True,
+        visible_to_investors=False,
+        metadata={'channel': reminder.channel, 'message': reminder.message},
+    )
+    db.commit()
     return ReminderInfo(
         id=reminder.id,
         company_id=reminder.company_id,
@@ -3939,11 +5108,54 @@ def generate_report(report_type: str, db: Session = Depends(get_db)):
     }
 
 
+@app.get('/reports/{report_type}/preview', response_model=ReportPreviewResponse, dependencies=[Depends(require_manager_or_investor)])
+def preview_report_export(
+    report_type: str,
+    period: str = Query(default=f"FY{datetime.utcnow().year}"),
+    portfolio: str = Query(default='All Portfolio Companies'),
+    narrative_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    report_name = report_type.strip().lower()
+    if report_name not in ALLOWED_REPORT_TYPES:
+        raise HTTPException(status_code=400, detail='Invalid report type')
+
+    rows, _cycle, normalized_period = build_report_rows(db, portfolio=portfolio, period=period)
+    report_context = _build_report_export_context(
+        db,
+        report_name=report_name,
+        period=normalized_period,
+        portfolio=portfolio,
+        rows=rows,
+        narrative_id=narrative_id,
+    )
+    return ReportPreviewResponse(
+        report_type=report_name.upper(),
+        period=normalized_period,
+        portfolio=portfolio,
+        rows_in_scope=len(rows),
+        context_summary=report_context['context_lines'][:8],
+        impact_headline=report_context['impact_headline'],
+        benchmark_callouts=report_context['benchmark_callouts'],
+        comparison_rows=report_context['comparison_rows'],
+        trend_summary=report_context['trend_summary'],
+        impact_story=report_context['impact_story'],
+        external_context_items=report_context['external_context_items'],
+        anomaly_summary=report_context['anomaly_summary'],
+        narrative_id=narrative_id,
+        narrative_headline=report_context['narrative_headline'],
+        narrative_status=report_context['narrative_status'],
+        narrative_status_label=report_context['narrative_status_label'],
+        narrative_status_reason=report_context['narrative_status_reason'],
+        narrative_included=bool(report_context['narrative_included']),
+    )
+
+
 @app.get('/reports/{report_type}/export', response_model=ReportExportResponse, dependencies=[Depends(require_manager_or_investor)])
 def export_report(
     report_type: str,
     format: str = Query(default='csv'),
-    period: str = Query(default='Current Cycle'),
+    period: str = Query(default=f"FY{datetime.utcnow().year}"),
     portfolio: str = Query(default='All Portfolio Companies'),
     narrative_id: int | None = Query(default=None),
     db: Session = Depends(get_db),
@@ -3956,17 +5168,17 @@ def export_report(
     if export_format not in {'csv', 'pdf'}:
         raise HTTPException(status_code=400, detail='format must be csv or pdf')
 
-    rows, cycle = build_report_rows(db, portfolio=portfolio, period=period)
+    rows, cycle, normalized_period = build_report_rows(db, portfolio=portfolio, period=period)
     report_context = _build_report_export_context(
         db,
         report_name=report_name,
-        period=period,
+        period=normalized_period,
         portfolio=portfolio,
         rows=rows,
         narrative_id=narrative_id,
     )
     timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
-    file_name = f'{report_name}_{slugify(period)}_{slugify(portfolio)}_{timestamp}.{export_format}'
+    file_name = f'{report_name}_{slugify(normalized_period)}_{slugify(portfolio)}_{timestamp}.{export_format}'
     if export_format == 'csv':
         artifact = save_export_artifact(file_name, build_csv_export_bytes(rows), 'text/csv')
         content_type = 'text/csv'
@@ -3975,12 +5187,15 @@ def export_report(
             file_name,
               build_pdf_export_bytes(
                   report_name,
-                  period,
+                  normalized_period,
                   cycle,
                   rows,
                   context_lines=report_context['context_lines'],
                   narrative_lines=report_context['narrative_lines'],
                   attachment_lines=report_context['attachment_lines'],
+                  impact_story=report_context['impact_story'],
+                  anomaly_summary=report_context['anomaly_summary'],
+                  external_context_items=report_context['external_context_items'],
               ),
               'application/pdf',
           )
@@ -3989,7 +5204,7 @@ def export_report(
     return ReportExportResponse(
         report_type=report_name.upper(),
         format=export_format,
-        period=period,
+        period=normalized_period,
         portfolio=portfolio,
         generated_at=datetime.now(timezone.utc).isoformat(),
         file_name=file_name,
@@ -3997,12 +5212,19 @@ def export_report(
         download_url=str(artifact['download_url']),
         content_type=content_type,
         rows_exported=len(rows),
-        context_summary=report_context['context_lines'][:6],
+        context_summary=report_context['context_lines'][:8],
         impact_headline=report_context['impact_headline'],
         narrative_headline=report_context['narrative_headline'],
         narrative_included=bool(report_context['narrative_included']),
+        narrative_status=report_context['narrative_status'],
+        narrative_status_label=report_context['narrative_status_label'],
+        narrative_status_reason=report_context['narrative_status_reason'],
         benchmark_callouts=report_context['benchmark_callouts'],
         comparison_rows=report_context['comparison_rows'],
+        trend_summary=report_context['trend_summary'],
+        impact_story=report_context['impact_story'],
+        external_context_items=report_context['external_context_items'],
+        anomaly_summary=report_context['anomaly_summary'],
     )
 
 
@@ -4026,7 +5248,10 @@ def _build_newsletter_response_payload(db: Session, *, audience: str, tone: str)
         'source_company_count': int(context.get('portfolio', {}).get('total_companies') or 0),
         'source_submission_count': int(analytics.get('total_submissions') or 0),
         'impact_headline': (context.get('impact_story') or {}).get('headline'),
+        'trend_summary': (context.get('impact_story') or {}).get('trend_summary'),
         'benchmark_callouts': ((context.get('impact_story') or {}).get('benchmark_callouts') or [])[:4],
+        'external_context_items': (context.get('external_context_items') or [])[:4],
+        'anomaly_summary': context.get('anomaly_summary') or None,
         'cached': False,
         'fallback_used': not bool(openai_payload),
         'message': None,
@@ -4090,6 +5315,29 @@ def _build_newsletter_export_lines(newsletter_payload: dict) -> List[str]:
         lines.append('')
         lines.append('Benchmark Callouts:')
         lines.extend([f'- {item}' for item in benchmark_callouts])
+    anomaly_summary = newsletter_payload.get('anomaly_summary') or {}
+    if anomaly_summary.get('headline') or anomaly_summary.get('summary'):
+        lines.append('')
+        lines.append('Anomaly Watchlist:')
+        if anomaly_summary.get('headline'):
+            lines.append(str(anomaly_summary.get('headline')).strip())
+        if anomaly_summary.get('summary'):
+            lines.append(str(anomaly_summary.get('summary')).strip())
+        anomaly_items = [
+            f"{str(item.get('company_name') or '').strip() + ': ' if str(item.get('company_name') or '').strip() else ''}{str(item.get('metric_name') or '').strip()} - {str(item.get('recommendation') or item.get('rationale') or '').strip()}"
+            for item in (anomaly_summary.get('items') or [])[:3]
+            if str(item.get('metric_name') or '').strip()
+        ]
+        lines.extend([f'- {item}' for item in anomaly_items if item.strip()])
+    external_context_lines = [
+        line
+        for line in (_format_external_context_export_line(item) for item in (newsletter_payload.get('external_context_items') or [])[:3])
+        if line
+    ]
+    if external_context_lines:
+        lines.append('')
+        lines.append('Sector & Regulatory Context:')
+        lines.extend([f'- {item}' for item in external_context_lines])
 
     return lines or ['ESG newsletter draft unavailable.']
 
@@ -4164,6 +5412,28 @@ def _newsletter_html_body(newsletter_payload: dict) -> str:
     highlights = render_list('Highlights', newsletter_payload.get('highlights') or [])
     watchouts = render_list('Watchouts', newsletter_payload.get('watchouts') or [])
     recommendations = render_list('Recommendations', newsletter_payload.get('recommendations') or [])
+    benchmark_callouts = render_list('Benchmark Callouts', newsletter_payload.get('benchmark_callouts') or [])
+    anomaly_summary = newsletter_payload.get('anomaly_summary') or {}
+    anomaly_items = [
+        f"{str(item.get('company_name') or '').strip() + ': ' if str(item.get('company_name') or '').strip() else ''}{str(item.get('metric_name') or '').strip()} - {str(item.get('recommendation') or item.get('rationale') or '').strip()}"
+        for item in (anomaly_summary.get('items') or [])[:3]
+        if str(item.get('metric_name') or '').strip()
+    ]
+    anomaly_block = ''
+    if anomaly_summary.get('headline') or anomaly_summary.get('summary') or anomaly_items:
+        anomaly_block = (
+            '<div style="margin-top:20px;padding:18px;border:1px solid #f1c27d;background:#fff7ed;border-radius:14px;">'
+            f'<h3 style="margin:0 0 10px 0;font-size:15px;color:#8a4510;">{html_lib.escape(str(anomaly_summary.get("headline") or "Anomaly Watchlist").strip())}</h3>'
+            f'<p style="margin:0;color:#5b3416;line-height:1.6;">{html_lib.escape(str(anomaly_summary.get("summary") or "").strip()).replace(chr(10), "<br>")}</p>'
+            f'{render_list("Recommended Follow-up", anomaly_items)}'
+            '</div>'
+        )
+    external_context_items = [
+        _format_external_context_export_line(item)
+        for item in (newsletter_payload.get('external_context_items') or [])[:3]
+        if isinstance(item, dict)
+    ]
+    external_context = render_list('Sector & Regulatory Context', [item for item in external_context_items if item])
 
     return f'''
     <html>
@@ -4178,6 +5448,9 @@ def _newsletter_html_body(newsletter_payload: dict) -> str:
             {highlights}
             {watchouts}
             {recommendations}
+            {benchmark_callouts}
+            {anomaly_block}
+            {external_context}
             {'<div style="margin-top:24px;padding:16px;border-left:4px solid #2b6cb0;background:#eef5ff;color:#153054;border-radius:10px;"><strong>Call to action:</strong> ' + call_to_action + '</div>' if call_to_action else ''}
           </div>
         </div>
@@ -4411,6 +5684,11 @@ def export_newsletter(
         subject_line=str(newsletter_payload.get('subject_line') or ''),
         preheader=str(newsletter_payload.get('preheader') or ''),
         headline=str(newsletter_payload.get('headline') or ''),
+        impact_headline=str(newsletter_payload.get('impact_headline') or '') or None,
+        trend_summary=str(newsletter_payload.get('trend_summary') or '') or None,
+        benchmark_callouts=list(newsletter_payload.get('benchmark_callouts') or []),
+        external_context_items=list(newsletter_payload.get('external_context_items') or []),
+        anomaly_summary=newsletter_payload.get('anomaly_summary') or None,
         message='Newsletter export is ready.',
     )
 
@@ -4488,15 +5766,106 @@ def narrative_summary(
 
 @app.get('/dashboard/manager', response_model=ManagerDashboardResponse, dependencies=[Depends(require_manager)])
 def manager_dashboard(db: Session = Depends(get_db)):
+    cache_key = 'dashboard:manager'
+    cached = _get_timed_cache(cache_key)
+    if cached is not None:
+        return cached
+
     companies = _load_companies_with_related_data(db)
     analytics = build_investor_analytics(db, companies=companies)
     summary = build_manager_summary(db, companies)
     impact_story = _build_impact_intelligence(db, analytics, companies)
-    return {
-        'companies': companies,
-        'summary': summary,
-        'impact_story': impact_story,
-    }
+    result = ManagerDashboardResponse(
+        companies=companies,
+        summary=summary,
+        impact_story=impact_story,
+    ).model_dump()
+    return _set_timed_cache(cache_key, result)
+
+
+@app.get('/external-context/feed', response_model=ExternalContextFeedResponse)
+def external_context_feed(
+    limit: int = Query(default=8, ge=1, le=20),
+    sector: str | None = Query(default=None),
+    company_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
+    normalized_role = normalize_role(role)
+    if normalized_role not in {'manager', 'investor', 'company'}:
+        raise HTTPException(status_code=403, detail='External context feed is restricted to authenticated portal users')
+
+    target_company = None
+    if company_id is not None:
+        target_company = _ui_visible_company_by_id(db, company_id)
+        if not target_company:
+            raise HTTPException(status_code=404, detail='Company not found')
+
+    if normalized_role == 'investor' and company_id is not None:
+        raise HTTPException(status_code=403, detail='Investors are blocked from company-level external context feeds')
+
+    if normalized_role == 'company':
+        request_user = find_request_user(db, email)
+        owned_company = find_company_for_user(db, request_user)
+        if not owned_company:
+            raise HTTPException(status_code=404, detail='Company not found for authenticated user')
+        if target_company is not None and target_company.id != owned_company.id:
+            raise HTTPException(status_code=403, detail='Unauthorized access to this company')
+        target_company = owned_company
+
+    return ExternalContextFeedResponse(
+        **_build_external_context_feed(
+            db,
+            role=normalized_role,
+            company=target_company,
+            sector_filter=sector,
+            limit=limit,
+        )
+    )
+
+
+@app.get('/anomalies/summary', response_model=AnomalySummaryResponse)
+def anomaly_summary(
+    company_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
+    normalized_role = normalize_role(role)
+    if normalized_role not in {'manager', 'investor', 'company'}:
+        raise HTTPException(status_code=403, detail='Anomaly summary is restricted to authenticated portal users')
+
+    if normalized_role == 'investor' and company_id is not None:
+        raise HTTPException(status_code=403, detail='Investors are blocked from company-level anomaly summaries')
+
+    if normalized_role == 'company':
+        request_user = find_request_user(db, email)
+        company = find_company_for_user(db, request_user)
+        if not company:
+            raise HTTPException(status_code=404, detail='Company not found for authenticated user')
+        return AnomalySummaryResponse(**_build_company_anomaly_summary(db, company))
+
+    if company_id is not None:
+        company = _ui_visible_company_by_id(db, company_id)
+        if not company:
+            raise HTTPException(status_code=404, detail='Company not found')
+        return AnomalySummaryResponse(**_build_company_anomaly_summary(db, company))
+
+    return AnomalySummaryResponse(**_build_portfolio_anomaly_summary(db))
+
+
+@app.get('/company/anomalies', response_model=AnomalySummaryResponse, dependencies=[Depends(require_company)])
+def company_anomalies(
+    db: Session = Depends(get_db),
+    email: str | None = Depends(get_user_email),
+):
+    user = find_request_user(db, email)
+    company = find_company_for_user(db, user)
+    if not company:
+        raise HTTPException(status_code=404, detail='Company not found')
+    return AnomalySummaryResponse(**_build_company_anomaly_summary(db, company))
+
 
 def safe_number(value, default: float = 0.0) -> float:
     try:
@@ -4534,15 +5903,467 @@ def _set_timed_cache(key: str, value: Any) -> Any:
     return _clone_cache_value(cloned)
 
 
+def _priority_rank(value: str) -> int:
+    return {'high': 0, 'medium': 1, 'low': 2}.get(str(value or 'medium').strip().lower(), 1)
+
+
+def _published_iso(days_ago: int) -> str:
+    return (datetime.utcnow() - timedelta(days=max(days_ago, 0))).replace(microsecond=0).isoformat() + 'Z'
+
+
+def _format_anomaly_value(value: Any, *, suffix: str = '', decimals: int = 1) -> str:
+    if value is None or value == '':
+        return 'n/a'
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if abs(number - round(number)) < 1e-9:
+        return f'{int(round(number)):,}{suffix}'
+    return f'{number:,.{decimals}f}{suffix}'
+
+
+def _top_sectors_for_feed(companies: List[Company], *, company: Company | None = None) -> List[str]:
+    if company is not None:
+        return [str(company.sector or 'Unknown').strip() or 'Unknown']
+
+    sector_counts: Dict[str, int] = {}
+    for item in companies:
+        sector = str(item.sector or 'Unknown').strip() or 'Unknown'
+        sector_counts[sector] = sector_counts.get(sector, 0) + 1
+    ranked = sorted(sector_counts.items(), key=lambda row: (-row[1], row[0]))
+    return [sector for sector, _ in ranked[:3]]
+
+
+def _sector_template_bundle(sector: str) -> List[Dict[str, Any]]:
+    normalized = _normalize_impact_text(sector)
+    for key, items in EXTERNAL_CONTEXT_SECTOR_TEMPLATES.items():
+        if key in normalized:
+            return items
+    return [
+        {
+            'id': f'{slugify(sector)}_general_reporting',
+            'title': f'{sector} operators are being asked for clearer ESG evidence trails',
+            'summary': 'Reporting teams are expected to pair metrics with practical policy references, action ownership, and consistent year-on-year context.',
+            'priority': 'medium',
+            'related_topics': ['data quality', 'evidence', 'benchmarking'],
+            'impact_hint': 'Weak comparability tends to create more follow-up questions than low absolute impact alone.',
+            'action_prompt': 'Keep approved metrics, policy references, and action plans tightly connected in the next update.',
+        },
+    ]
+
+
+def _build_external_context_feed(
+    db: Session,
+    *,
+    role: str,
+    company: Company | None = None,
+    sector_filter: str | None = None,
+    limit: int = 8,
+) -> dict:
+    normalized_role = normalize_role(role)
+    cache_scope = f'{normalized_role}:{company.id if company else "portfolio"}:{slugify(sector_filter or "")}:{limit}'
+    cache_key = f'external_context_feed:{cache_scope}'
+    cached = _get_timed_cache(cache_key)
+    if cached is not None:
+        return cached
+
+    companies = _load_companies_with_related_data(db)
+    sectors_in_view = _top_sectors_for_feed(companies, company=company)
+    if sector_filter:
+        requested = str(sector_filter).strip()
+        sectors_in_view = [sector for sector in sectors_in_view if _normalize_impact_text(sector) == _normalize_impact_text(requested)]
+        if not sectors_in_view and requested:
+            sectors_in_view = [requested]
+
+    items: List[dict] = []
+    for index, template in enumerate(EXTERNAL_CONTEXT_REGULATORY_TEMPLATES):
+        items.append(
+            {
+                'id': template['id'],
+                'item_type': 'regulation',
+                'title': template['title'],
+                'summary': template['summary'],
+                'sector': sectors_in_view[0] if len(sectors_in_view) == 1 and company is not None else None,
+                'geography': template.get('geography'),
+                'priority': template.get('priority', 'medium'),
+                'source_label': 'Curated regulatory monitor',
+                'source_type': 'curated',
+                'published_at': _published_iso(index + 1),
+                'related_topics': template.get('related_topics') or [],
+                'impact_hint': template.get('impact_hint'),
+                'action_prompt': template.get('action_prompt'),
+                'company_id': company.id if company else None,
+                'company_name': company.name if company else None,
+            }
+        )
+
+    for sector_index, sector in enumerate(sectors_in_view):
+        for item_index, template in enumerate(_sector_template_bundle(sector)):
+            items.append(
+                {
+                    'id': f'{slugify(sector)}_{template["id"]}',
+                    'item_type': 'sector-news',
+                    'title': template['title'],
+                    'summary': template['summary'],
+                    'sector': sector,
+                    'geography': company.geography if company else None,
+                    'priority': template.get('priority', 'medium'),
+                    'source_label': 'Sector context brief',
+                    'source_type': 'portfolio-derived',
+                    'published_at': _published_iso(sector_index + item_index + 1),
+                    'related_topics': template.get('related_topics') or [],
+                    'impact_hint': template.get('impact_hint'),
+                    'action_prompt': template.get('action_prompt'),
+                    'company_id': company.id if company else None,
+                    'company_name': company.name if company else None,
+                }
+            )
+
+    if company is not None:
+        snapshot = _build_company_snapshot(db, company)
+        if snapshot:
+            items.insert(
+                0,
+                {
+                    'id': f'company_focus_{company.id}',
+                    'item_type': 'sector-news',
+                    'title': f'{company.name} should keep its next ESG update tightly tied to approved operating signals',
+                    'summary': (
+                        f'The latest approved snapshot for {company.name} shows {snapshot["metrics"]["total_ghg_emissions"]} tCO2e, '
+                        f'{snapshot["metrics"]["female_representation_percent"]}% female representation, and TRIFR at {snapshot["metrics"]["trifr"]}.'
+                    ),
+                    'sector': company.sector,
+                    'geography': company.geography,
+                    'priority': 'high',
+                    'source_label': 'Company context brief',
+                    'source_type': 'portfolio-derived',
+                    'published_at': _published_iso(0),
+                    'related_topics': ['approved data', 'company reporting', 'board updates'],
+                    'impact_hint': 'The company dashboard, report exports, and narrative inserts should stay aligned with this approved baseline.',
+                    'action_prompt': 'Use the approved snapshot as the source of truth for the next company submission review and any outward-facing summary.',
+                    'company_id': company.id,
+                    'company_name': company.name,
+                },
+            )
+
+    items.sort(key=lambda item: (_priority_rank(item.get('priority', 'medium')), item.get('published_at', '')), reverse=False)
+    result = {
+        'available': True,
+        'role': normalized_role,
+        'scope': 'company' if company is not None else 'portfolio',
+        'generated_at': datetime.utcnow().replace(microsecond=0).isoformat() + 'Z',
+        'sectors_in_view': sectors_in_view,
+        'items': items[:limit],
+        'message': None if items else 'No sector or regulatory context items are available yet.',
+    }
+    return _set_timed_cache(cache_key, result)
+
+
+def _company_anomaly_items(snapshot: dict) -> List[dict]:
+    metrics = snapshot.get('metrics') or {}
+    policy_snapshot = snapshot.get('policy_snapshot') or {}
+    confidence = snapshot.get('confidence') or {}
+    action_plan_summary = snapshot.get('action_plan_summary') or {}
+    items: List[dict] = []
+
+    def add_item(
+        anomaly_type: str,
+        severity: str,
+        metric_name: str,
+        current_value: str,
+        rationale: str,
+        recommendation: str,
+        *,
+        previous_value: str | None = None,
+        delta_percent: float | None = None,
+    ):
+        items.append(
+            {
+                'id': f'{anomaly_type}_{snapshot["company_id"]}_{len(items) + 1}',
+                'anomaly_type': anomaly_type,
+                'severity': severity,
+                'company_id': snapshot['company_id'],
+                'company_name': snapshot['company_name'],
+                'sector': snapshot.get('sector'),
+                'reporting_year': snapshot.get('current_year'),
+                'metric_name': metric_name,
+                'current_value': current_value,
+                'previous_value': previous_value,
+                'delta_percent': delta_percent,
+                'rationale': rationale,
+                'recommendation': recommendation,
+                'source_submission_id': snapshot.get('submission_id'),
+            }
+        )
+
+    emissions_delta = metrics.get('emissions_delta_pct')
+    if emissions_delta is not None and emissions_delta >= 30:
+        add_item(
+            'emissions_spike',
+            'high' if emissions_delta >= 50 else 'medium',
+            'Total GHG Emissions',
+            _format_anomaly_value(metrics.get('total_ghg_emissions'), suffix=' tCO2e'),
+            f'Approved emissions increased {emissions_delta:+.1f}% versus the prior approved submission.',
+            'Review the underlying drivers, document the variance clearly, and confirm an action owner is assigned.',
+            previous_value='Prior approved period',
+            delta_percent=float(emissions_delta),
+        )
+
+    trifr_value = safe_number(metrics.get('trifr'))
+    if trifr_value >= 5:
+        add_item(
+            'safety_watchlist',
+            'high',
+            'TRIFR',
+            _format_anomaly_value(trifr_value, decimals=2),
+            f'TRIFR is elevated at {trifr_value:.2f}, which is above the usual portfolio watchlist threshold.',
+            'Escalate the safety review, capture remediation steps, and link a concrete action plan before the next reporting pack.',
+        )
+
+    female_rep = safe_number(metrics.get('female_representation_percent'))
+    if female_rep < 30:
+        add_item(
+            'diversity_gap',
+            'medium',
+            'Female Representation',
+            _format_anomaly_value(female_rep, suffix='%'),
+            f'Female workforce representation is {female_rep:.1f}%, which sits below a common portfolio attention threshold.',
+            'Flag the workforce mix trend in the next management update and decide whether a targeted people initiative should be added.',
+        )
+
+    renewable_ratio = safe_number(metrics.get('renewable_ratio_percent'))
+    if renewable_ratio < 20:
+        add_item(
+            'renewables_gap',
+            'medium',
+            'Renewable Energy Share',
+            _format_anomaly_value(renewable_ratio, suffix='%'),
+            f'Renewable energy covers only {renewable_ratio:.1f}% of total energy use in the latest approved data.',
+            'Confirm the electricity sourcing plan and log any active procurement or efficiency action already underway.',
+        )
+
+    if int(metrics.get('confirmed_cases_of_corruption') or 0) > 0:
+        add_item(
+            'governance_incident',
+            'high',
+            'Confirmed Cases of Corruption',
+            str(int(metrics.get('confirmed_cases_of_corruption') or 0)),
+            'Confirmed corruption cases were reported in the approved period.',
+            'Keep governance remediation and board oversight visible in the next review cycle.',
+        )
+
+    if int(metrics.get('cyber_incidents_in_reporting_period') or 0) > 0:
+        add_item(
+            'cyber_incident',
+            'medium',
+            'Cyber Incidents',
+            str(int(metrics.get('cyber_incidents_in_reporting_period') or 0)),
+            'Cyber incidents were recorded in the latest approved period.',
+            'Confirm the incident response, policy coverage, and oversight response before the next investor or board update.',
+        )
+
+    governance_gaps = [
+        label
+        for label, key in [
+            ('ESG policy', 'esg_policy_in_place'),
+            ('Board ESG oversight', 'board_level_esg_oversight'),
+            ('Cybersecurity policy', 'cybersecurity_policy_in_place'),
+            ('Anti-bribery policy', 'anti_bribery_corruption_policy'),
+        ]
+        if _normalize_policy_status(policy_snapshot.get(key)) != 'Yes'
+    ]
+    if governance_gaps:
+        add_item(
+            'policy_gap',
+            'medium',
+            'Governance Policy Coverage',
+            ', '.join(governance_gaps),
+            'One or more core governance controls are missing or not fully in place in the approved submission.',
+            'Prioritise closing the most material governance policy gap and document timing in the action-plan tracker.',
+        )
+
+    measured_percent = safe_number(confidence.get('measured_percent'))
+    if confidence.get('total') and measured_percent < 60:
+        add_item(
+            'low_confidence',
+            'low',
+            'Measured Data Confidence',
+            _format_anomaly_value(measured_percent, suffix='%'),
+            f'Only {measured_percent:.1f}% of confidence-tagged fields are marked as measured.',
+            'Improve evidence quality or explain the estimation basis before the next approval cycle.',
+        )
+
+    if safe_number(action_plan_summary.get('overdue')) > 0:
+        add_item(
+            'overdue_actions',
+            'medium',
+            'Overdue Action Plans',
+            str(int(safe_number(action_plan_summary.get('overdue')))),
+            'Overdue ESG action plans remain open against the approved reporting context.',
+            'Confirm whether overdue actions need reprioritisation, revised timing, or escalation.',
+        )
+
+    items.sort(key=lambda item: (_priority_rank(item['severity']), item['metric_name']))
+    return items
+
+
+def _build_anomaly_summary_prompt(scope: str, items: List[dict], *, company_name: str | None = None) -> str:
+    label = company_name or 'Portfolio'
+    compact_items = [
+        {
+            'company_name': item.get('company_name'),
+            'severity': item.get('severity'),
+            'metric_name': item.get('metric_name'),
+            'rationale': item.get('rationale'),
+            'recommendation': item.get('recommendation'),
+            'delta_percent': item.get('delta_percent'),
+        }
+        for item in items[:8]
+    ]
+    return (
+        'You are writing a short anomaly summary for an ESG platform.\n'
+        'Return valid JSON only with exactly this shape: {"headline":"...","summary":"..."}.\n'
+        'Keep both fields plain-English, concise, and decision-ready.\n'
+        f'Scope: {scope}\n'
+        f'Entity: {label}\n'
+        f'Anomalies:\n{json.dumps(compact_items, indent=2, sort_keys=True, default=str)}'
+    )
+
+
+def _anomaly_summary_from_items(scope: str, items: List[dict], *, company_name: str | None = None) -> dict:
+    severity_counts = {
+        'high': sum(1 for item in items if item['severity'] == 'high'),
+        'medium': sum(1 for item in items if item['severity'] == 'medium'),
+        'low': sum(1 for item in items if item['severity'] == 'low'),
+    }
+    label = company_name or 'Portfolio'
+    if not items:
+        return {
+            'available': True,
+            'scope': scope,
+            'generated_at': datetime.utcnow().replace(microsecond=0).isoformat() + 'Z',
+            'headline': f'{label} anomaly watchlist is clear',
+            'summary': 'No material anomalies were triggered from the latest approved-data checks.',
+            'severity_counts': severity_counts,
+            'watchlist_companies': [],
+            'items': [],
+            'fallback_used': True,
+            'model': None,
+            'message': 'No approved-data anomalies were triggered.',
+        }
+
+    high_count = severity_counts['high']
+    medium_count = severity_counts['medium']
+    headline = (
+        f'{label} has {high_count} high-severity anomaly' + ('ies' if high_count != 1 else 'y')
+        if high_count
+        else f'{label} has {medium_count} medium-severity anomaly' + ('ies' if medium_count != 1 else 'y')
+    )
+    summary = (
+        f'{label} anomaly screening flagged {len(items)} issue(s) from the latest approved data. '
+        f'{severity_counts["high"]} high, {severity_counts["medium"]} medium, and {severity_counts["low"]} low-severity items need attention.'
+    )
+    use_ai_summary = str(os.getenv('ANOMALY_ENABLE_AI_SUMMARY', '')).strip().lower() in {'1', 'true', 'yes', 'on'}
+    ai_payload = _call_openai_summary(_build_anomaly_summary_prompt(scope, items, company_name=company_name)) if use_ai_summary else None
+    return {
+        'available': True,
+        'scope': scope,
+        'generated_at': datetime.utcnow().replace(microsecond=0).isoformat() + 'Z',
+        'headline': str((ai_payload or {}).get('headline') or headline).strip(),
+        'summary': str((ai_payload or {}).get('summary') or summary).strip(),
+        'severity_counts': severity_counts,
+        'watchlist_companies': [],
+        'items': items,
+        'fallback_used': not bool(ai_payload),
+        'model': OPENAI_DEFAULT_MODEL if ai_payload else None,
+        'message': None,
+    }
+
+
+def _build_portfolio_anomaly_summary(db: Session, companies: Optional[List[Company]] = None) -> dict:
+    cache_key = 'portfolio_anomaly_summary'
+    cached = _get_timed_cache(cache_key)
+    if cached is not None and companies is None:
+        return cached
+
+    companies = companies if companies is not None else _load_companies_with_related_data(db)
+    portfolio_snapshot = _build_portfolio_snapshot(db, companies=companies)
+    if not portfolio_snapshot:
+        result = _anomaly_summary_from_items('portfolio', [])
+        return _set_timed_cache(cache_key, result) if companies is None else result
+
+    anomaly_items: List[dict] = []
+    watchlist_companies: List[dict] = []
+    for company in companies:
+        snapshot = _build_company_snapshot(db, company)
+        if not snapshot:
+            continue
+        company_items = _company_anomaly_items(snapshot)
+        anomaly_items.extend(company_items)
+        if company_items:
+            highest = sorted(company_items, key=lambda item: _priority_rank(item['severity']))[0]
+            watchlist_companies.append(
+                {
+                    'company_id': company.id,
+                    'company_name': company.name,
+                    'sector': company.sector,
+                    'top_anomaly': highest['metric_name'],
+                    'severity': highest['severity'],
+                }
+            )
+
+    anomaly_items.sort(key=lambda item: (_priority_rank(item['severity']), item['company_name'] or '', item['metric_name']))
+    result = _anomaly_summary_from_items('portfolio', anomaly_items[:18], company_name='Portfolio')
+    result['watchlist_companies'] = watchlist_companies[:6]
+    return _set_timed_cache(cache_key, result) if companies is None else result
+
+
+def _build_company_anomaly_summary(db: Session, company: Company) -> dict:
+    cache_key = f'company_anomaly_summary:{company.id}'
+    cached = _get_timed_cache(cache_key)
+    if cached is not None:
+        return cached
+
+    snapshot = _build_company_snapshot(db, company)
+    items = _company_anomaly_items(snapshot) if snapshot else []
+    result = _anomaly_summary_from_items('company', items, company_name=company.name)
+    return _set_timed_cache(cache_key, result)
+
+
+def _query_ui_visible_companies(db: Session):
+    query = db.query(Company)
+    if EXCLUDE_NON_PROD_UI_ENTITIES:
+        query = query.join(User, Company.user_id == User.id).filter(~build_non_prod_company_clause())
+    return query
+
+
+def _ui_visible_company_by_id(db: Session, company_id: int) -> Company | None:
+    return _query_ui_visible_companies(db).filter(Company.id == company_id).first()
+
+
 def _load_companies_with_related_data(db: Session) -> List[Company]:
     return (
-        db.query(Company)
+        _query_ui_visible_companies(db)
         .options(
             selectinload(Company.submissions).selectinload(Submission.cycle),
             selectinload(Company.action_plans),
             selectinload(Company.review_actions),
             selectinload(Company.validation_flags),
         )
+        .order_by(Company.name.asc())
+        .all()
+    )
+
+
+def _load_companies_with_submission_data(db: Session) -> List[Company]:
+    """
+    Lean loader for dashboard/analytics surfaces that only need submissions.
+    This avoids extra round trips for unrelated relations.
+    """
+    return (
+        _query_ui_visible_companies(db)
+        .options(selectinload(Company.submissions))
         .order_by(Company.name.asc())
         .all()
     )
@@ -4590,8 +6411,7 @@ def _trend_direction(current: float, previous: float) -> str:
 
 def _build_cycle_summaries(db: Session) -> list[dict]:
     cycles = (
-        db.query(CollectionCycle)
-        .filter(CollectionCycle.cycle_year > 0)
+        _apply_valid_cycle_year_filter(db.query(CollectionCycle))
         .order_by(CollectionCycle.cycle_year.asc(), CollectionCycle.id.asc())
         .all()
     )
@@ -4615,12 +6435,15 @@ def _build_cycle_summaries(db: Session) -> list[dict]:
     ]
 
     submissions_by_cycle: Dict[int, List[Submission]] = {}
-    for submission in (
-        db.query(Submission)
-        .filter(Submission.cycle_id.is_not(None))
-        .order_by(Submission.cycle_id.asc(), Submission.id.asc())
-        .all()
-    ):
+    submission_query = db.query(Submission).filter(Submission.cycle_id.is_not(None))
+    if EXCLUDE_NON_PROD_UI_ENTITIES:
+        submission_query = (
+            submission_query
+            .join(Company, Submission.company_id == Company.id)
+            .join(User, Company.user_id == User.id)
+            .filter(~build_non_prod_company_clause())
+        )
+    for submission in submission_query.order_by(Submission.cycle_id.asc(), Submission.id.asc()).all():
         if submission.cycle_id is None:
             continue
         submissions_by_cycle.setdefault(submission.cycle_id, []).append(submission)
@@ -5546,6 +7369,81 @@ def _normalize_narrative_payload(payload: Optional[dict], fallback_payload: dict
     return normalized
 
 
+def _build_snapshot_signature(snapshot: Optional[dict]) -> str:
+    if not isinstance(snapshot, dict) or not snapshot:
+        return ''
+    return hashlib.sha256(
+        json.dumps(snapshot, sort_keys=True, default=str).encode('utf-8')
+    ).hexdigest()
+
+
+def _source_reference_from_snapshot(snapshot: Optional[dict]) -> tuple[str, List[int], int, int]:
+    if not isinstance(snapshot, dict) or not snapshot:
+        return '', [], 0, 0
+
+    years = snapshot.get('source_years')
+    if not years:
+        current_year = snapshot.get('current_year')
+        years = [current_year] if current_year else []
+    normalized_years = sorted(
+        {
+            int(year)
+            for year in years or []
+            if str(year).strip().lstrip('-').isdigit()
+        }
+    )
+    company_count = int(snapshot.get('source_company_count') or (1 if snapshot.get('company_id') else 0))
+    submission_count = int(snapshot.get('source_submission_count') or (1 if snapshot.get('submission_id') else 0))
+    return _build_snapshot_signature(snapshot), normalized_years, company_count, submission_count
+
+
+def _missing_narrative_state(reason: Optional[str] = None) -> dict:
+    return {
+        'freshness_status': 'missing',
+        'freshness_label': NARRATIVE_STATE_LABELS['missing'],
+        'freshness_reason': reason,
+        'latest_source_years': [],
+        'latest_source_company_count': 0,
+        'latest_source_submission_count': 0,
+    }
+
+
+def _build_narrative_freshness(
+    record: NarrativeSummary,
+    *,
+    latest_snapshot_signature: str,
+    latest_source_years: List[int],
+    latest_source_company_count: int,
+    latest_source_submission_count: int,
+) -> dict:
+    generation_context = _safe_json_loads(getattr(record, 'generation_context_json', None), {})
+    saved_snapshot_signature = str(generation_context.get('snapshot_signature') or '').strip()
+    saved_source_years = _narrative_source_years(record)
+    reasons: List[str] = []
+
+    if latest_snapshot_signature and saved_snapshot_signature and latest_snapshot_signature != saved_snapshot_signature:
+        reasons.append('Approved data changed since this narrative was generated.')
+
+    if saved_source_years != list(latest_source_years or []):
+        reasons.append('Narrative years do not match the latest approved reporting context.')
+
+    if int(getattr(record, 'source_company_count', 0) or 0) != int(latest_source_company_count or 0):
+        reasons.append('Narrative company coverage no longer matches the latest approved scope.')
+
+    if int(getattr(record, 'source_submission_count', 0) or 0) != int(latest_source_submission_count or 0):
+        reasons.append('Narrative submission coverage no longer matches the latest approved scope.')
+
+    freshness_status = 'stale' if reasons else 'current'
+    return {
+        'freshness_status': freshness_status,
+        'freshness_label': NARRATIVE_STATE_LABELS[freshness_status],
+        'freshness_reason': reasons[0] if reasons else 'Narrative matches the latest approved data.',
+        'latest_source_years': list(latest_source_years or []),
+        'latest_source_company_count': int(latest_source_company_count or 0),
+        'latest_source_submission_count': int(latest_source_submission_count or 0),
+    }
+
+
 def _load_cached_narrative(
     db: Session,
     *,
@@ -5632,7 +7530,22 @@ def _narrative_active_payload(record: NarrativeSummary) -> dict:
     )
 
 
-def _narrative_record_history_item(record: NarrativeSummary, *, company_name: str | None) -> NarrativeHistoryItem:
+def _narrative_record_history_item(
+    record: NarrativeSummary,
+    *,
+    company_name: str | None,
+    latest_snapshot_signature: str = '',
+    latest_source_years: Optional[List[int]] = None,
+    latest_source_company_count: int = 0,
+    latest_source_submission_count: int = 0,
+) -> NarrativeHistoryItem:
+    freshness = _build_narrative_freshness(
+        record,
+        latest_snapshot_signature=latest_snapshot_signature,
+        latest_source_years=latest_source_years or [],
+        latest_source_company_count=latest_source_company_count,
+        latest_source_submission_count=latest_source_submission_count,
+    )
     return NarrativeHistoryItem(
         narrative_id=record.id,
         audience=record.audience,
@@ -5647,6 +7560,8 @@ def _narrative_record_history_item(record: NarrativeSummary, *, company_name: st
         source_years=_narrative_source_years(record),
         source_company_count=getattr(record, 'source_company_count', 0) or 0,
         source_submission_count=getattr(record, 'source_submission_count', 0) or 0,
+        freshness_status=freshness['freshness_status'],
+        freshness_label=freshness['freshness_label'],
         approved_by_role=getattr(record, 'approved_by_role', None),
         approved_at=(record.approved_at.isoformat() if getattr(record, 'approved_at', None) else None),
     )
@@ -5665,8 +7580,19 @@ def _narrative_record_response(
     can_edit: bool,
     can_approve: bool,
     can_export: bool,
+    latest_snapshot_signature: str = '',
+    latest_source_years: Optional[List[int]] = None,
+    latest_source_company_count: int = 0,
+    latest_source_submission_count: int = 0,
 ) -> NarrativeDetailResponse:
     payload = _narrative_active_payload(record)
+    freshness = _build_narrative_freshness(
+        record,
+        latest_snapshot_signature=latest_snapshot_signature,
+        latest_source_years=latest_source_years or source_years,
+        latest_source_company_count=latest_source_company_count or record.source_company_count,
+        latest_source_submission_count=latest_source_submission_count or record.source_submission_count,
+    )
     return NarrativeDetailResponse(
         available=True,
         audience=audience,
@@ -5679,10 +7605,16 @@ def _narrative_record_response(
         source_years=source_years,
         source_company_count=record.source_company_count,
         source_submission_count=record.source_submission_count,
+        latest_source_years=freshness['latest_source_years'],
+        latest_source_company_count=freshness['latest_source_company_count'],
+        latest_source_submission_count=freshness['latest_source_submission_count'],
         provider=record.provider,
         model=record.model,
         cached=cached,
         fallback_used=fallback_used,
+        freshness_status=freshness['freshness_status'],
+        freshness_label=freshness['freshness_label'],
+        freshness_reason=freshness['freshness_reason'],
         generated_at=(record.created_at or datetime.utcnow()).isoformat(),
         updated_at=(record.updated_at or datetime.utcnow()).isoformat(),
         headline=payload['headline'],
@@ -5723,6 +7655,9 @@ def _narrative_response_from_payload(
     can_edit: bool,
     can_approve: bool,
     can_export: bool,
+    latest_source_years: Optional[List[int]] = None,
+    latest_source_company_count: int = 0,
+    latest_source_submission_count: int = 0,
 ) -> NarrativeDetailResponse:
     safe_payload = _narrative_payload_dict(
         headline=payload.get('headline') or '',
@@ -5743,10 +7678,16 @@ def _narrative_response_from_payload(
         source_years=source_years,
         source_company_count=source_company_count,
         source_submission_count=source_submission_count,
+        latest_source_years=list(latest_source_years or source_years),
+        latest_source_company_count=int(latest_source_company_count or source_company_count),
+        latest_source_submission_count=int(latest_source_submission_count or source_submission_count),
         provider=provider,
         model=model,
         cached=cached,
         fallback_used=fallback_used,
+        freshness_status='current',
+        freshness_label=NARRATIVE_STATE_LABELS['current'],
+        freshness_reason='Narrative matches the latest approved data.',
         generated_at=datetime.utcnow().isoformat(),
         updated_at=datetime.utcnow().isoformat(),
         headline=safe_payload['headline'],
@@ -5770,6 +7711,7 @@ def _narrative_response_from_payload(
 
 
 def _narrative_unavailable_response(*, audience: str, scope: str, tone: str, company_id: Optional[int], company_name: Optional[str], message: str) -> NarrativeSummaryResponse:
+    missing_state = _missing_narrative_state(message)
     return NarrativeDetailResponse(
         available=False,
         audience=audience,
@@ -5782,10 +7724,16 @@ def _narrative_unavailable_response(*, audience: str, scope: str, tone: str, com
         source_years=[],
         source_company_count=0,
         source_submission_count=0,
+        latest_source_years=missing_state['latest_source_years'],
+        latest_source_company_count=missing_state['latest_source_company_count'],
+        latest_source_submission_count=missing_state['latest_source_submission_count'],
         provider='openai',
         model=OPENAI_DEFAULT_MODEL,
         cached=False,
         fallback_used=False,
+        freshness_status=missing_state['freshness_status'],
+        freshness_label=missing_state['freshness_label'],
+        freshness_reason=missing_state['freshness_reason'],
         generated_at=datetime.utcnow().isoformat(),
         updated_at=datetime.utcnow().isoformat(),
         headline='',
@@ -5812,6 +7760,7 @@ def _build_narrative_context(snapshot: dict, *, audience: str, tone: str) -> dic
     return {
         'audience': audience,
         'tone': tone,
+        'snapshot_signature': _build_snapshot_signature(snapshot),
         'framework_tags': snapshot.get('framework_tags') or get_framework_tags_for_audience(audience),
         'framework_insertions': _framework_insertions(snapshot, audience),
         'action_plan_summary': snapshot.get('action_plan_summary') or {},
@@ -5855,7 +7804,11 @@ def build_narrative_summary(
             raise HTTPException(status_code=403, detail='Investors cannot access company-level narrative summaries')
         target_company: Optional[Company] = None
         if company_id is not None:
-            target_company = db.query(Company).filter(Company.id == company_id).first()
+            target_company = (
+                _ui_visible_company_by_id(db, company_id)
+                if role != 'company'
+                else db.query(Company).filter(Company.id == company_id).first()
+            )
             if not target_company:
                 raise HTTPException(status_code=404, detail='Company not found')
             enforce_company_scope_for_path(db, role=role, user_email=email, company_id=target_company.id)
@@ -5883,6 +7836,7 @@ def build_narrative_summary(
             )
 
         context = _build_narrative_context(snapshot, audience=normalized_audience, tone=normalized_tone)
+        latest_snapshot_signature, latest_source_years, latest_source_company_count, latest_source_submission_count = _source_reference_from_snapshot(snapshot)
         source_hash = hashlib.sha256(json.dumps({'snapshot': snapshot, 'tone': normalized_tone}, sort_keys=True, default=str).encode('utf-8')).hexdigest()
         if not force_refresh:
             cached_record = _load_cached_narrative(
@@ -5900,12 +7854,16 @@ def build_narrative_summary(
                     scope=scope,
                     company_id=target_company.id,
                     company_name=target_company.name,
-                    source_years=[snapshot['current_year']] if snapshot.get('current_year') else [],
+                    source_years=latest_source_years,
                     cached=True,
                     fallback_used=False,
                     can_edit=role == 'manager',
                     can_approve=role == 'manager',
                     can_export=True,
+                    latest_snapshot_signature=latest_snapshot_signature,
+                    latest_source_years=latest_source_years,
+                    latest_source_company_count=latest_source_company_count,
+                    latest_source_submission_count=latest_source_submission_count,
                 )
 
         prompt = _build_narrative_prompt(normalized_audience, scope, normalized_tone, context)
@@ -5921,9 +7879,9 @@ def build_narrative_summary(
             company_id=target_company.id,
             source_hash=source_hash,
             model=OPENAI_DEFAULT_MODEL if openai_payload else None,
-            source_years=[snapshot['current_year']] if snapshot.get('current_year') else [],
-            source_company_count=1,
-            source_submission_count=1,
+            source_years=latest_source_years,
+            source_company_count=latest_source_company_count,
+            source_submission_count=latest_source_submission_count,
             generated_payload=normalized_payload,
             generation_context=context,
             framework_tags=context.get('framework_tags') or [],
@@ -5935,12 +7893,16 @@ def build_narrative_summary(
             scope=scope,
             company_id=target_company.id,
             company_name=target_company.name,
-            source_years=[snapshot['current_year']] if snapshot.get('current_year') else [],
+            source_years=latest_source_years,
             cached=False,
             fallback_used=not bool(openai_payload),
             can_edit=role == 'manager',
             can_approve=role == 'manager',
             can_export=True,
+            latest_snapshot_signature=latest_snapshot_signature,
+            latest_source_years=latest_source_years,
+            latest_source_company_count=latest_source_company_count,
+            latest_source_submission_count=latest_source_submission_count,
         )
 
     if role == 'company':
@@ -5958,6 +7920,7 @@ def build_narrative_summary(
         )
 
     context = _build_narrative_context(snapshot, audience=normalized_audience, tone=normalized_tone)
+    latest_snapshot_signature, latest_source_years, latest_source_company_count, latest_source_submission_count = _source_reference_from_snapshot(snapshot)
     source_hash = hashlib.sha256(json.dumps({'snapshot': snapshot, 'tone': normalized_tone}, sort_keys=True, default=str).encode('utf-8')).hexdigest()
     if not force_refresh:
         cached_record = _load_cached_narrative(
@@ -5975,48 +7938,56 @@ def build_narrative_summary(
                 scope=scope,
                 company_id=None,
                 company_name=None,
-                source_years=snapshot['source_years'],
+                source_years=latest_source_years,
                 cached=True,
                 fallback_used=False,
                 can_edit=role == 'manager',
                 can_approve=role == 'manager',
                 can_export=True,
+                latest_snapshot_signature=latest_snapshot_signature,
+                latest_source_years=latest_source_years,
+                latest_source_company_count=latest_source_company_count,
+                latest_source_submission_count=latest_source_submission_count,
             )
 
-        prompt = _build_narrative_prompt(normalized_audience, scope, normalized_tone, context)
-        openai_payload = _call_openai_summary(prompt)
-        fallback_payload = _build_fallback_portfolio_narrative(snapshot, normalized_audience, normalized_tone)
-        normalized_payload = _normalize_narrative_payload(openai_payload, fallback_payload)
+    prompt = _build_narrative_prompt(normalized_audience, scope, normalized_tone, context)
+    openai_payload = _call_openai_summary(prompt)
+    fallback_payload = _build_fallback_portfolio_narrative(snapshot, normalized_audience, normalized_tone)
+    normalized_payload = _normalize_narrative_payload(openai_payload, fallback_payload)
 
-        record = _store_narrative_record(
-            db,
-            audience=normalized_audience,
-            scope=scope,
-            tone=normalized_tone,
-            company_id=None,
-            source_hash=source_hash,
-            model=OPENAI_DEFAULT_MODEL if openai_payload else None,
-            source_years=snapshot['source_years'],
-            source_company_count=snapshot['source_company_count'],
-            source_submission_count=snapshot['source_submission_count'],
-            generated_payload=normalized_payload,
-            generation_context=context,
-            framework_tags=context.get('framework_tags') or [],
-            status='generated',
-        )
-        return _narrative_record_response(
-            record,
-            audience=normalized_audience,
-            scope=scope,
-            company_id=None,
-            company_name=None,
-            source_years=snapshot['source_years'],
-            cached=False,
-            fallback_used=not bool(openai_payload),
-            can_edit=role == 'manager',
-            can_approve=role == 'manager',
-            can_export=True,
-        )
+    record = _store_narrative_record(
+        db,
+        audience=normalized_audience,
+        scope=scope,
+        tone=normalized_tone,
+        company_id=None,
+        source_hash=source_hash,
+        model=OPENAI_DEFAULT_MODEL if openai_payload else None,
+        source_years=latest_source_years,
+        source_company_count=latest_source_company_count,
+        source_submission_count=latest_source_submission_count,
+        generated_payload=normalized_payload,
+        generation_context=context,
+        framework_tags=context.get('framework_tags') or [],
+        status='generated',
+    )
+    return _narrative_record_response(
+        record,
+        audience=normalized_audience,
+        scope=scope,
+        company_id=None,
+        company_name=None,
+        source_years=latest_source_years,
+        cached=False,
+        fallback_used=not bool(openai_payload),
+        can_edit=role == 'manager',
+        can_approve=role == 'manager',
+        can_export=True,
+        latest_snapshot_signature=latest_snapshot_signature,
+        latest_source_years=latest_source_years,
+        latest_source_company_count=latest_source_company_count,
+        latest_source_submission_count=latest_source_submission_count,
+    )
 
 
 def _get_narrative_record_or_404(db: Session, narrative_id: int) -> NarrativeSummary:
@@ -6090,6 +8061,15 @@ def _authorize_narrative_record_access(
         raise HTTPException(status_code=403, detail='You do not have access to this narrative record')
 
 
+def _latest_reference_for_narrative_record(db: Session, record: NarrativeSummary) -> tuple[str, List[int], int, int]:
+    if record.scope == 'company' and record.company_id:
+        company = db.query(Company).filter(Company.id == record.company_id).first()
+        snapshot = _build_company_snapshot(db, company) if company else None
+    else:
+        snapshot = _build_portfolio_snapshot(db)
+    return _source_reference_from_snapshot(snapshot)
+
+
 @app.get('/narrative/history', response_model=NarrativeHistoryResponse)
 def narrative_history(
     audience: str = Query(default='board'),
@@ -6128,8 +8108,31 @@ def narrative_history(
         raise HTTPException(status_code=403, detail='Company users cannot access portfolio narrative history')
 
     records = query.order_by(NarrativeSummary.updated_at.desc(), NarrativeSummary.id.desc()).limit(limit).all()
+    latest_snapshot_signature = ''
+    latest_source_years: List[int] = []
+    latest_source_company_count = 0
+    latest_source_submission_count = 0
+    if scope == 'company':
+        reference_company_id = company_id or (records[0].company_id if records else None)
+        if reference_company_id:
+            company = db.query(Company).filter(Company.id == reference_company_id).first()
+            latest_snapshot_signature, latest_source_years, latest_source_company_count, latest_source_submission_count = _source_reference_from_snapshot(
+                _build_company_snapshot(db, company) if company else None
+            )
+    else:
+        latest_snapshot_signature, latest_source_years, latest_source_company_count, latest_source_submission_count = _source_reference_from_snapshot(
+            _build_portfolio_snapshot(db)
+        )
+
     items = [
-        _narrative_record_history_item(record, company_name=record.company.name if record.company else None)
+        _narrative_record_history_item(
+            record,
+            company_name=record.company.name if record.company else None,
+            latest_snapshot_signature=latest_snapshot_signature,
+            latest_source_years=latest_source_years,
+            latest_source_company_count=latest_source_company_count,
+            latest_source_submission_count=latest_source_submission_count,
+        )
         for record in records
     ]
     return NarrativeHistoryResponse(
@@ -6169,6 +8172,7 @@ def get_narrative_summary(
     record = _get_narrative_record_or_404(db, narrative_id)
     _authorize_narrative_record_access(db, record=record, role=role, email=email)
     company_name = record.company.name if record.company else None
+    latest_snapshot_signature, latest_source_years, latest_source_company_count, latest_source_submission_count = _latest_reference_for_narrative_record(db, record)
     return _narrative_record_response(
         record,
         audience=record.audience,
@@ -6181,6 +8185,10 @@ def get_narrative_summary(
         can_edit=normalize_role(role) == 'manager',
         can_approve=normalize_role(role) == 'manager',
         can_export=True,
+        latest_snapshot_signature=latest_snapshot_signature,
+        latest_source_years=latest_source_years,
+        latest_source_company_count=latest_source_company_count,
+        latest_source_submission_count=latest_source_submission_count,
     )
 
 
@@ -6216,6 +8224,7 @@ def update_narrative_summary(
     record.published_payload_json = json.dumps({})
     db.commit()
     db.refresh(record)
+    latest_snapshot_signature, latest_source_years, latest_source_company_count, latest_source_submission_count = _latest_reference_for_narrative_record(db, record)
     return _narrative_record_response(
         record,
         audience=record.audience,
@@ -6228,6 +8237,10 @@ def update_narrative_summary(
         can_edit=True,
         can_approve=True,
         can_export=True,
+        latest_snapshot_signature=latest_snapshot_signature,
+        latest_source_years=latest_source_years,
+        latest_source_company_count=latest_source_company_count,
+        latest_source_submission_count=latest_source_submission_count,
     )
 
 
@@ -6246,6 +8259,7 @@ def approve_narrative_summary(
     record.approved_at = datetime.utcnow() if payload.approved else None
     db.commit()
     db.refresh(record)
+    latest_snapshot_signature, latest_source_years, latest_source_company_count, latest_source_submission_count = _latest_reference_for_narrative_record(db, record)
     return _narrative_record_response(
         record,
         audience=record.audience,
@@ -6258,6 +8272,10 @@ def approve_narrative_summary(
         can_edit=True,
         can_approve=True,
         can_export=True,
+        latest_snapshot_signature=latest_snapshot_signature,
+        latest_source_years=latest_source_years,
+        latest_source_company_count=latest_source_company_count,
+        latest_source_submission_count=latest_source_submission_count,
     )
 
 
@@ -6848,11 +8866,13 @@ def _build_impact_intelligence(db: Session, analytics: dict, companies: List[Com
     watchlist_companies = list(analytics.get('watchlist_companies') or [])
 
     metric_tooltip_map: Dict[str, str] = {}
-    ai_payload = _call_openai_summary(_build_impact_tooltip_bundle_prompt(metric_specs))
-    if isinstance(ai_payload, dict):
-        tooltips = ai_payload.get('tooltips')
-        if isinstance(tooltips, dict):
-            metric_tooltip_map = {str(key): str(value).strip() for key, value in tooltips.items() if str(value).strip()}
+    use_ai_tooltips = str(os.getenv('IMPACT_ENABLE_AI_TOOLTIPS', '')).strip().lower() in {'1', 'true', 'yes', 'on'}
+    if use_ai_tooltips:
+        ai_payload = _call_openai_summary(_build_impact_tooltip_bundle_prompt(metric_specs))
+        if isinstance(ai_payload, dict):
+            tooltips = ai_payload.get('tooltips')
+            if isinstance(tooltips, dict):
+                metric_tooltip_map = {str(key): str(value).strip() for key, value in tooltips.items() if str(value).strip()}
 
     metric_insights = []
     for spec in metric_specs:
@@ -7039,6 +9059,362 @@ def _build_impact_intelligence(db: Session, analytics: dict, companies: List[Com
     return json.loads(json.dumps(result))
 
 
+def _build_company_comparison_row(metric_name: str, current_value: float, previous_value: float, unit: str, narrative: str) -> dict:
+    return {
+        'metric_name': metric_name,
+        'current_value': round(current_value, 2),
+        'previous_value': round(previous_value, 2),
+        'trend_percent': _percent_change(current_value, previous_value),
+        'trend_direction': _trend_direction(current_value, previous_value),
+        'unit': unit,
+        'narrative': narrative,
+    }
+
+
+def _build_company_impact_intelligence(db: Session, company: Company) -> dict:
+    snapshot = _build_company_snapshot(db, company)
+    if not snapshot:
+        return {}
+
+    latest, previous = _latest_approved_submission(company)
+    latest_payload = parse_submission(latest)
+    previous_payload = parse_submission(previous)
+    portfolio_snapshot = _build_portfolio_snapshot(db) or {}
+
+    metrics = snapshot.get('metrics') or {}
+    policy_snapshot = snapshot.get('policy_snapshot') or {}
+    current_total = safe_number(metrics.get('total_ghg_emissions'))
+    current_scope_1 = safe_number(metrics.get('scope_1_emissions'))
+    current_scope_2 = safe_number(metrics.get('scope_2_location_based'))
+    current_scope_3 = safe_number(metrics.get('scope_3_emissions'))
+    female_rep = safe_number(metrics.get('female_representation_percent'))
+    trifr = safe_number(metrics.get('trifr'))
+    company_esg = safe_number(snapshot.get('esg_score'))
+    sector_benchmark = _impact_sector_benchmark(snapshot.get('sector'))
+    policy_yes_count = sum(1 for value in policy_snapshot.values() if _normalize_policy_status(value) == 'Yes')
+    policy_coverage = round((policy_yes_count / max(len(policy_snapshot), 1)) * 100, 2)
+
+    previous_total = safe_number(previous_payload.get('total_ghg_emissions')) if previous_payload else current_total
+    previous_female_rep = safe_number(previous_payload.get('female_representation_percent')) if previous_payload else female_rep
+    previous_trifr = safe_number(previous_payload.get('trifr')) if previous_payload else trifr
+    previous_policy_yes = 0
+    if previous_payload:
+        previous_policy_yes = sum(
+            1
+            for key in policy_snapshot.keys()
+            if _normalize_policy_status(previous_payload.get(key)) == 'Yes'
+        )
+    previous_policy_coverage = round((previous_policy_yes / max(len(policy_snapshot), 1)) * 100, 2) if previous_payload else policy_coverage
+
+    total_equivalent = _impact_emissions_equivalent(current_total)
+    scope_1_equivalent = _impact_emissions_equivalent(current_scope_1)
+    scope_2_equivalent = _impact_emissions_equivalent(current_scope_2)
+    scope_3_equivalent = _impact_emissions_equivalent(current_scope_3)
+    portfolio_avg_esg = safe_number(portfolio_snapshot.get('avg_esg_score'))
+
+    benchmark_comparisons = [
+        {
+            'metric_name': 'Overall ESG Score',
+            'portfolio_value': round(company_esg, 2),
+            'benchmark_value': IMPACT_PORTFOLIO_ESG_BENCHMARK,
+            'status': _impact_status(company_esg, IMPACT_PORTFOLIO_ESG_BENCHMARK, direction='higher'),
+            'industry': 'Multi-sector peer benchmark',
+            'tooltip': f'{company.name} scores {company_esg:.1f} versus the multi-sector benchmark of {IMPACT_PORTFOLIO_ESG_BENCHMARK:.1f}.',
+            'real_world_equivalent': None,
+            'direction': 'higher',
+        },
+        {
+            'metric_name': 'Female Representation',
+            'portfolio_value': round(female_rep, 2),
+            'benchmark_value': round(sector_benchmark, 2),
+            'status': _impact_status(female_rep, sector_benchmark, direction='higher'),
+            'industry': f'{snapshot.get("sector") or "Sector"} peer benchmark',
+            'tooltip': f'Female representation is benchmarked against the sector peer level of {sector_benchmark:.1f}%.',
+            'real_world_equivalent': None,
+            'direction': 'higher',
+        },
+        {
+            'metric_name': 'TRIFR',
+            'portfolio_value': round(trifr, 2),
+            'benchmark_value': IMPACT_PORTFOLIO_TRIFR_BENCHMARK,
+            'status': _impact_status(trifr, IMPACT_PORTFOLIO_TRIFR_BENCHMARK, direction='lower'),
+            'industry': 'Safety peer benchmark',
+            'tooltip': 'Lower TRIFR is better and is compared against a shared safety peer benchmark.',
+            'real_world_equivalent': None,
+            'direction': 'lower',
+        },
+        {
+            'metric_name': 'Policy Coverage',
+            'portfolio_value': round(policy_coverage, 2),
+            'benchmark_value': IMPACT_PORTFOLIO_POLICY_BENCHMARK,
+            'status': _impact_status(policy_coverage, IMPACT_PORTFOLIO_POLICY_BENCHMARK, direction='higher'),
+            'industry': 'Institutional investment peer benchmark',
+            'tooltip': 'Policy coverage reflects how many core ESG and control policies are in place for the company.',
+            'real_world_equivalent': None,
+            'direction': 'higher',
+        },
+    ]
+
+    comparison_rows = [
+        _build_company_comparison_row(
+            'Total GHG Emissions',
+            current_total,
+            previous_total,
+            'tCO2e',
+            'Approved company emissions compared with the prior approved submission.',
+        ),
+        _build_company_comparison_row(
+            'Female Representation',
+            female_rep,
+            previous_female_rep,
+            '%',
+            'Workforce diversity compared with the prior approved submission.',
+        ),
+        _build_company_comparison_row(
+            'TRIFR',
+            trifr,
+            previous_trifr,
+            'rate',
+            'Safety performance compared with the prior approved submission.',
+        ),
+        _build_company_comparison_row(
+            'Policy Coverage',
+            policy_coverage,
+            previous_policy_coverage,
+            '%',
+            'Core policy coverage compared with the prior approved submission.',
+        ),
+    ]
+
+    metric_insights = [
+        {
+            'metric_name': 'Total GHG Emissions',
+            'current_value': round(current_total, 2),
+            'unit': 'tCO2e',
+            'tooltip': 'This is the company total across Scope 1, 2, and 3 from the latest approved submission.',
+            'benchmark_label': None,
+            'benchmark_value': None,
+            'benchmark_status': None,
+            'real_world_equivalent': total_equivalent,
+            'sector': snapshot.get('sector') or 'Company',
+        },
+        {
+            'metric_name': 'Female Representation',
+            'current_value': round(female_rep, 2),
+            'unit': '%',
+            'tooltip': f'This compares the company workforce mix against the {snapshot.get("sector") or "sector"} peer benchmark.',
+            'benchmark_label': f'{snapshot.get("sector") or "Sector"} peer benchmark',
+            'benchmark_value': round(sector_benchmark, 2),
+            'benchmark_status': _impact_status(female_rep, sector_benchmark, direction='higher'),
+            'real_world_equivalent': None,
+            'sector': snapshot.get('sector') or 'Company',
+        },
+        {
+            'metric_name': 'TRIFR',
+            'current_value': round(trifr, 2),
+            'unit': 'rate',
+            'tooltip': 'Lower TRIFR is better and highlights how safely the company is operating.',
+            'benchmark_label': 'Safety peer benchmark',
+            'benchmark_value': IMPACT_PORTFOLIO_TRIFR_BENCHMARK,
+            'benchmark_status': _impact_status(trifr, IMPACT_PORTFOLIO_TRIFR_BENCHMARK, direction='lower'),
+            'real_world_equivalent': None,
+            'sector': snapshot.get('sector') or 'Company',
+        },
+        {
+            'metric_name': 'Policy Coverage',
+            'current_value': round(policy_coverage, 2),
+            'unit': '%',
+            'tooltip': 'Policy coverage helps show whether governance controls are established and ready for LP scrutiny.',
+            'benchmark_label': 'Institutional peer benchmark',
+            'benchmark_value': IMPACT_PORTFOLIO_POLICY_BENCHMARK,
+            'benchmark_status': _impact_status(policy_coverage, IMPACT_PORTFOLIO_POLICY_BENCHMARK, direction='higher'),
+            'real_world_equivalent': None,
+            'sector': snapshot.get('sector') or 'Company',
+        },
+    ]
+
+    benchmark_callouts = [
+        f'ESG score {company_esg:.1f} versus multi-sector benchmark {IMPACT_PORTFOLIO_ESG_BENCHMARK:.1f}.',
+        f'Female representation {female_rep:.1f}% versus sector peer benchmark {sector_benchmark:.1f}%.',
+        f'TRIFR {trifr:.2f} versus safety benchmark {IMPACT_PORTFOLIO_TRIFR_BENCHMARK:.2f}.',
+    ]
+    if policy_snapshot:
+        benchmark_callouts.append(
+            f'Policy coverage {policy_coverage:.1f}% versus institutional benchmark {IMPACT_PORTFOLIO_POLICY_BENCHMARK:.1f}%.'
+        )
+
+    trend_summary = 'Company trend data is available from the latest approved submission history.'
+    if previous_payload:
+        emissions_delta = _percent_change(current_total, previous_total)
+        trend_summary = (
+            f'{company.name} moved {emissions_delta:+.1f}% in total emissions versus the prior approved submission, '
+            f'while ESG score sits at {company_esg:.1f} compared with a portfolio average of {portfolio_avg_esg:.1f}.'
+        )
+
+    highlights = list((snapshot.get('narrative_signals') or {}).get('strengths') or [])
+    watchouts = list((snapshot.get('narrative_signals') or {}).get('watchouts') or [])
+    recommendations = list((snapshot.get('narrative_signals') or {}).get('opportunities') or [])
+    if company_esg >= portfolio_avg_esg:
+        highlights.insert(0, f'{company.name} is at or above the current portfolio average ESG score.')
+    else:
+        watchouts.insert(0, f'{company.name} sits below the current portfolio average ESG score of {portfolio_avg_esg:.1f}.')
+    if policy_coverage < IMPACT_PORTFOLIO_POLICY_BENCHMARK:
+        recommendations.insert(0, 'Close remaining policy gaps before the next LP reporting cycle.')
+
+    return {
+        'headline': f'{company.name} impact story',
+        'summary': (
+            f'{company.name} reports {current_total:,.0f} tCO2e in the latest approved submission. '
+            f'{total_equivalent} Workforce diversity is {female_rep:.1f}% against a sector benchmark of {sector_benchmark:.1f}%.'
+        ),
+        'highlights': (highlights or ['Approved company data is available for benchmarked review.'])[:4],
+        'watchouts': (watchouts or ['No material watchouts were triggered in the latest approved submission.'])[:3],
+        'recommendations': (recommendations or ['Maintain approved-data discipline and keep improvement actions moving.'])[:3],
+        'equivalents': [
+            {'label': 'Scope 1', 'value': current_scope_1, 'unit': 'tCO2e', 'narrative': scope_1_equivalent},
+            {'label': 'Scope 2', 'value': current_scope_2, 'unit': 'tCO2e', 'narrative': scope_2_equivalent},
+            {'label': 'Scope 3', 'value': current_scope_3, 'unit': 'tCO2e', 'narrative': scope_3_equivalent},
+            {'label': 'Total GHG', 'value': current_total, 'unit': 'tCO2e', 'narrative': total_equivalent},
+        ],
+        'benchmark_callouts': benchmark_callouts[:4],
+        'trend_summary': trend_summary,
+        'comparison_rows': comparison_rows,
+        'metric_insights': metric_insights,
+        'benchmark_comparisons': benchmark_comparisons,
+        'chart_series': {
+            'status_distribution': [
+                {'label': 'Policies in place', 'value': policy_yes_count, 'note': 'Core policy controls confirmed'},
+                {'label': 'Key watchouts', 'value': len((snapshot.get('narrative_signals') or {}).get('watchouts') or []), 'note': 'Current approved-data watchouts'},
+            ],
+        },
+    }
+
+
+def _report_scope_from_portfolio(portfolio: str) -> str:
+    normalized = str(portfolio or '').strip().lower()
+    if normalized in {'', 'all', 'all portfolio companies'}:
+        return 'portfolio'
+    return 'company'
+
+
+def _extract_period_year(period: str | None) -> Optional[int]:
+    match = re.search(r'fy\s*(\d{4})', str(period or ''), flags=re.IGNORECASE)
+    if match:
+        return int(match.group(1))
+    return None
+
+
+def _find_company_for_report_scope(db: Session, portfolio: str) -> Company | None:
+    if _report_scope_from_portfolio(portfolio) != 'company':
+        return None
+    return _query_ui_visible_companies(db).filter(Company.name == str(portfolio or '').strip()).first()
+
+
+def _format_external_context_export_line(item: dict) -> str:
+    label = 'Regulatory watch' if item.get('item_type') == 'regulation' else str(item.get('sector') or 'Sector context').strip()
+    title = str(item.get('title') or '').strip()
+    action_prompt = str(item.get('action_prompt') or item.get('impact_hint') or '').strip()
+    if not title:
+        return ''
+    return f'{label}: {title}' + (f'. Next move: {action_prompt}' if action_prompt else '')
+
+
+def _report_scope_signal_payload(db: Session, *, portfolio: str) -> tuple[List[dict], dict]:
+    company = _find_company_for_report_scope(db, portfolio)
+    if company is not None:
+        external_context = _build_external_context_feed(db, role='manager', company=company, limit=4)
+        anomaly_summary = _build_company_anomaly_summary(db, company)
+    else:
+        companies = _load_companies_with_related_data(db)
+        external_context = _build_external_context_feed(db, role='manager', company=None, limit=4)
+        anomaly_summary = _build_portfolio_anomaly_summary(db, companies=companies)
+    return (external_context.get('items') or [])[:4], anomaly_summary
+
+
+def _build_report_narrative_state(
+    db: Session,
+    *,
+    portfolio: str,
+    period: str,
+    narrative_record: Optional[NarrativeSummary],
+) -> dict:
+    if not narrative_record:
+        return {
+            'narrative_status': 'missing',
+            'narrative_status_label': NARRATIVE_STATE_LABELS['missing'],
+            'narrative_status_reason': 'No approved narrative is selected for this report context.',
+        }
+
+    if narrative_record.status != 'approved':
+        return {
+            'narrative_status': 'missing',
+            'narrative_status_label': NARRATIVE_STATE_LABELS['missing'],
+            'narrative_status_reason': 'The selected narrative is not approved for report inserts yet.',
+        }
+
+    expected_scope = _report_scope_from_portfolio(portfolio)
+    if narrative_record.scope != expected_scope:
+        return {
+            'narrative_status': 'stale',
+            'narrative_status_label': NARRATIVE_STATE_LABELS['stale'],
+            'narrative_status_reason': f'The selected narrative is {narrative_record.scope}-scoped while the report is {expected_scope}-scoped.',
+        }
+
+    if expected_scope == 'company':
+        company = _find_company_for_report_scope(db, portfolio)
+        if not company or company.id != narrative_record.company_id:
+            return {
+                'narrative_status': 'stale',
+                'narrative_status_label': NARRATIVE_STATE_LABELS['stale'],
+                'narrative_status_reason': 'The selected narrative does not match the company in this report scope.',
+            }
+        latest_snapshot = _build_company_snapshot(db, company)
+    else:
+        latest_snapshot = _build_portfolio_snapshot(db)
+
+    latest_snapshot_signature, latest_source_years, latest_source_company_count, latest_source_submission_count = _source_reference_from_snapshot(latest_snapshot)
+    freshness = _build_narrative_freshness(
+        narrative_record,
+        latest_snapshot_signature=latest_snapshot_signature,
+        latest_source_years=latest_source_years,
+        latest_source_company_count=latest_source_company_count,
+        latest_source_submission_count=latest_source_submission_count,
+    )
+    if freshness['freshness_status'] == 'stale':
+        return {
+            'narrative_status': 'stale',
+            'narrative_status_label': NARRATIVE_STATE_LABELS['stale'],
+            'narrative_status_reason': freshness['freshness_reason'],
+        }
+
+    period_year = _extract_period_year(period)
+    if period_year is not None and latest_source_years and period_year not in latest_source_years:
+        return {
+            'narrative_status': 'stale',
+            'narrative_status_label': NARRATIVE_STATE_LABELS['stale'],
+            'narrative_status_reason': 'The selected narrative does not match the requested reporting year.',
+        }
+
+    return {
+        'narrative_status': 'current',
+        'narrative_status_label': NARRATIVE_STATE_LABELS['current'],
+        'narrative_status_reason': 'The selected narrative matches the latest approved data for this report context.',
+    }
+
+
+def _build_report_impact_story(db: Session, *, report_name: str, portfolio: str, rows: List[dict]) -> dict:
+    if report_name not in {'edci', 'sfdr'}:
+        return {}
+
+    company = _find_company_for_report_scope(db, portfolio)
+    if company:
+        return _build_company_impact_intelligence(db, company)
+
+    companies = _load_companies_with_submission_data(db)
+    analytics = build_investor_analytics(db, companies=companies)
+    return _build_impact_intelligence(db, analytics, companies)
+
+
 def _newsletter_audience_for_role(role: str) -> str:
     normalized = normalize_role(role)
     if normalized == 'manager':
@@ -7052,6 +9428,13 @@ def _build_newsletter_context(db: Session, *, audience: str, tone: str) -> dict:
     companies = _load_companies_with_related_data(db)
     analytics = build_investor_analytics(db, companies=companies)
     impact_story = _build_impact_intelligence(db, analytics, companies)
+    external_context = _build_external_context_feed(
+        db,
+        role='manager' if audience == 'manager' else 'investor',
+        company=None,
+        limit=4,
+    )
+    anomaly_summary = _build_portfolio_anomaly_summary(db, companies=companies)
     source_years = [item.get('period') for item in analytics.get('emissions_trend') or [] if item.get('period')]
     portfolio = {
         'portfolio_esg_score': analytics.get('portfolio_esg_score'),
@@ -7081,6 +9464,8 @@ def _build_newsletter_context(db: Session, *, audience: str, tone: str) -> dict:
         'framework_tags': audience_tags,
         'portfolio': portfolio,
         'impact_story': impact_story,
+        'external_context_items': (external_context.get('items') or [])[:4],
+        'anomaly_summary': anomaly_summary,
         'source_years': sorted({int(year) for year in source_years if str(year).isdigit()}),
         'top_companies': top_companies,
         'bottom_companies': bottom_companies,
@@ -7097,6 +9482,8 @@ def _build_newsletter_prompt(context: dict) -> str:
     tone = context.get('tone') or 'board-ready'
     portfolio = context.get('portfolio') or {}
     impact_story = context.get('impact_story') or {}
+    anomaly_summary = context.get('anomaly_summary') or {}
+    external_context_items = context.get('external_context_items') or []
     top_companies = context.get('top_companies') or []
     bottom_companies = context.get('bottom_companies') or []
     return (
@@ -7134,6 +9521,10 @@ def _build_newsletter_prompt(context: dict) -> str:
         f"Impact story recommendations: {json.dumps((impact_story.get('recommendations') or [])[:2], default=str)}\n"
         f"Trend summary: {impact_story.get('trend_summary') or 'n/a'}\n"
         f"Benchmark callouts: {json.dumps((impact_story.get('benchmark_callouts') or [])[:3], default=str)}\n"
+        f"Anomaly headline: {anomaly_summary.get('headline') or 'n/a'}\n"
+        f"Anomaly summary: {anomaly_summary.get('summary') or 'n/a'}\n"
+        f"Anomaly items: {json.dumps((anomaly_summary.get('items') or [])[:3], indent=2, sort_keys=True, default=str)}\n"
+        f"External context: {json.dumps(external_context_items[:3], indent=2, sort_keys=True, default=str)}\n"
         f'Source years: {json.dumps(context.get("source_years") or [], default=str)}\n'
         f'Approved data:\n{json.dumps(context, indent=2, sort_keys=True, default=str)}'
     )
@@ -7194,8 +9585,12 @@ def _build_fallback_newsletter(context: dict) -> dict:
     audience = context.get('audience') or 'manager'
     portfolio = context.get('portfolio') or {}
     impact_story = context.get('impact_story') or {}
+    anomaly_summary = context.get('anomaly_summary') or {}
+    external_context_items = context.get('external_context_items') or []
     top_companies = context.get('top_companies') or []
     bottom_companies = context.get('bottom_companies') or []
+    lead_context = next((item for item in external_context_items if isinstance(item, dict) and str(item.get('title') or '').strip()), None)
+    lead_anomaly = next((item for item in (anomaly_summary.get('items') or []) if isinstance(item, dict) and str(item.get('metric_name') or '').strip()), None)
     subject_line = (
         f"ESG newsletter: {portfolio.get('reporting_companies') or 0} companies in view"
         if audience == 'manager'
@@ -7205,24 +9600,38 @@ def _build_fallback_newsletter(context: dict) -> dict:
         f"Portfolio ESG score {float(portfolio.get('portfolio_esg_score') or 0):.1f}/100 with live watchlist and benchmark signals."
     )
     headline = 'Approved ESG data in plain English'
-    summary = (
-        f"The portfolio shows an ESG score of {float(portfolio.get('portfolio_esg_score') or 0):.1f}/100 across "
-        f"{int(portfolio.get('reporting_companies') or 0)} reporting companies. "
-        f"{impact_story.get('summary') or 'The latest impact story is available from approved portfolio data.'}"
-    )
+    summary = ' '.join(
+        [
+            f"The portfolio shows an ESG score of {float(portfolio.get('portfolio_esg_score') or 0):.1f}/100 across {int(portfolio.get('reporting_companies') or 0)} reporting companies.",
+            str(impact_story.get('summary') or 'The latest impact story is available from approved portfolio data.').strip(),
+            str(anomaly_summary.get('summary') or '').strip(),
+        ]
+    ).strip()
     highlights = [
         f"Reporting coverage stands at {int(portfolio.get('reporting_companies') or 0)} of {int(portfolio.get('total_companies') or 0)} companies.",
         (impact_story.get('highlights') or ['Portfolio momentum is holding steady.'])[0],
-        f"Top performer: {top_companies[0]}" if top_companies else 'Top performers are visible in the dashboard ranking.',
+        (
+            _format_external_context_export_line(lead_context)
+            if lead_context is not None
+            else f"Top performer: {top_companies[0]}" if top_companies else 'Top performers are visible in the dashboard ranking.'
+        ),
     ]
     watchouts = [
-        (impact_story.get('watchouts') or ['No major watchouts were triggered.'])[0],
+        str(anomaly_summary.get('headline') or '').strip() or (impact_story.get('watchouts') or ['No major watchouts were triggered.'])[0],
         f"Watchlist item: {bottom_companies[0]}" if bottom_companies else 'No watchlist company stood out from the approved data sample.',
-        f"Governance adoption is {float(portfolio.get('governance_adoption_percent') or 0):.1f}% and can still improve.",
+        (
+            f"{lead_anomaly.get('metric_name')}: {lead_anomaly.get('recommendation')}"
+            if lead_anomaly is not None
+            else f"Governance adoption is {float(portfolio.get('governance_adoption_percent') or 0):.1f}% and can still improve."
+        ),
     ]
     recommendations = [
         (impact_story.get('recommendations') or ['Keep following up on the strongest improvement opportunities.'])[0],
-        'Use this digest to brief stakeholders on the current reporting cycle.',
+        (
+            str(lead_context.get('action_prompt') or '').strip()
+            if lead_context is not None and str(lead_context.get('action_prompt') or '').strip()
+            else 'Use this digest to brief stakeholders on the current reporting cycle.'
+        ),
         'Keep pushing the strongest performers as internal benchmarks for the rest of the portfolio.',
     ]
     call_to_action = context.get('action_cta') or 'Use this digest in your next portfolio update.'
@@ -7400,22 +9809,46 @@ def _search_company_results(db: Session, query: str, role: str, user: User | Non
     if normalized_role == 'company':
         if not user:
             return []
-        owned_company = db.query(Company).filter(Company.user_id == user.id).first()
+        owned_company = (
+            db.query(Company)
+            .options(
+                selectinload(Company.submissions),
+                selectinload(Company.action_plans),
+            )
+            .filter(Company.user_id == user.id)
+            .first()
+        )
         if not owned_company:
             return []
         companies = [owned_company]
     elif normalized_role == 'investor':
+        company_query = (
+            _query_ui_visible_companies(db)
+            .options(
+                selectinload(Company.submissions),
+                selectinload(Company.action_plans),
+            )
+            .order_by(Company.name.asc())
+        )
         if not user:
-            companies = db.query(Company).order_by(Company.name.asc()).all()
+            companies = company_query.all()
         else:
             lp_type = user.lp_type.value if hasattr(user.lp_type, 'value') else str(user.lp_type or '').lower()
             if lp_type == 'authorised':
                 accessible_ids = set(get_lp_accessible_company_ids(user))
-                companies = db.query(Company).filter(Company.id.in_(accessible_ids)).order_by(Company.name.asc()).all() if accessible_ids else []
+                companies = company_query.filter(Company.id.in_(accessible_ids)).all() if accessible_ids else []
             else:
                 companies = []
     else:
-        companies = db.query(Company).order_by(Company.name.asc()).all()
+        companies = (
+            _query_ui_visible_companies(db)
+            .options(
+                selectinload(Company.submissions),
+                selectinload(Company.action_plans),
+            )
+            .order_by(Company.name.asc())
+            .all()
+        )
 
     results: List[dict] = []
     for company in companies:
@@ -7598,7 +10031,12 @@ def analytics_portfolio(db: Session = Depends(get_db)):
 
 @app.get('/analytics/manager', response_model=ManagerAnalyticsResponse, dependencies=[Depends(require_manager)])
 def analytics_manager(db: Session = Depends(get_db)):
-    companies = db.query(Company).order_by(Company.name.asc()).all()
+    cache_key = 'analytics:manager'
+    cached = _get_timed_cache(cache_key)
+    if cached is not None:
+        return cached
+
+    companies = _load_companies_with_submission_data(db)
     analytics = build_investor_analytics(db)
     manager_summary = build_manager_summary(db, companies)
     active_cycle = get_active_cycle(db) or get_latest_cycle(db) or get_or_create_reserved_cycle(db)
@@ -7797,7 +10235,7 @@ def analytics_manager(db: Session = Depends(get_db)):
 
     impact_story = _build_impact_intelligence(db, analytics, companies)
 
-    return ManagerAnalyticsResponse(
+    result = ManagerAnalyticsResponse(
         summary_cards=summary_cards,
         status_distribution=status_distribution,
         emissions_trend=[
@@ -7834,16 +10272,23 @@ def analytics_manager(db: Session = Depends(get_db)):
             'days_remaining': get_days_to_deadline(active_cycle.submission_deadline) if active_cycle else None,
         },
         impact_story=impact_story,
-    )
+    ).model_dump()
+    return _set_timed_cache(cache_key, result)
 
 
 @app.get('/dashboard/investor', response_model=InvestorDashboardResponse, dependencies=[Depends(require_manager_or_investor)])
 def investor_dashboard(db: Session = Depends(get_db)):
+    cache_key = 'dashboard:investor'
+    cached = _get_timed_cache(cache_key)
+    if cached is not None:
+        return cached
+
     # Investor receives portfolio-level analytics only (no raw company submissions).
-    companies = _load_companies_with_related_data(db)
+    companies = _load_companies_with_submission_data(db)
     analytics = build_investor_analytics(db, companies=companies)
     impact_story = _build_impact_intelligence(db, analytics, companies)
-    return InvestorDashboardResponse(**analytics, impact_story=impact_story)
+    result = InvestorDashboardResponse(**analytics, impact_story=impact_story).model_dump()
+    return _set_timed_cache(cache_key, result)
 
 
 # ==========================================
@@ -7859,7 +10304,12 @@ def lp_dashboard(db: Session = Depends(get_db)):
     """
     from schemas import LPDashboardResponse
     
-    companies = _load_companies_with_related_data(db)
+    cache_key = 'dashboard:lp'
+    cached = _get_timed_cache(cache_key)
+    if cached is not None:
+        return cached
+
+    companies = _load_companies_with_submission_data(db)
     analytics = build_investor_analytics(db, companies=companies)
     cycle_summaries = _build_cycle_summaries(db)
     current_cycle_summary = cycle_summaries[-1] if cycle_summaries else None
@@ -8153,15 +10603,21 @@ def lp_dashboard(db: Session = Depends(get_db)):
             }
         )
 
+    visible_company_ids = [company.id for company in companies]
+    action_plan_query = db.query(ActionPlan)
+    if visible_company_ids:
+        action_plan_query = action_plan_query.filter(ActionPlan.company_id.in_(visible_company_ids))
+    else:
+        action_plan_query = action_plan_query.filter(ActionPlan.company_id == -1)
     action_plan_status = {
-        'in_progress': db.query(ActionPlan).filter(ActionPlan.status.in_(['planned', 'in progress'])).count(),
-        'completed': db.query(ActionPlan).filter(ActionPlan.status == 'completed').count(),
+        'in_progress': action_plan_query.filter(ActionPlan.status.in_(['planned', 'in progress'])).count(),
+        'completed': action_plan_query.filter(ActionPlan.status == 'completed').count(),
     }
     
     portfolio_companies = sorted(portfolio_rows, key=lambda item: item['esg_score'], reverse=True)[:5]
     impact_story = _build_impact_intelligence(db, analytics, companies)
     
-    return LPDashboardResponse(
+    result = LPDashboardResponse(
         portfolio_scorecard=portfolio_scorecard,
         completion_status=completion_status,
         key_metrics=key_metrics,
@@ -8171,7 +10627,8 @@ def lp_dashboard(db: Session = Depends(get_db)):
         action_plan_status=action_plan_status,
         portfolio_companies=portfolio_companies,
         impact_story=impact_story,
-    )
+    ).model_dump()
+    return _set_timed_cache(cache_key, result)
 
 
 @app.get('/lp/metrics', dependencies=[Depends(require_lp)])
@@ -8182,16 +10639,27 @@ def lp_metrics(db: Session = Depends(get_db)):
     """
     from schemas import LPMetricsPageResponse
     analytics = build_investor_analytics(db)
-    companies = db.query(Company).order_by(Company.name.asc()).all()
-    cycles = [
-        cycle
-        for cycle in db.query(CollectionCycle).order_by(CollectionCycle.cycle_year.asc(), CollectionCycle.id.asc()).all()
-        if cycle.cycle_year > 0
-    ]
+    companies = (
+        _query_ui_visible_companies(db)
+        .options(selectinload(Company.submissions))
+        .order_by(Company.name.asc())
+        .all()
+    )
+    visible_company_ids = {company.id for company in companies}
+    cycles = (
+        _apply_valid_cycle_year_filter(db.query(CollectionCycle))
+        .order_by(CollectionCycle.cycle_year.asc(), CollectionCycle.id.asc())
+        .all()
+    )
 
     def get_cycle_payloads(cycle: CollectionCycle) -> List[dict]:
         payloads = []
-        for submission in db.query(Submission).filter(Submission.cycle_id == cycle.id).all():
+        submission_query = db.query(Submission).filter(Submission.cycle_id == cycle.id)
+        if visible_company_ids:
+            submission_query = submission_query.filter(Submission.company_id.in_(visible_company_ids))
+        else:
+            return payloads
+        for submission in submission_query.all():
             payload = parse_submission(submission)
             if payload:
                 payloads.append(payload)
@@ -8371,18 +10839,20 @@ def lp_reports(db: Session = Depends(get_db)):
 
     active_cycle = get_active_cycle(db) or get_latest_cycle(db) or get_or_create_reserved_cycle(db)
     cycle_year = active_cycle.cycle_year if active_cycle else datetime.utcnow().year
+    previous_year = cycle_year - 1
     today = datetime.now(timezone.utc).date().isoformat()
 
     available_reports = []
     for report_type in sorted(ALLOWED_REPORT_TYPES):
-        available_reports.append({
-            'report_type': report_type,
-            'report_name': f'{report_type.upper()} Report FY{cycle_year}',
-            'year': cycle_year,
-            'generated_date': today,
-            'format': 'PDF',
-            'download_url': f'/reports/{report_type}/export?format=pdf&period=FY{cycle_year}&portfolio=All%20Portfolio%20Companies',
-        })
+        for year in (cycle_year, previous_year):
+            available_reports.append({
+                'report_type': report_type,
+                'report_name': f'{report_type.upper()} Report FY{year}',
+                'year': year,
+                'generated_date': today,
+                'format': 'PDF',
+                'download_url': f'/reports/{report_type}/export?format=pdf&period=FY{year}&portfolio=All%20Portfolio%20Companies',
+            })
 
     historical_archive: Dict[int, List[dict]] = {}
     export_pattern = re.compile(r'^(edci|sfdr)_.+_(\d{8}_\d{6})\.(csv|pdf)$')
@@ -8419,6 +10889,482 @@ def lp_reports(db: Session = Depends(get_db)):
 # COMPANY PORTAL ROUTES
 # ==========================================
 
+def _load_submission_for_collaboration(
+    db: Session,
+    *,
+    role: str,
+    email: str | None,
+    submission_id: int | None = None,
+    cycle_id: int | None = None,
+) -> Tuple[Submission, Company, CollectionCycle]:
+    normalized_role = normalize_role(role)
+    if normalized_role not in {'manager', 'company'}:
+        raise HTTPException(status_code=403, detail='Access restricted to Managers and Company users')
+
+    if submission_id is not None:
+        submission = db.query(Submission).filter(Submission.id == submission_id).first()
+        if not submission:
+            raise HTTPException(status_code=404, detail='Submission not found')
+        company = db.query(Company).filter(Company.id == submission.company_id).first()
+        cycle = db.query(CollectionCycle).filter(CollectionCycle.id == submission.cycle_id).first()
+        enforce_company_scope_for_path(
+            db,
+            role=normalized_role,
+            user_email=email,
+            company_id=submission.company_id,
+        )
+        if not company or not cycle:
+            raise HTTPException(status_code=404, detail='Submission context is incomplete')
+        return submission, company, cycle
+
+    user = find_request_user(db, email)
+    company = find_company_for_user(db, user)
+    if not company:
+        raise HTTPException(status_code=404, detail='Company not found')
+    submission = (
+        db.query(Submission)
+        .filter(
+            Submission.company_id == company.id,
+            Submission.cycle_id == cycle_id,
+        )
+        .first()
+    )
+    if not submission:
+        raise HTTPException(status_code=404, detail='Submission not found')
+    cycle = db.query(CollectionCycle).filter(CollectionCycle.id == cycle_id).first()
+    if not cycle:
+        raise HTTPException(status_code=404, detail='Cycle not found')
+    return submission, company, cycle
+
+
+def _claim_collaboration_section(
+    db: Session,
+    *,
+    submission: Submission,
+    company: Company,
+    cycle: CollectionCycle,
+    role: str,
+    email: str | None,
+    section: str,
+) -> SubmissionCollaborationResponse:
+    normalized_email = (email or '').strip().lower()
+    normalized_role = normalize_role(role)
+    if not normalized_email:
+        raise HTTPException(status_code=401, detail='Email header required')
+
+    cleanup_expired_collaboration_sessions(db)
+    section_name = section.strip()
+    if not section_name:
+        raise HTTPException(status_code=422, detail='Section is required')
+
+    existing = (
+        db.query(SubmissionCollaborationSession)
+        .filter(
+            SubmissionCollaborationSession.submission_id == submission.id,
+            SubmissionCollaborationSession.section == section_name,
+            SubmissionCollaborationSession.status == 'active',
+        )
+        .order_by(SubmissionCollaborationSession.updated_at.desc())
+        .first()
+    )
+    now = datetime.utcnow()
+    expires_at = now + timedelta(seconds=COLLABORATION_TTL_SECONDS)
+    user = find_request_user(db, normalized_email)
+    owner_name = user.name if user else None
+
+    if existing and (existing.owner_email or '').strip().lower() != normalized_email:
+        raise HTTPException(
+            status_code=409,
+            detail=f'{existing.owner_name or existing.owner_email} is currently editing {section_name}.',
+        )
+
+    created = False
+    if existing:
+        existing.last_seen_at = now
+        existing.expires_at = expires_at
+        existing.updated_at = now
+        existing.status = 'active'
+        existing.release_reason = None
+    else:
+        existing = SubmissionCollaborationSession(
+            submission_id=submission.id,
+            company_id=company.id,
+            cycle_id=cycle.id,
+            section=section_name,
+            owner_role=normalized_role,
+            owner_email=normalized_email,
+            owner_name=owner_name,
+            status='active',
+            lock_mode='soft',
+            last_seen_at=now,
+            expires_at=expires_at,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(existing)
+        created = True
+
+    _queue_activity_event(
+        db,
+        event_type='submission_section_claimed',
+        title='Section owner updated',
+        message=f'{company.name} {section_name} section is being edited by {owner_name or normalized_email}.',
+        severity='info',
+        actor_role=normalized_role,
+        actor_email=normalized_email,
+        company=company,
+        submission=submission,
+        cycle=cycle,
+        entity_status=submission.status,
+        is_toast=False,
+        visible_to_investors=False,
+        metadata={
+            'section': section_name,
+            'created': created,
+        },
+    )
+    db.commit()
+    return _build_submission_collaboration(
+        db,
+        submission=submission,
+        viewer_role=normalized_role,
+        viewer_email=normalized_email,
+    )
+
+
+def _release_collaboration_section(
+    db: Session,
+    *,
+    submission: Submission,
+    company: Company,
+    cycle: CollectionCycle,
+    role: str,
+    email: str | None,
+    section: str,
+    force: bool,
+) -> SubmissionCollaborationResponse:
+    normalized_email = (email or '').strip().lower()
+    normalized_role = normalize_role(role)
+    if not normalized_email:
+        raise HTTPException(status_code=401, detail='Email header required')
+
+    cleanup_expired_collaboration_sessions(db)
+    section_name = section.strip()
+    if not section_name:
+        raise HTTPException(status_code=422, detail='Section is required')
+
+    existing = (
+        db.query(SubmissionCollaborationSession)
+        .filter(
+            SubmissionCollaborationSession.submission_id == submission.id,
+            SubmissionCollaborationSession.section == section_name,
+            SubmissionCollaborationSession.status == 'active',
+        )
+        .order_by(SubmissionCollaborationSession.updated_at.desc())
+        .first()
+    )
+    if not existing:
+        return _build_submission_collaboration(
+            db,
+            submission=submission,
+            viewer_role=normalized_role,
+            viewer_email=normalized_email,
+        )
+
+    if normalized_role != 'manager' and (existing.owner_email or '').strip().lower() != normalized_email:
+        raise HTTPException(status_code=403, detail='Only the active owner can release this section.')
+    if normalized_role == 'manager' and not force and (existing.owner_email or '').strip().lower() != normalized_email:
+        raise HTTPException(status_code=422, detail='Manager release of another user requires force=true.')
+
+    existing.status = 'released'
+    existing.release_reason = 'force_release' if force and normalized_role == 'manager' else 'released'
+    existing.updated_at = datetime.utcnow()
+
+    _queue_activity_event(
+        db,
+        event_type='submission_section_released',
+        title='Section ownership released',
+        message=f'{company.name} {section_name} section is no longer actively claimed.',
+        severity='info',
+        actor_role=normalized_role,
+        actor_email=normalized_email,
+        company=company,
+        submission=submission,
+        cycle=cycle,
+        entity_status=submission.status,
+        is_toast=False,
+        visible_to_investors=False,
+        metadata={
+            'section': section_name,
+            'force': bool(force),
+        },
+    )
+    db.commit()
+    return _build_submission_collaboration(
+        db,
+        submission=submission,
+        viewer_role=normalized_role,
+        viewer_email=normalized_email,
+    )
+
+
+@app.get('/live/activity', response_model=ActivityFeedResponse)
+def get_live_activity(
+    limit: int = Query(default=12, ge=1, le=50),
+    company_id: int | None = Query(default=None),
+    submission_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
+    normalized_role = normalize_role(role)
+    if normalized_role not in {'manager', 'investor', 'company'}:
+        raise HTTPException(status_code=403, detail='Access restricted to authenticated platform users')
+    if normalized_role == 'investor' and company_id is not None:
+        raise HTTPException(status_code=403, detail='Investors are blocked from company-level activity filters')
+
+    viewer_company_id = _viewer_company_id_for_live_access(db, role=normalized_role, email=email)
+    if normalized_role == 'company' and company_id is not None and viewer_company_id != company_id:
+        raise HTTPException(status_code=403, detail='Unauthorized access to this company')
+
+    query = db.query(ActivityEvent).options(selectinload(ActivityEvent.company)).order_by(ActivityEvent.id.desc())
+    if company_id is not None:
+        query = query.filter(ActivityEvent.company_id == company_id)
+    if submission_id is not None:
+        query = query.filter(ActivityEvent.submission_id == submission_id)
+
+    rows = query.limit(limit * 4).all()
+    items: List[ActivityEventResponse] = []
+    for row in rows:
+        if _activity_event_visible_to_role(
+            row,
+            role=normalized_role,
+            viewer_email=email,
+            viewer_company_id=viewer_company_id,
+        ):
+            items.append(_serialize_activity_event(row))
+        if len(items) >= limit:
+            break
+
+    return ActivityFeedResponse(items=items)
+
+
+@app.websocket('/ws/live')
+async def live_updates_socket(websocket: WebSocket):
+    role = normalize_role(websocket.query_params.get('role'))
+    email = (websocket.query_params.get('email') or '').strip().lower() or None
+    try:
+        last_event_id = int(websocket.query_params.get('last_event_id') or 0)
+    except ValueError:
+        last_event_id = 0
+
+    await websocket.accept()
+    if role not in {'manager', 'investor', 'company'}:
+        try:
+            await websocket.send_json({'type': 'error', 'detail': 'Unauthorized live connection'})
+            await websocket.close(code=4403)
+        except Exception:
+            return
+        return
+
+    try:
+        await websocket.send_json(
+            {
+                'type': 'hello',
+                'connected_at': datetime.utcnow().isoformat(),
+                'role': role,
+                'email': email,
+                'last_event_id': last_event_id,
+            }
+        )
+    except Exception:
+        return
+
+    heartbeat_counter = 0
+    try:
+        while True:
+            db = SessionLocal()
+            try:
+                viewer_company_id = _viewer_company_id_for_live_access(db, role=role, email=email)
+                rows = (
+                    db.query(ActivityEvent)
+                    .options(selectinload(ActivityEvent.company))
+                    .filter(ActivityEvent.id > last_event_id)
+                    .order_by(ActivityEvent.id.asc())
+                    .limit(50)
+                    .all()
+                )
+                for row in rows:
+                    if _activity_event_visible_to_role(
+                        row,
+                        role=role,
+                        viewer_email=email,
+                        viewer_company_id=viewer_company_id,
+                    ):
+                        try:
+                            await websocket.send_json({'type': 'event', 'event': _serialize_activity_event(row).dict()})
+                        except Exception:
+                            return
+                    last_event_id = max(last_event_id, int(row.id or 0))
+            finally:
+                db.close()
+
+            heartbeat_counter += 1
+            if heartbeat_counter >= 15:
+                try:
+                    await websocket.send_json({'type': 'heartbeat', 'ts': datetime.utcnow().isoformat()})
+                except Exception:
+                    return
+                heartbeat_counter = 0
+            await asyncio.sleep(1.0)
+    except WebSocketDisconnect:
+        return
+
+
+@app.get('/submissions/{submission_id}/collaboration', response_model=SubmissionCollaborationResponse, dependencies=[Depends(require_company_or_manager)])
+def get_submission_collaboration(
+    submission_id: int,
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
+    submission, _, _ = _load_submission_for_collaboration(
+        db,
+        role=role,
+        email=email,
+        submission_id=submission_id,
+    )
+    return _build_submission_collaboration(
+        db,
+        submission=submission,
+        viewer_role=role,
+        viewer_email=email,
+    )
+
+
+@app.post('/submissions/{submission_id}/collaboration/claim', response_model=SubmissionCollaborationResponse, dependencies=[Depends(require_company_or_manager)])
+def claim_submission_collaboration(
+    submission_id: int,
+    payload: CollaborationClaimRequest,
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
+    submission, company, cycle = _load_submission_for_collaboration(
+        db,
+        role=role,
+        email=email,
+        submission_id=submission_id,
+    )
+    return _claim_collaboration_section(
+        db,
+        submission=submission,
+        company=company,
+        cycle=cycle,
+        role=role,
+        email=email,
+        section=payload.section,
+    )
+
+
+@app.post('/submissions/{submission_id}/collaboration/release', response_model=SubmissionCollaborationResponse, dependencies=[Depends(require_company_or_manager)])
+def release_submission_collaboration(
+    submission_id: int,
+    payload: CollaborationReleaseRequest,
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
+    submission, company, cycle = _load_submission_for_collaboration(
+        db,
+        role=role,
+        email=email,
+        submission_id=submission_id,
+    )
+    return _release_collaboration_section(
+        db,
+        submission=submission,
+        company=company,
+        cycle=cycle,
+        role=role,
+        email=email,
+        section=payload.section,
+        force=payload.force,
+    )
+
+
+@app.get('/company/submission/{cycle_id}/collaboration', response_model=SubmissionCollaborationResponse, dependencies=[Depends(require_company)])
+def get_company_submission_collaboration(
+    cycle_id: int,
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
+    submission, _, _ = _load_submission_for_collaboration(
+        db,
+        role=role,
+        email=email,
+        cycle_id=cycle_id,
+    )
+    return _build_submission_collaboration(
+        db,
+        submission=submission,
+        viewer_role=role,
+        viewer_email=email,
+    )
+
+
+@app.post('/company/submission/{cycle_id}/collaboration/claim', response_model=SubmissionCollaborationResponse, dependencies=[Depends(require_company)])
+def claim_company_submission_collaboration(
+    cycle_id: int,
+    payload: CollaborationClaimRequest,
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
+    submission, company, cycle = _load_submission_for_collaboration(
+        db,
+        role=role,
+        email=email,
+        cycle_id=cycle_id,
+    )
+    return _claim_collaboration_section(
+        db,
+        submission=submission,
+        company=company,
+        cycle=cycle,
+        role=role,
+        email=email,
+        section=payload.section,
+    )
+
+
+@app.post('/company/submission/{cycle_id}/collaboration/release', response_model=SubmissionCollaborationResponse, dependencies=[Depends(require_company)])
+def release_company_submission_collaboration(
+    cycle_id: int,
+    payload: CollaborationReleaseRequest,
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
+    submission, company, cycle = _load_submission_for_collaboration(
+        db,
+        role=role,
+        email=email,
+        cycle_id=cycle_id,
+    )
+    return _release_collaboration_section(
+        db,
+        submission=submission,
+        company=company,
+        cycle=cycle,
+        role=role,
+        email=email,
+        section=payload.section,
+        force=payload.force,
+    )
+
+
 @app.get('/company/dashboard', response_model=CompanyDashboardResponse, dependencies=[Depends(require_company)])
 def company_dashboard(
     db: Session = Depends(get_db),
@@ -8427,8 +11373,14 @@ def company_dashboard(
     """
     Company Portal Dashboard - Home screen with submission status, progress, and deadlines
     """
+    normalized_email = (email or '').strip().lower()
+    cache_key = f'dashboard:company:user:{normalized_email}'
+    cached = _get_timed_cache(cache_key)
+    if cached is not None:
+        return cached
+
     # Get user and company
-    user = db.query(User).filter(User.email == email).first()
+    user = db.query(User).filter(User.email == normalized_email).first()
     if not user:
         raise HTTPException(status_code=404, detail='User not found in system')
     
@@ -8436,7 +11388,7 @@ def company_dashboard(
     if not company:
         raise HTTPException(
             status_code=403,
-            detail=f'No company assigned to user {email}. Please contact your administrator.',
+            detail=f'No company assigned to user {normalized_email}. Please contact your administrator.',
         )
     
     active_cycle = get_active_cycle(db)
@@ -8444,7 +11396,7 @@ def company_dashboard(
     
     if not active_cycle:
         # Return a minimal dashboard with a message
-        return CompanyDashboardResponse(
+        result = CompanyDashboardResponse(
             company_id=company.id,
             company_name=company.name,
             current_cycle_id=None,
@@ -8461,8 +11413,10 @@ def company_dashboard(
             outstanding_validation_errors=0,
             sections_requiring_correction=[],
             action_items_in_progress=0,
-        )
-    
+            impact_story={},
+        ).model_dump()
+        return _set_timed_cache(cache_key, result)
+
     # Get submission for this company and cycle
     submission = db.query(Submission).filter(
         Submission.company_id == company.id,
@@ -8542,8 +11496,9 @@ def company_dashboard(
     
     submission_status = (submission.status if submission else 'not started').lower()
     completion_percent = int((completed_fields / max(total_fields, 1) * 100))
-    
-    return CompanyDashboardResponse(
+    impact_story = _build_company_impact_intelligence(db, company)
+
+    result = CompanyDashboardResponse(
         company_id=company.id,
         company_name=company.name,
         current_cycle_id=active_cycle.id,
@@ -8559,8 +11514,10 @@ def company_dashboard(
         section_breakdown={s: min(100, int((v / max(total_fields, 1) * 100))) for s, v in section_breakdown.items()},
         outstanding_validation_errors=error_count,
         sections_requiring_correction=[e.section for e in validation_errors if hasattr(e, 'section') and e.section],
-        action_items_in_progress=len([ap for ap in company.action_plans if ap.status in ['planned', 'in progress']])
-    )
+        action_items_in_progress=len([ap for ap in company.action_plans if ap.status in ['planned', 'in progress']]),
+        impact_story=impact_story,
+    ).model_dump()
+    return _set_timed_cache(cache_key, result)
 
 
 @app.get('/company/submission/{cycle_id}', response_model=CompanySubmissionSectionResponse, dependencies=[Depends(require_company)])
@@ -8785,6 +11742,9 @@ def get_company_submission(
     validation_status = 'error' if error_count > 0 else 'warning' if warning_count > 0 else 'pass'
 
     return CompanySubmissionSectionResponse(
+        submission_id=submission.id,
+        company_id=company.id,
+        cycle_id=cycle.id,
         section=section,
         completion_percent=completion_percent,
         total_fields=len(data_fields),
@@ -8793,6 +11753,12 @@ def get_company_submission(
         error_count=error_count,
         warning_count=warning_count,
         fields=field_responses,
+        collaboration=_build_submission_collaboration(
+            db,
+            submission=submission,
+            viewer_role='company',
+            viewer_email=email,
+        ),
     )
 
 
@@ -8894,6 +11860,29 @@ def update_company_submission_field(
     values, _ = _collect_submission_values(db, submission, cycle_year=cycle.cycle_year)
     validation_issues = _evaluate_submission_validation(values)
     _replace_validation_errors(db, submission, company.id, validation_issues)
+
+    _queue_activity_event(
+        db,
+        event_type='submission_field_saved',
+        title='Draft updated',
+        message=f'{company.name} saved {meta.get("field_label", canonical_key)} in {field.section}.',
+        severity='info',
+        actor_role='company',
+        actor_email=email,
+        company=company,
+        submission=submission,
+        cycle=cycle,
+        entity_status=submission.status,
+        is_toast=False,
+        visible_to_investors=False,
+        metadata={
+            'field_key': canonical_key,
+            'field_label': meta.get('field_label', canonical_key),
+            'section': field.section,
+            'validation_errors': len([issue for issue in validation_issues if issue['severity'] == 'error']),
+            'validation_warnings': len([issue for issue in validation_issues if issue['severity'] == 'warning']),
+        },
+    )
 
     db.commit()
 
@@ -8998,6 +11987,12 @@ def review_company_submission(
         can_submit = can_submit and unlocked
     
     # Group fields by section
+    collaboration_state = _build_submission_collaboration(
+        db,
+        submission=submission,
+        viewer_role='company',
+        viewer_email=email,
+    )
     sections_dict = {}
     for field in all_fields:
         if field.section not in sections_dict:
@@ -9009,6 +12004,9 @@ def review_company_submission(
         completed_count = sum(1 for f in fields if f.value is not None)
         section_responses.append(
             CompanySubmissionSectionResponse(
+                submission_id=submission.id,
+                company_id=company.id,
+                cycle_id=cycle.id,
                 section=section_name,
                 completion_percent=int((completed_count / len(fields) * 100) if fields else 0),
                 total_fields=len(fields),
@@ -9040,7 +12038,8 @@ def review_company_submission(
                         last_updated_at=f.updated_at.isoformat() if f.updated_at else None
                     )
                     for f in fields
-                ]
+                ],
+                collaboration=collaboration_state,
             )
         )
     
@@ -9066,7 +12065,8 @@ def review_company_submission(
             for e in validation_errors
         ],
         all_entered_data=section_responses,
-        can_submit=can_submit
+        can_submit=can_submit,
+        collaboration=collaboration_state,
     )
 
 
@@ -9133,6 +12133,22 @@ def submit_company_submission(
     # Update submission status
     submission.status = 'submitted'
     company.current_status = 'submitted'
+    _queue_activity_event(
+        db,
+        event_type='submission_submitted',
+        title='Submission submitted',
+        message=f'{company.name} submitted ESG data for FY{cycle.cycle_year}.',
+        severity='success',
+        actor_role='company',
+        actor_email=email,
+        company=company,
+        submission=submission,
+        cycle=cycle,
+        entity_status='submitted',
+        is_toast=True,
+        visible_to_investors=False,
+        metadata={'cycle_year': cycle.cycle_year},
+    )
     db.commit()
     
     return {
@@ -9229,6 +12245,21 @@ def create_company_action_plan(
         updated_at=datetime.utcnow()
     )
     db.add(action_plan)
+    db.flush()
+    _queue_activity_event(
+        db,
+        event_type='action_plan_created',
+        title='Action plan created',
+        message=f'{company.name} added action plan "{action_plan.initiative_name}".',
+        severity='info',
+        actor_role='company',
+        actor_email=email,
+        company=company,
+        cycle=resolve_submission_cycle(db),
+        is_toast=True,
+        visible_to_investors=True,
+        metadata={'action_plan_id': action_plan.id, 'status': action_plan.status, 'owner': action_plan.assigned_owner or ''},
+    )
     db.commit()
     
     return CompanyActionPlanResponse(
@@ -9286,6 +12317,20 @@ def update_company_action_plan(
         action_plan.status = request.status
     
     action_plan.updated_at = datetime.utcnow()
+    _queue_activity_event(
+        db,
+        event_type='action_plan_updated',
+        title='Action plan updated',
+        message=f'{company.name} updated action plan "{action_plan.initiative_name}".',
+        severity='info',
+        actor_role='company',
+        actor_email=email,
+        company=company,
+        cycle=resolve_submission_cycle(db),
+        is_toast=True,
+        visible_to_investors=True,
+        metadata={'action_plan_id': action_plan.id, 'status': action_plan.status, 'owner': action_plan.assigned_owner or ''},
+    )
     db.commit()
     
     return CompanyActionPlanResponse(
@@ -9326,8 +12371,23 @@ def delete_company_action_plan(
     ).first()
     if not action_plan:
         raise HTTPException(status_code=404, detail='Action plan not found')
-    
+    action_plan_title = action_plan.initiative_name
+    action_plan_status = action_plan.status
     # Delete
+    _queue_activity_event(
+        db,
+        event_type='action_plan_deleted',
+        title='Action plan removed',
+        message=f'{company.name} removed action plan "{action_plan_title}".',
+        severity='warning',
+        actor_role='company',
+        actor_email=email,
+        company=company,
+        cycle=resolve_submission_cycle(db),
+        is_toast=True,
+        visible_to_investors=True,
+        metadata={'action_plan_id': action_plan.id, 'status': action_plan_status},
+    )
     db.delete(action_plan)
     db.commit()
     

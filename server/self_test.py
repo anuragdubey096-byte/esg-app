@@ -4,12 +4,15 @@ import sys
 import time
 import io
 import zipfile
+from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote_plus
 from urllib.request import urlopen
 
 from fastapi.testclient import TestClient
 
 from main import app
+from database import SessionLocal
 from import_csv import (
     EXPECTED_FILES,
     get_default_data_dir,
@@ -32,6 +35,7 @@ from portal_config import (
     PORTAL_SEARCH_PAGE_CATALOG,
     SEARCH_RANKING,
 )
+from models import SubmissionUnlock
 
 
 def run_self_test():
@@ -157,6 +161,27 @@ def run_self_test():
             if method == 'PATCH':
                 return client.patch(path, **kwargs)
             raise ValueError(f'Unsupported method: {method}')
+
+        health = client.get('/health')
+        health_payload = health.json() if health.status_code == 200 else {}
+        check(
+            'GET /health',
+            health.status_code == 200
+            and health_payload.get('status') in {'ok', 'degraded'}
+            and isinstance(health_payload.get('checks'), dict)
+            and bool(health_payload.get('checks', {}).get('database', {}).get('ok')),
+            health.text,
+        )
+
+        ready = client.get('/health/ready')
+        ready_payload = ready.json() if ready.status_code == 200 else {}
+        check(
+            'GET /health/ready',
+            ready.status_code == 200
+            and ready_payload.get('ready') is True
+            and ready_payload.get('checks', {}).get('startup', {}).get('ok') is True,
+            ready.text,
+        )
 
         for email, expected_role in [
             ('manager@example.com', 'manager'),
@@ -381,7 +406,7 @@ def run_self_test():
                 for item in existing_cycles_response.json()
                 if str(item.get('cycle_year')).isdigit()
             }
-        cycle_year = 2500 + (stamp % 1000)
+        cycle_year = datetime.utcnow().year + 1
         while cycle_year in existing_cycle_years:
             cycle_year += 1
         cycle_response = client.post('/cycles', json={
@@ -577,6 +602,103 @@ def run_self_test():
         submission_id = submission.get('id')
         check('active cycle accepts submission', initial_submit.status_code == 200 and submission.get('status') == 'submitted', initial_submit.text)
 
+        company_section = client.get(
+            f'/company/submission/{cycle["id"]}?section=Environmental',
+            headers=created_company_headers,
+        )
+        company_section_payload = company_section.json() if company_section.status_code == 200 else {}
+        check(
+            'GET /company/submission/{cycle_id} collaboration payload',
+            company_section.status_code == 200
+            and company_section_payload.get('submission_id')
+            and isinstance(company_section_payload.get('collaboration'), dict),
+            company_section.text,
+        )
+
+        collaboration_claim = client.post(
+            f'/company/submission/{cycle["id"]}/collaboration/claim',
+            json={'section': 'Environmental'},
+            headers=created_company_headers,
+        )
+        collaboration_claim_payload = collaboration_claim.json() if collaboration_claim.status_code == 200 else {}
+        check(
+            'POST /company/submission/{cycle_id}/collaboration/claim',
+            collaboration_claim.status_code == 200
+            and 'Environmental' in collaboration_claim_payload.get('current_user_sections', []),
+            collaboration_claim.text,
+        )
+
+        collaboration_view = client.get(f'/submissions/{submission_id}/collaboration', headers=manager_headers)
+        collaboration_view_payload = collaboration_view.json() if collaboration_view.status_code == 200 else {}
+        check(
+            'GET /submissions/{id}/collaboration manager',
+            collaboration_view.status_code == 200
+            and any(item.get('section') == 'Environmental' for item in collaboration_view_payload.get('active_sections', [])),
+            collaboration_view.text,
+        )
+
+        collaboration_unlock = client.post(
+            f'/companies/{company_id}/unlock',
+            json={'reason': 'Allow collaboration smoke-test edit', 'expiry_hours': 1},
+            headers=manager_headers,
+        )
+        check(
+            'POST /companies/{id}/unlock collaboration smoke test',
+            collaboration_unlock.status_code == 200 and collaboration_unlock.json().get('active') is True,
+            collaboration_unlock.text,
+        )
+
+        company_field_update = client.post(
+            f'/company/submission/{cycle["id"]}',
+            json={'field_key': 'scope_1_emissions', 'value': '123', 'confidence_level': 'Measured', 'explanation': ''},
+            headers=created_company_headers,
+        )
+        company_field_update_payload = company_field_update.json() if company_field_update.status_code == 200 else {}
+        check(
+            'POST /company/submission/{cycle_id} field update',
+            company_field_update.status_code == 200
+            and company_field_update_payload.get('status') == 'success',
+            company_field_update.text,
+        )
+
+        live_activity = client.get(
+            f'/live/activity?company_id={company_id}&submission_id={submission_id}&limit=5',
+            headers=manager_headers,
+        )
+        live_activity_payload = live_activity.json() if live_activity.status_code == 200 else {}
+        check(
+            'GET /live/activity company submission',
+            live_activity.status_code == 200
+            and any(item.get('event_type') == 'submission_field_saved' for item in live_activity_payload.get('items', []))
+            and any(item.get('event_type') == 'submission_section_claimed' for item in live_activity_payload.get('items', [])),
+            live_activity.text,
+        )
+
+        with SessionLocal() as db:
+            db.query(SubmissionUnlock).filter(
+                SubmissionUnlock.company_id == company_id,
+                SubmissionUnlock.cycle_id == cycle['id'],
+                SubmissionUnlock.active.is_(True),
+            ).update({'active': False}, synchronize_session=False)
+            db.commit()
+
+        with client.websocket_connect('/ws/live?role=manager&email=manager@example.com') as websocket:
+            hello = websocket.receive_json()
+            reminder_from_ws = client.post(
+                f'/companies/{company_id}/reminders',
+                json={'channel': 'email', 'message': 'Live reminder smoke test', 'cycle_id': cycle['id']},
+                headers=manager_headers,
+            )
+            websocket_event = websocket.receive_json()
+        check(
+            'GET /ws/live manager reminder event',
+            hello.get('type') == 'hello'
+            and reminder_from_ws.status_code == 200
+            and websocket_event.get('type') == 'event'
+            and websocket_event.get('event', {}).get('event_type') == 'reminder_sent',
+            json.dumps(websocket_event),
+        )
+
         investor_submit = client.post(f'/company/{company_id}/submissions', json=submission_payload, headers=investor_headers)
         check('POST /company/{id}/submissions blocked for investor', investor_submit.status_code == 403, investor_submit.text)
 
@@ -589,6 +711,17 @@ def run_self_test():
         check('POST /company/{id}/action-plans manager', manager_action_plan.status_code == 200, manager_action_plan.text)
         investor_action_plan = client.post(f'/company/{company_id}/action-plans', json=action_plan_payload, headers=investor_headers)
         check('POST /company/{id}/action-plans blocked for investor', investor_action_plan.status_code == 403, investor_action_plan.text)
+        investor_live_activity = client.get('/live/activity?limit=12', headers=investor_headers)
+        investor_live_activity_payload = investor_live_activity.json() if investor_live_activity.status_code == 200 else {}
+        check(
+            'GET /live/activity investor visible events',
+            investor_live_activity.status_code == 200
+            and any(
+                item.get('event_type') in {'submission_submitted', 'action_plan_created'}
+                for item in investor_live_activity_payload.get('items', [])
+            ),
+            investor_live_activity.text,
+        )
 
         carbon_calculator = client.post(
             '/calculator/ghg',
@@ -780,6 +913,79 @@ def run_self_test():
             narrative_approve.text,
         )
 
+        company_dashboard_after_approval = client.get('/company/dashboard', headers=created_company_headers)
+        company_dashboard_payload = company_dashboard_after_approval.json() if company_dashboard_after_approval.status_code == 200 else {}
+        check(
+            'GET /company/dashboard company impact story',
+            company_dashboard_after_approval.status_code == 200
+            and isinstance(company_dashboard_payload.get('impact_story'), dict)
+            and str(company_dashboard_payload.get('impact_story', {}).get('headline') or '').endswith('impact story')
+            and len(company_dashboard_payload.get('impact_story', {}).get('comparison_rows', [])) >= 4,
+            company_dashboard_after_approval.text,
+        )
+
+        portfolio_narrative = client.post(
+            '/narrative/generate',
+            json={'audience': 'board', 'tone': 'board-ready', 'force_refresh': True},
+            headers=manager_headers,
+        )
+        portfolio_narrative_payload = portfolio_narrative.json() if portfolio_narrative.status_code == 200 else {}
+        portfolio_narrative_id = portfolio_narrative_payload.get('narrative_id')
+        check(
+            'POST /narrative/generate board refresh',
+            portfolio_narrative.status_code == 200
+            and portfolio_narrative_payload.get('available') is True
+            and portfolio_narrative_payload.get('freshness_status') == 'current'
+            and portfolio_narrative_id,
+            portfolio_narrative.text,
+        )
+
+        portfolio_narrative_approve = client.post(
+            f'/narrative/{portfolio_narrative_id}/approve',
+            json={'approved': True},
+            headers=manager_headers,
+        )
+        check(
+            'POST /narrative/{id}/approve portfolio',
+            portfolio_narrative_approve.status_code == 200 and portfolio_narrative_approve.json().get('status') == 'approved',
+            portfolio_narrative_approve.text,
+        )
+
+        report_preview = client.get(
+            f'/reports/sfdr/preview?period=FY2026&portfolio=All%20Portfolio%20Companies&narrative_id={portfolio_narrative_id}',
+            headers=manager_headers,
+        )
+        report_preview_payload = report_preview.json() if report_preview.status_code == 200 else {}
+        check(
+            'GET /reports/{type}/preview narrative current',
+            report_preview.status_code == 200
+            and report_preview_payload.get('narrative_status') == 'current'
+            and isinstance(report_preview_payload.get('impact_story'), dict)
+            and bool(report_preview_payload.get('trend_summary'))
+            and len(report_preview_payload.get('comparison_rows', [])) >= 4
+            and isinstance(report_preview_payload.get('anomaly_summary'), dict)
+            and bool(report_preview_payload.get('anomaly_summary', {}).get('headline'))
+            and isinstance(report_preview_payload.get('external_context_items'), list)
+            and len(report_preview_payload.get('external_context_items', [])) >= 2,
+            report_preview.text,
+        )
+
+        company_preview = client.get(
+            f'/reports/edci/preview?period=FY{cycle_year}&portfolio={quote_plus(company_name)}&narrative_id={narrative_id}',
+            headers=manager_headers,
+        )
+        company_preview_payload = company_preview.json() if company_preview.status_code == 200 else {}
+        check(
+            'GET /reports/{type}/preview company impact story',
+            company_preview.status_code == 200
+            and company_preview_payload.get('narrative_status') == 'current'
+            and isinstance(company_preview_payload.get('impact_story'), dict)
+            and str(company_preview_payload.get('impact_story', {}).get('headline') or '').startswith(company_name)
+            and company_preview_payload.get('anomaly_summary', {}).get('scope') == 'company'
+            and all(item.get('company_id') == company_id for item in company_preview_payload.get('external_context_items', [])),
+            company_preview.text,
+        )
+
         close_cycle = client.patch(f"/cycles/{cycle['id']}/status", json={'status': 'closed'}, headers=manager_headers)
         check('PATCH /cycles/{id}/status close', close_cycle.status_code == 200 and close_cycle.json().get('status') == 'closed', close_cycle.text)
         invalid_cycle_reopen = client.patch(f"/cycles/{cycle['id']}/status", json={'status': 'active'}, headers=manager_headers)
@@ -796,8 +1002,76 @@ def run_self_test():
         unlock_payload = unlock_response.json() if unlock_response.status_code == 200 else {}
         check('POST /companies/{id}/unlock', unlock_response.status_code == 200 and unlock_payload.get('active') is True, unlock_response.text)
 
-        unlocked_submit = client.post(f'/company/{company_id}/submissions', json=submission_payload, headers=created_company_headers)
-        check('unlock allows temporary write', unlocked_submit.status_code == 200, unlocked_submit.text)
+        updated_submission_payload = dict(submission_payload)
+        updated_submission_payload['scope_1_emissions'] = 12
+        updated_submission_payload['scope_2_location_based'] = 22
+        updated_submission_payload['scope_3_emissions'] = 32
+        updated_submission_payload['total_ghg_emissions'] = 66
+        updated_submission_payload['female_representation_percent'] = 41
+        updated_submission_payload['trifr'] = 1.1
+        unlocked_submit = client.post(f'/company/{company_id}/submissions', json=updated_submission_payload, headers=created_company_headers)
+        updated_submission = unlocked_submit.json() if unlocked_submit.status_code == 200 else {}
+        updated_submission_id = updated_submission.get('id')
+        check('unlock allows temporary write', unlocked_submit.status_code == 200 and updated_submission_id, unlocked_submit.text)
+
+        reapproved_submission = client.post(
+            f'/submissions/{updated_submission_id}/review',
+            json={'reviewer_role': 'Manager', 'review_status': 'approved', 'review_comment': 'Approved updated submission for stale narrative test.'},
+            headers=manager_headers,
+        )
+        check(
+            'resubmitted data approved for stale narrative test',
+            reapproved_submission.status_code == 200 and reapproved_submission.json().get('status') == 'approved',
+            reapproved_submission.text,
+        )
+
+        stale_narrative = client.get(f'/narrative/{narrative_id}', headers=manager_headers)
+        stale_narrative_payload = stale_narrative.json() if stale_narrative.status_code == 200 else {}
+        check(
+            'GET /narrative/{id} stale after approved data change',
+            stale_narrative.status_code == 200 and stale_narrative_payload.get('freshness_status') == 'stale',
+            stale_narrative.text,
+        )
+
+        stale_preview = client.get(
+            f'/reports/edci/preview?period=FY{cycle_year}&portfolio={quote_plus(company_name)}&narrative_id={narrative_id}',
+            headers=manager_headers,
+        )
+        stale_preview_payload = stale_preview.json() if stale_preview.status_code == 200 else {}
+        check(
+            'GET /reports/{type}/preview narrative stale',
+            stale_preview.status_code == 200
+            and stale_preview_payload.get('narrative_status') == 'stale'
+            and stale_preview_payload.get('narrative_included') is False,
+            stale_preview.text,
+        )
+
+        refreshed_company_narrative = client.post(
+            '/narrative/generate',
+            json={'audience': 'company', 'company_id': company_id, 'tone': 'board-ready', 'force_refresh': True},
+            headers=manager_headers,
+        )
+        refreshed_company_narrative_payload = refreshed_company_narrative.json() if refreshed_company_narrative.status_code == 200 else {}
+        refreshed_company_narrative_id = refreshed_company_narrative_payload.get('narrative_id')
+        check(
+            'POST /narrative/generate company refresh',
+            refreshed_company_narrative.status_code == 200
+            and refreshed_company_narrative_payload.get('freshness_status') == 'current'
+            and refreshed_company_narrative_id
+            and refreshed_company_narrative_id != narrative_id,
+            refreshed_company_narrative.text,
+        )
+
+        refreshed_company_approve = client.post(
+            f'/narrative/{refreshed_company_narrative_id}/approve',
+            json={'approved': True},
+            headers=manager_headers,
+        )
+        check(
+            'POST /narrative/{id}/approve refreshed company narrative',
+            refreshed_company_approve.status_code == 200 and refreshed_company_approve.json().get('status') == 'approved',
+            refreshed_company_approve.text,
+        )
 
         reminder_response = client.post(
             f'/companies/{company_id}/reminders',
@@ -890,8 +1164,34 @@ def run_self_test():
         csv_export_company = client.get('/reports/edci/export?format=csv&period=FY2026&portfolio=All%20Portfolio%20Companies', headers=company_headers)
         check('GET /reports/{type}/export csv company blocked', csv_export_company.status_code == 403, csv_export_company.text)
 
+        refreshed_portfolio_narrative = client.post(
+            '/narrative/generate',
+            json={'audience': 'board', 'tone': 'board-ready', 'force_refresh': True},
+            headers=manager_headers,
+        )
+        refreshed_portfolio_narrative_payload = refreshed_portfolio_narrative.json() if refreshed_portfolio_narrative.status_code == 200 else {}
+        refreshed_portfolio_narrative_id = refreshed_portfolio_narrative_payload.get('narrative_id')
+        check(
+            'POST /narrative/generate board refresh before export',
+            refreshed_portfolio_narrative.status_code == 200
+            and refreshed_portfolio_narrative_payload.get('freshness_status') == 'current'
+            and refreshed_portfolio_narrative_id,
+            refreshed_portfolio_narrative.text,
+        )
+
+        refreshed_portfolio_narrative_approve = client.post(
+            f'/narrative/{refreshed_portfolio_narrative_id}/approve',
+            json={'approved': True},
+            headers=manager_headers,
+        )
+        check(
+            'POST /narrative/{id}/approve refreshed portfolio narrative',
+            refreshed_portfolio_narrative_approve.status_code == 200 and refreshed_portfolio_narrative_approve.json().get('status') == 'approved',
+            refreshed_portfolio_narrative_approve.text,
+        )
+
         pdf_export = client.get(
-            f'/reports/sfdr/export?format=pdf&period=FY2026&portfolio=All%20Portfolio%20Companies&narrative_id={narrative_id}',
+            f'/reports/sfdr/export?format=pdf&period=FY2026&portfolio=All%20Portfolio%20Companies&narrative_id={refreshed_portfolio_narrative_id}',
             headers=manager_headers,
         )
         pdf_payload = pdf_export.json() if pdf_export.status_code == 200 else {}
@@ -900,16 +1200,23 @@ def run_self_test():
             pdf_export.status_code == 200
             and artifact_is_available(pdf_payload, 'application/pdf')
             and pdf_payload.get('narrative_included') is True
+            and pdf_payload.get('narrative_status') == 'current'
             and isinstance(pdf_payload.get('context_summary'), list)
             and len(pdf_payload.get('context_summary', [])) > 0
-            and pdf_payload.get('impact_headline') == 'Portfolio impact story',
+            and pdf_payload.get('impact_headline') == 'Portfolio impact story'
+            and isinstance(pdf_payload.get('anomaly_summary'), dict)
+            and bool(pdf_payload.get('anomaly_summary', {}).get('headline'))
+            and isinstance(pdf_payload.get('external_context_items'), list)
+            and len(pdf_payload.get('external_context_items', [])) >= 2,
             pdf_export.text,
         )
         check(
             'GET /reports/{type}/export pdf comparison rows',
             pdf_export.status_code == 200
             and isinstance(pdf_payload.get('comparison_rows'), list)
-            and len(pdf_payload.get('comparison_rows', [])) >= 4,
+            and len(pdf_payload.get('comparison_rows', [])) >= 4
+            and isinstance(pdf_payload.get('impact_story'), dict)
+            and bool(pdf_payload.get('trend_summary')),
             pdf_export.text,
         )
 
@@ -923,7 +1230,11 @@ def run_self_test():
             'POST /newsletter/generate manager',
             newsletter_summary.status_code == 200
             and newsletter_payload.get('available') is True
-            and bool(newsletter_payload.get('subject_line')),
+            and bool(newsletter_payload.get('subject_line'))
+            and isinstance(newsletter_payload.get('anomaly_summary'), dict)
+            and bool(newsletter_payload.get('anomaly_summary', {}).get('headline'))
+            and isinstance(newsletter_payload.get('external_context_items'), list)
+            and len(newsletter_payload.get('external_context_items', [])) >= 2,
             newsletter_summary.text,
         )
 
@@ -938,7 +1249,10 @@ def run_self_test():
             newsletter_export.status_code == 200
             and artifact_is_available(newsletter_export_payload, 'text/plain')
             and newsletter_export_payload.get('available') is True
-            and bool(newsletter_export_payload.get('subject_line')),
+            and bool(newsletter_export_payload.get('subject_line'))
+            and isinstance(newsletter_export_payload.get('anomaly_summary'), dict)
+            and isinstance(newsletter_export_payload.get('external_context_items'), list)
+            and len(newsletter_export_payload.get('external_context_items', [])) >= 2,
             newsletter_export.text,
         )
 
@@ -976,6 +1290,61 @@ def run_self_test():
             'POST /newsletter/send company blocked',
             newsletter_send_company.status_code == 403,
             newsletter_send_company.text,
+        )
+
+        manager_external_context = client.get('/external-context/feed?limit=4', headers=manager_headers)
+        manager_external_context_payload = manager_external_context.json() if manager_external_context.status_code == 200 else {}
+        check(
+            'GET /external-context/feed manager',
+            manager_external_context.status_code == 200
+            and manager_external_context_payload.get('available') is True
+            and isinstance(manager_external_context_payload.get('items'), list)
+            and len(manager_external_context_payload.get('items', [])) >= 3,
+            manager_external_context.text,
+        )
+
+        investor_external_context_blocked = client.get(f'/external-context/feed?company_id={company_id}', headers=investor_headers)
+        check(
+            'GET /external-context/feed investor company blocked',
+            investor_external_context_blocked.status_code == 403,
+            investor_external_context_blocked.text,
+        )
+
+        company_external_context = client.get('/external-context/feed?limit=3', headers=created_company_headers)
+        company_external_context_payload = company_external_context.json() if company_external_context.status_code == 200 else {}
+        check(
+            'GET /external-context/feed company',
+            company_external_context.status_code == 200
+            and company_external_context_payload.get('scope') == 'company'
+            and isinstance(company_external_context_payload.get('items'), list),
+            company_external_context.text,
+        )
+
+        investor_anomaly_summary = client.get('/anomalies/summary', headers=investor_headers)
+        investor_anomaly_summary_payload = investor_anomaly_summary.json() if investor_anomaly_summary.status_code == 200 else {}
+        check(
+            'GET /anomalies/summary investor',
+            investor_anomaly_summary.status_code == 200
+            and investor_anomaly_summary_payload.get('scope') == 'portfolio'
+            and isinstance(investor_anomaly_summary_payload.get('severity_counts'), dict),
+            investor_anomaly_summary.text,
+        )
+
+        investor_anomaly_blocked = client.get(f'/anomalies/summary?company_id={company_id}', headers=investor_headers)
+        check(
+            'GET /anomalies/summary investor company blocked',
+            investor_anomaly_blocked.status_code == 403,
+            investor_anomaly_blocked.text,
+        )
+
+        company_anomaly_summary = client.get('/company/anomalies', headers=created_company_headers)
+        company_anomaly_summary_payload = company_anomaly_summary.json() if company_anomaly_summary.status_code == 200 else {}
+        check(
+            'GET /company/anomalies company',
+            company_anomaly_summary.status_code == 200
+            and company_anomaly_summary_payload.get('scope') == 'company'
+            and isinstance(company_anomaly_summary_payload.get('items'), list),
+            company_anomaly_summary.text,
         )
 
         cron_newsletter_blocked = client.get('/cron/newsletter/manager')

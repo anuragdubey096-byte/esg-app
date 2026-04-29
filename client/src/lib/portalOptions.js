@@ -3,6 +3,13 @@ export const REPORT_FRAMEWORK_OPTIONS = [
   { id: 'sfdr', label: 'SFDR' },
 ]
 
+export const CURRENT_REPORT_YEAR = new Date().getFullYear()
+export const PREVIOUS_REPORT_YEAR = CURRENT_REPORT_YEAR - 1
+export const REPORT_PERIOD_OPTIONS = [
+  `FY${CURRENT_REPORT_YEAR}`,
+  `FY${PREVIOUS_REPORT_YEAR}`,
+]
+
 export const NARRATIVE_TONE_OPTIONS = [
   { value: 'board-ready', label: 'Board-ready' },
   { value: 'lp-letter', label: 'Investor letter' },
@@ -12,7 +19,7 @@ export const NARRATIVE_TONE_OPTIONS = [
 export const DEFAULT_REPORT_VIEW = {
   framework: REPORT_FRAMEWORK_OPTIONS[0].id,
   portfolio: 'All Portfolio Companies',
-  period: 'Current Cycle',
+  period: `FY${CURRENT_REPORT_YEAR}`,
   format: 'csv',
   narrativeTone: 'board-ready',
 }

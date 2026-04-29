@@ -56,20 +56,17 @@ export function getAppearance(value) {
 export function loadExperienceState() {
   const stored = safeReadJson(EXPERIENCE_STORAGE_KEY, null)
   const appearance = getAppearance(stored?.appearance)
-  const brandId = BRAND_PROFILES.some((profile) => profile.id === stored?.brandId)
-    ? stored.brandId
-    : DEFAULT_BRAND_ID
 
   return {
     appearance,
-    brandId,
+    brandId: DEFAULT_BRAND_ID,
   }
 }
 
 export function persistExperienceState(state) {
   safeWriteJson(EXPERIENCE_STORAGE_KEY, {
     appearance: getAppearance(state?.appearance),
-    brandId: getBrandProfile(state?.brandId).id,
+    brandId: DEFAULT_BRAND_ID,
   })
 }
 

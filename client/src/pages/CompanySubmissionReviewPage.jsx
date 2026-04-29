@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useOutletContext, useSearchParams } from 'react-router-dom'
+import ActivityFeedCard from '../components/ActivityFeedCard'
+import CollaborationPanel from '../components/CollaborationPanel'
 import NarrativeSummaryCard from '../components/NarrativeSummaryCard'
 import SectionCard from '../components/SectionCard'
 import { Button, TextareaInput } from '../components/ui'
@@ -18,7 +20,7 @@ export default function CompanySubmissionReviewPage() {
   const [agreedToTerms, setAgreedToTerms] = useState(false)
   const [showAllValidationIssues, setShowAllValidationIssues] = useState(false)
 
-  // Review/Audit placeholders (intentionally local and non-persistent)
+  // Local review notes are kept client-side for reviewer workflow support.
   const [reviewerComment, setReviewerComment] = useState('')
   const [clarificationDrafts, setClarificationDrafts] = useState({})
   const [sourceReferences, setSourceReferences] = useState({})
@@ -255,7 +257,7 @@ export default function CompanySubmissionReviewPage() {
         )}
       </SectionCard>
 
-      <SectionCard title="Reviewer Metadata (Placeholder)" subtitle="Local-only review context">
+      <SectionCard title="Reviewer Metadata" subtitle="Local review context">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
           <div className="rounded-lg border border-gray-200 p-3 bg-gray-50">
             <p><span className="ui-text-strong">Submission ID:</span> {data.submission_id}</p>
@@ -271,18 +273,24 @@ export default function CompanySubmissionReviewPage() {
           </div>
         </div>
         <div className="mt-4">
-          <label className="block text-sm ui-text-strong text-gray-700 mb-1">Reviewer Comment Placeholder</label>
+          <label className="block text-sm ui-text-strong text-gray-700 mb-1">Reviewer Comment</label>
           <TextareaInput
-            label="Reviewer Comment Placeholder"
+            label="Reviewer Comment"
             value={reviewerComment}
             onChange={(e) => setReviewerComment(e.target.value)}
             rows={3}
-            placeholder="Local-only reviewer note placeholder (not submitted to backend)."
+            placeholder="Add reviewer notes for internal review context."
           />
         </div>
       </SectionCard>
 
-      <SectionCard title="Audit & Export Readiness" subtitle="Placeholder support without API changes">
+      <CollaborationPanel
+        collaboration={data.collaboration}
+        activeSection="Review & Submit"
+        conflictMessage=""
+      />
+
+      <SectionCard title="Audit & Export Readiness" subtitle="Review support from current submission data">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <AuditMetric title="Export-ready Fields" value={exportReadyCount} tone="blue" />
           <AuditMetric title="Low-confidence Fields" value={lowConfidenceCount} tone="amber" />
@@ -420,6 +428,14 @@ export default function CompanySubmissionReviewPage() {
         onRefresh={narrative.refresh}
       />
 
+      <ActivityFeedCard
+        user={user}
+        title="Submission Activity Feed"
+        subtitle="Live submission events during review and approval"
+        companyId={data.company_id}
+        submissionId={data.submission_id}
+      />
+
       <SectionCard title="Submission Declaration">
         <div className="bg-blue-50 border border-blue-200 rounded-lg p-6">
           <h3 className="ui-text-strong text-gray-800 mb-4">Certification</h3>
@@ -541,25 +557,25 @@ function FieldReviewCard({
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         <div>
           <label className="block text-xs ui-text-strong uppercase tracking-wide text-gray-500 mb-1">
-            Source Reference (Placeholder)
+            Source Reference
           </label>
           <input
             type="text"
             value={sourceValue}
             onChange={(e) => setSourceReferences((prev) => ({ ...prev, [token]: e.target.value }))}
-            placeholder="e.g. utility_invoice_2026_q2.pdf"
+            placeholder="Add source file or reference id"
             className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
         </div>
         <div>
           <label className="block text-xs ui-text-strong uppercase tracking-wide text-gray-500 mb-1">
-            Clarification Request Stub (Placeholder)
+            Clarification Request
           </label>
           <textarea
             value={clarificationValue}
             onChange={(e) => setClarificationDrafts((prev) => ({ ...prev, [token]: e.target.value }))}
             rows={2}
-            placeholder="Reviewer clarification placeholder for this field."
+            placeholder="Add clarification notes for this field."
             className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
         </div>

@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
+import AnomalySummaryCard from '../components/AnomalySummaryCard'
+import ExternalContextFeedCard from '../components/ExternalContextFeedCard'
+import ImpactStoryCard from '../components/ImpactStoryCard'
 import NarrativeEditor from '../components/NarrativeEditor'
 import NarrativeSummaryCard from '../components/NarrativeSummaryCard'
 import NarrativeToolbar from '../components/NarrativeToolbar'
@@ -17,11 +20,12 @@ import {
   upsertSavedFilterPreset,
 } from '../lib/experience'
 import { DEFAULT_REPORT_VIEW, NARRATIVE_UI_COPY, REPORT_FRAMEWORK_OPTIONS } from '../lib/portalOptions'
+import { REPORT_PERIOD_OPTIONS } from '../lib/portalOptions'
 import { Button } from '../components/ui'
 
 export default function ReportsPage() {
   const { user } = useOutletContext()
-  const { companies, cycles } = useDashboardData(user)
+  const { companies } = useDashboardData(user)
   const normalizedRole = String(user?.role || '').toLowerCase()
   const canExport = normalizedRole === 'manager' || normalizedRole === 'investor'
   const canEditNarrative = normalizedRole === 'manager'
@@ -41,26 +45,36 @@ export default function ReportsPage() {
   const hydratedFiltersRef = useRef(false)
 
   const portfolios = useMemo(() => [DEFAULT_REPORT_VIEW.portfolio, ...companies.map((c) => c.name)], [companies])
-  const periods = useMemo(() => {
-    const cyclePeriods = (cycles || []).map((cycle) => `FY${cycle.cycle_year}`)
-    return [DEFAULT_REPORT_VIEW.period, ...cyclePeriods]
-  }, [cycles])
+  const periods = useMemo(() => REPORT_PERIOD_OPTIONS, [])
   const filterScope = useMemo(() => `reports:${user?.role || 'guest'}:${user?.email || 'guest'}`, [user?.email, user?.role])
   const activeSavedView = useMemo(
     () => savedViews.find((item) => item.id === activeViewId) || null,
     [activeViewId, savedViews],
   )
+  const selectedCompany = useMemo(
+    () => companies.find((item) => item.name === portfolio) || null,
+    [companies, portfolio],
+  )
+  const narrativeAudience = useMemo(
+    () => (normalizedRole === 'manager' && selectedCompany ? 'company' : 'board'),
+    [normalizedRole, selectedCompany],
+  )
+  const narrativeCompanyId = narrativeAudience === 'company' ? selectedCompany?.id || null : null
   const selectedFramework = useMemo(
     () => REPORT_FRAMEWORK_OPTIONS.find((item) => item.id === framework) || REPORT_FRAMEWORK_OPTIONS[0],
     [framework],
   )
   const narrative = useNarrativeSummary({
     user,
-    audience: 'board',
+    audience: narrativeAudience,
+    companyId: narrativeCompanyId,
     tone: narrativeTone,
     enabled: Boolean(user),
   })
   const [selectedNarrativeId, setSelectedNarrativeId] = useState('')
+  const [reportPreview, setReportPreview] = useState(null)
+  const [reportPreviewLoading, setReportPreviewLoading] = useState(false)
+  const [reportPreviewError, setReportPreviewError] = useState('')
 
   useEffect(() => {
     const persisted = loadLastFilterState(filterScope) || {}
@@ -70,13 +84,13 @@ export default function ReportsPage() {
         : DEFAULT_REPORT_VIEW.framework,
     )
     setPortfolio(persisted.portfolio || DEFAULT_REPORT_VIEW.portfolio)
-    setPeriod(persisted.period || DEFAULT_REPORT_VIEW.period)
+    setPeriod(periods.includes(persisted.period) ? persisted.period : DEFAULT_REPORT_VIEW.period)
     setFormat(persisted.format || DEFAULT_REPORT_VIEW.format)
     setNarrativeTone(persisted.narrativeTone || DEFAULT_REPORT_VIEW.narrativeTone)
     setSavedViews(loadSavedFilterPresets(filterScope))
     setActiveViewId('')
     hydratedFiltersRef.current = true
-  }, [filterScope])
+  }, [filterScope, periods])
 
   useEffect(() => {
     if (!hydratedFiltersRef.current) return
@@ -111,7 +125,7 @@ export default function ReportsPage() {
         : DEFAULT_REPORT_VIEW.framework,
     )
     setPortfolio(preset.filters.portfolio || DEFAULT_REPORT_VIEW.portfolio)
-    setPeriod(preset.filters.period || DEFAULT_REPORT_VIEW.period)
+    setPeriod(periods.includes(preset.filters.period) ? preset.filters.period : DEFAULT_REPORT_VIEW.period)
     setFormat(preset.filters.format || DEFAULT_REPORT_VIEW.format)
     setNarrativeTone(preset.filters.narrativeTone || DEFAULT_REPORT_VIEW.narrativeTone)
     setActiveViewId(preset.id)
@@ -159,6 +173,10 @@ export default function ReportsPage() {
   }
 
   useEffect(() => {
+    setSelectedNarrativeId('')
+  }, [narrativeAudience, narrativeCompanyId])
+
+  useEffect(() => {
     syncNarrativeDraft(narrative.data)
   }, [narrative.data])
 
@@ -170,19 +188,80 @@ export default function ReportsPage() {
     }
   }, [narrative.history, selectedNarrativeId])
 
+  useEffect(() => {
+    let active = true
+
+    const fetchPreview = async () => {
+      if (!user?.role || !canExport) {
+        setReportPreview(null)
+        setReportPreviewError('')
+        setReportPreviewLoading(false)
+        return
+      }
+
+      setReportPreviewLoading(true)
+      setReportPreviewError('')
+      try {
+        const params = new URLSearchParams({
+          period,
+          portfolio,
+        })
+        if (narrative.data?.narrative_id) {
+          params.set('narrative_id', String(narrative.data.narrative_id))
+        }
+        const response = await fetch(`${API_BASE_URL}/reports/${selectedFramework.id}/preview?${params.toString()}`, {
+          headers: {
+            'x-user-role': user?.role || '',
+            'x-user-email': user?.email || '',
+          },
+        })
+        const payload = await response.json().catch(() => ({}))
+        if (!response.ok) {
+          throw new Error(payload.detail || 'Unable to load report preview.')
+        }
+        if (active) {
+          setReportPreview(payload)
+        }
+      } catch (error) {
+        if (active) {
+          setReportPreview(null)
+          setReportPreviewError(error.message || 'Unable to load report preview.')
+        }
+      } finally {
+        if (active) {
+          setReportPreviewLoading(false)
+        }
+      }
+    }
+
+    fetchPreview()
+    return () => {
+      active = false
+    }
+  }, [
+    canExport,
+    narrative.data?.narrative_id,
+    period,
+    portfolio,
+    selectedFramework.id,
+    user?.email,
+    user?.role,
+  ])
+
   const generateNarrative = async () => {
     setNarrativeBusy(true)
     setNarrativeMessage('')
     try {
       const payload = await narrative.generate({
-        audience: 'board',
+        audience: narrativeAudience,
+        companyId: narrativeCompanyId,
         tone: narrativeTone,
         forceRefresh: true,
       })
       syncNarrativeDraft(payload)
-      setNarrativeMessage('Portfolio narrative generated.')
+      setNarrativeMessage('Narrative regenerated from latest approved data.')
     } catch (error) {
-      setNarrativeMessage(error.message || 'Unable to generate portfolio narrative.')
+      setNarrativeMessage(error.message || 'Unable to regenerate narrative.')
     } finally {
       setNarrativeBusy(false)
     }
@@ -260,7 +339,7 @@ export default function ReportsPage() {
         period,
         portfolio,
       })
-      if (format === 'pdf' && narrative.data?.status === 'approved' && narrative.data?.narrative_id) {
+      if (format === 'pdf' && narrative.data?.narrative_id) {
         query.set('narrative_id', String(narrative.data.narrative_id))
       }
       const response = await fetch(`${API_BASE_URL}/reports/${selectedFramework.id}/export?${query.toString()}`, {
@@ -275,13 +354,28 @@ export default function ReportsPage() {
       }
       const payload = await response.json()
       setDownload(payload)
-      setMessage(`Generated ${selectedFramework.label} export (${payload.rows_exported} rows).`)
+      setMessage(`Generated ${selectedFramework.label} export (${payload.rows_exported} rows). ${payload.narrative_status_label || ''}`.trim())
     } catch (error) {
       setMessage(error.message)
     } finally {
       setLoading(false)
     }
   }
+
+  const previewStatusTone =
+    reportPreview?.narrative_status === 'current'
+      ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+      : reportPreview?.narrative_status === 'stale'
+        ? 'border-amber-200 bg-amber-50 text-amber-800'
+        : 'border-slate-200 bg-slate-50 text-slate-700'
+  const narrativeSectionSubtitle =
+    narrativeAudience === 'company'
+      ? 'Board-ready narrative from the selected company approved data'
+      : NARRATIVE_UI_COPY.pages.reportsNarrativeSubtitle
+  const narrativeInsertSubtitle =
+    narrativeAudience === 'company'
+      ? 'Selected company narrative insert for reports'
+      : NARRATIVE_UI_COPY.pages.reportsNarrativeInsertSubtitle
 
   return (
     <div className="page-grid">
@@ -371,6 +465,27 @@ export default function ReportsPage() {
           </Button>
         </form>
 
+        {canEditNarrative ? (
+          <div className={`mt-4 rounded-xl border px-4 py-3 text-sm ${previewStatusTone}`}>
+            <p className="ui-text-strong">
+              {reportPreviewLoading
+                ? 'Checking narrative status...'
+                : reportPreview?.narrative_status_label || 'No approved narrative'}
+            </p>
+            <p className="mt-1">
+              {reportPreview?.narrative_status_reason || reportPreviewError || 'Report preview will appear once the current context is ready.'}
+            </p>
+          </div>
+        ) : null}
+
+        {reportPreviewError ? <p className="action-message">{reportPreviewError}</p> : null}
+        {reportPreview?.trend_summary ? (
+          <div className="mt-4 rounded-xl border border-[color:var(--ui-panel-border)] bg-[color:var(--ui-surface-muted)] px-4 py-3 text-sm text-[color:var(--ui-text)]">
+            <p className="ui-text-strong">Impact trend preview</p>
+            <p className="mt-1">{reportPreview.trend_summary}</p>
+          </div>
+        ) : null}
+
         {message ? <p className="action-message">{message}</p> : null}
         {download ? (
           <div className="space-y-3 rounded-xl border border-[color:var(--ui-panel-border)] bg-[color:var(--ui-surface-muted)] p-4 text-sm text-[color:var(--ui-text)]">
@@ -384,9 +499,10 @@ export default function ReportsPage() {
             <p>
               {download.narrative_included
                 ? `Narrative insert attached: ${download.narrative_headline || 'Approved narrative'}`
-                : 'No narrative insert attached to this export.'}
+                : `${download.narrative_status_label || 'No approved narrative'}: ${download.narrative_status_reason || 'No narrative insert attached to this export.'}`}
             </p>
             {download.impact_headline ? <p>Impact focus: {download.impact_headline}</p> : null}
+            {download.trend_summary ? <p>{download.trend_summary}</p> : null}
             {Array.isArray(download.context_summary) && download.context_summary.length ? (
               <ul className="space-y-2">
                 {download.context_summary.map((line) => (
@@ -427,13 +543,58 @@ export default function ReportsPage() {
                 </div>
               </div>
             ) : null}
+            {download?.anomaly_summary?.headline ? (
+              <div className="rounded-lg border border-amber-200 bg-amber-50/80 px-3 py-3 text-sm text-amber-950">
+                <p className="ui-text-strong">{download.anomaly_summary.headline}</p>
+                {download.anomaly_summary.summary ? <p className="mt-1">{download.anomaly_summary.summary}</p> : null}
+              </div>
+            ) : null}
+            {Array.isArray(download.external_context_items) && download.external_context_items.length ? (
+              <div className="space-y-2">
+                <p className="ui-text-strong text-[color:var(--ui-text)]">Sector & regulatory context included</p>
+                <ul className="space-y-2">
+                  {download.external_context_items.slice(0, 3).map((item) => (
+                    <li key={item.id} className="rounded-lg border border-[color:var(--ui-panel-border)] bg-[color:var(--ui-surface)] px-3 py-2">
+                      <p className="ui-text-strong">{item.title}</p>
+                      {item.action_prompt ? <p className="mt-1 text-xs text-[color:var(--ui-text-muted)]">{item.action_prompt}</p> : null}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
           </div>
         ) : null}
       </SectionCard>
 
+      {reportPreview?.impact_story ? (
+        <ImpactStoryCard
+          title="Report Impact Preview"
+          subtitle="The approved-data intelligence package that will flow into this export"
+          story={reportPreview.impact_story}
+          maxInsights={4}
+        />
+      ) : null}
+
+      {reportPreview?.anomaly_summary ? (
+        <AnomalySummaryCard
+          title="Report Anomaly Preview"
+          subtitle="The approved-data watchlist that will be packaged into this export"
+          data={reportPreview.anomaly_summary}
+          maxItems={4}
+        />
+      ) : null}
+
+      {Array.isArray(reportPreview?.external_context_items) && reportPreview.external_context_items.length ? (
+        <ExternalContextFeedCard
+          title="Report Context Preview"
+          subtitle="Sector and regulatory context that will travel with this report package"
+          data={{ items: reportPreview.external_context_items }}
+        />
+      ) : null}
+
       <SectionCard
         title="AI ESG Narrative Summary"
-        subtitle={NARRATIVE_UI_COPY.pages.reportsNarrativeSubtitle}
+        subtitle={narrativeSectionSubtitle}
       >
         <div className="space-y-4">
           <div className="flex flex-col gap-3 rounded-xl border border-[color:var(--ui-panel-border)] bg-[color:var(--ui-surface-muted)] p-4 lg:flex-row lg:items-end lg:justify-between">
@@ -476,6 +637,7 @@ export default function ReportsPage() {
             onExport={exportNarrative}
             loading={narrativeBusy || narrative.loading}
             canEdit={canEditNarrative}
+            generateLabel="Regenerate from latest approved data"
           />
           {canEditNarrative ? (
             <NarrativeEditor value={narrativeDraft || {}} onChange={setNarrativeDraft} disabled={narrativeBusy} />
@@ -486,7 +648,7 @@ export default function ReportsPage() {
             loading={narrative.loading}
             error={narrative.error}
             onRefresh={narrative.refresh}
-            subtitle={NARRATIVE_UI_COPY.pages.reportsNarrativeInsertSubtitle}
+            subtitle={narrativeInsertSubtitle}
           />
         </div>
       </SectionCard>

@@ -256,6 +256,14 @@ class CompanyDetail(BaseModel):
     sector: str
     geography: Optional[str] = None
     current_status: Optional[str] = None
+    reporting_status: Optional[str] = None
+    reporting_completion_percent: Optional[int] = None
+    reporting_deadline: Optional[str] = None
+    reporting_esg_score: Optional[float] = None
+    reporting_risk_level: Optional[str] = None
+    reporting_cycle_year: Optional[int] = None
+    latest_submission_id: Optional[int] = None
+    previous_submission_id: Optional[int] = None
     submissions: List[SubmissionInfo]
     action_plans: List[ActionPlanInfo] = []
     review_actions: List[ReviewActionInfo] = []
@@ -346,7 +354,7 @@ class CompanyCreateResponse(BaseModel):
 
 
 class CycleCreateRequest(BaseModel):
-    cycle_year: int
+    cycle_year: int = Field(ge=2000, le=2100)
     submission_open_date: str
     submission_deadline: str
     extension_date: Optional[str] = None
@@ -411,6 +419,126 @@ class ReminderInfo(BaseModel):
     delivery_status: str
 
 
+class ActivityEventResponse(BaseModel):
+    id: int
+    event_type: str
+    title: str
+    message: str
+    severity: str = 'info'
+    actor_role: Optional[str] = None
+    actor_email: Optional[str] = None
+    company_id: Optional[int] = None
+    company_name: Optional[str] = None
+    submission_id: Optional[int] = None
+    cycle_id: Optional[int] = None
+    entity_status: Optional[str] = None
+    is_toast: bool = True
+    visible_to_investors: bool = False
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    created_at: str
+
+
+class ActivityFeedResponse(BaseModel):
+    items: List[ActivityEventResponse] = Field(default_factory=list)
+
+
+class ExternalContextItemResponse(BaseModel):
+    id: str
+    item_type: Literal['sector-news', 'regulation']
+    title: str
+    summary: str
+    sector: Optional[str] = None
+    geography: Optional[str] = None
+    priority: Literal['high', 'medium', 'low'] = 'medium'
+    source_label: str = 'Curated ESG signal'
+    source_type: Literal['curated', 'portfolio-derived'] = 'curated'
+    published_at: str
+    related_topics: List[str] = Field(default_factory=list)
+    impact_hint: Optional[str] = None
+    action_prompt: Optional[str] = None
+    company_id: Optional[int] = None
+    company_name: Optional[str] = None
+
+
+class ExternalContextFeedResponse(BaseModel):
+    available: bool = True
+    role: str
+    scope: Literal['portfolio', 'company'] = 'portfolio'
+    generated_at: str
+    sectors_in_view: List[str] = Field(default_factory=list)
+    items: List[ExternalContextItemResponse] = Field(default_factory=list)
+    message: Optional[str] = None
+
+
+class AnomalyItemResponse(BaseModel):
+    id: str
+    anomaly_type: str
+    severity: Literal['high', 'medium', 'low'] = 'medium'
+    company_id: Optional[int] = None
+    company_name: Optional[str] = None
+    sector: Optional[str] = None
+    reporting_year: Optional[int] = None
+    metric_name: str
+    current_value: str
+    previous_value: Optional[str] = None
+    delta_percent: Optional[float] = None
+    rationale: str
+    recommendation: str
+    source_submission_id: Optional[int] = None
+
+
+class AnomalySummaryResponse(BaseModel):
+    available: bool = True
+    scope: Literal['portfolio', 'company'] = 'portfolio'
+    generated_at: str
+    headline: str
+    summary: str
+    severity_counts: Dict[str, int] = Field(default_factory=dict)
+    watchlist_companies: List[Dict[str, Any]] = Field(default_factory=list)
+    items: List[AnomalyItemResponse] = Field(default_factory=list)
+    fallback_used: bool = False
+    model: Optional[str] = None
+    message: Optional[str] = None
+
+
+class CollaborationClaimRequest(BaseModel):
+    section: str
+
+
+class CollaborationReleaseRequest(BaseModel):
+    section: str
+    force: bool = False
+
+
+class CollaborationSessionResponse(BaseModel):
+    id: int
+    submission_id: int
+    company_id: int
+    cycle_id: int
+    section: str
+    owner_role: str
+    owner_email: str
+    owner_name: Optional[str] = None
+    status: str = 'active'
+    lock_mode: str = 'soft'
+    is_you: bool = False
+    expires_at: str
+    last_seen_at: str
+    created_at: str
+    updated_at: str
+
+
+class SubmissionCollaborationResponse(BaseModel):
+    submission_id: int
+    company_id: int
+    cycle_id: int
+    lock_mode: str = 'soft'
+    active_sections: List[CollaborationSessionResponse] = Field(default_factory=list)
+    current_user_sections: List[str] = Field(default_factory=list)
+    viewer_role: str
+    viewer_email: Optional[str] = None
+
+
 class ReportExportResponse(BaseModel):
     report_type: str
     format: Literal['csv', 'pdf']
@@ -426,8 +554,36 @@ class ReportExportResponse(BaseModel):
     impact_headline: Optional[str] = None
     narrative_headline: Optional[str] = None
     narrative_included: bool = False
+    narrative_status: str = 'missing'
+    narrative_status_label: str = 'No approved narrative'
+    narrative_status_reason: Optional[str] = None
     benchmark_callouts: List[str] = []
     comparison_rows: List[Dict[str, Any]] = []
+    trend_summary: Optional[str] = None
+    impact_story: Dict[str, Any] = {}
+    external_context_items: List[ExternalContextItemResponse] = Field(default_factory=list)
+    anomaly_summary: Optional[AnomalySummaryResponse] = None
+
+
+class ReportPreviewResponse(BaseModel):
+    report_type: str
+    period: str
+    portfolio: str
+    rows_in_scope: int
+    context_summary: List[str] = []
+    impact_headline: Optional[str] = None
+    benchmark_callouts: List[str] = []
+    comparison_rows: List[Dict[str, Any]] = []
+    trend_summary: Optional[str] = None
+    impact_story: Dict[str, Any] = {}
+    external_context_items: List[ExternalContextItemResponse] = Field(default_factory=list)
+    anomaly_summary: Optional[AnomalySummaryResponse] = None
+    narrative_id: Optional[int] = None
+    narrative_headline: Optional[str] = None
+    narrative_status: str = 'missing'
+    narrative_status_label: str = 'No approved narrative'
+    narrative_status_reason: Optional[str] = None
+    narrative_included: bool = False
 
 
 class NewsletterGenerateRequest(BaseModel):
@@ -455,7 +611,10 @@ class NewsletterSummaryResponse(BaseModel):
     source_company_count: int = 0
     source_submission_count: int = 0
     impact_headline: Optional[str] = None
+    trend_summary: Optional[str] = None
     benchmark_callouts: List[str] = []
+    external_context_items: List[ExternalContextItemResponse] = Field(default_factory=list)
+    anomaly_summary: Optional[AnomalySummaryResponse] = None
     cached: bool = False
     fallback_used: bool = False
     message: Optional[str] = None
@@ -473,6 +632,11 @@ class NewsletterExportResponse(BaseModel):
     subject_line: str = ''
     preheader: str = ''
     headline: str = ''
+    impact_headline: Optional[str] = None
+    trend_summary: Optional[str] = None
+    benchmark_callouts: List[str] = []
+    external_context_items: List[ExternalContextItemResponse] = Field(default_factory=list)
+    anomaly_summary: Optional[AnomalySummaryResponse] = None
     message: Optional[str] = None
 
 
@@ -505,10 +669,16 @@ class NarrativeSummaryResponse(BaseModel):
     source_years: List[int] = []
     source_company_count: int = 0
     source_submission_count: int = 0
+    latest_source_years: List[int] = []
+    latest_source_company_count: int = 0
+    latest_source_submission_count: int = 0
     provider: str = 'openai'
     model: Optional[str] = None
     cached: bool = False
     fallback_used: bool = False
+    freshness_status: str = 'missing'
+    freshness_label: str = 'No approved narrative'
+    freshness_reason: Optional[str] = None
     generated_at: str
     headline: str = ''
     summary: str = ''
@@ -532,6 +702,8 @@ class NarrativeHistoryItem(BaseModel):
     source_years: List[int] = []
     source_company_count: int = 0
     source_submission_count: int = 0
+    freshness_status: str = 'missing'
+    freshness_label: str = 'No approved narrative'
     approved_by_role: Optional[str] = None
     approved_at: Optional[str] = None
 
@@ -805,6 +977,9 @@ class LPReportMetadata(BaseModel):
     generated_date: str
     format: str  # "PDF", "Excel"
     download_url: str
+    generated: bool = True
+    status_label: Optional[str] = None
+    status_note: Optional[str] = None
 
 
 class LPReportsResponse(BaseModel):
@@ -867,6 +1042,9 @@ class SubmissionDataFieldResponse(BaseModel):
 
 
 class CompanySubmissionSectionResponse(BaseModel):
+    submission_id: Optional[int] = None
+    company_id: Optional[int] = None
+    cycle_id: Optional[int] = None
     section: str  # Environmental, Social, Governance
     completion_percent: int
     total_fields: int
@@ -875,6 +1053,7 @@ class CompanySubmissionSectionResponse(BaseModel):
     error_count: int
     warning_count: int
     fields: List[SubmissionDataFieldResponse] = []
+    collaboration: Optional[SubmissionCollaborationResponse] = None
 
 
 class CompanyDashboardResponse(BaseModel):
@@ -896,6 +1075,7 @@ class CompanyDashboardResponse(BaseModel):
     sections_requiring_correction: List[str] = []
     prior_year_summary: Optional[Dict[str, str]] = None  # Last year's key metrics for reference
     action_items_in_progress: int
+    impact_story: Dict[str, Any] = {}
 
 
 class CompanySubmissionReviewResponse(BaseModel):
@@ -909,6 +1089,7 @@ class CompanySubmissionReviewResponse(BaseModel):
     outstanding_validation_errors: List[ValidationErrorResponse]
     all_entered_data: List[CompanySubmissionSectionResponse]
     can_submit: bool  # True if all mandatory fields complete, all mandatory errors resolved
+    collaboration: Optional[SubmissionCollaborationResponse] = None
 
 
 class CompanyActionPlanResponse(BaseModel):

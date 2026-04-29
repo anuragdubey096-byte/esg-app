@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts'
+import ActivityFeedCard from '../components/ActivityFeedCard'
 import ImpactStoryCard from '../components/ImpactStoryCard'
 import SectionCard from '../components/SectionCard'
 import { Button } from '../components/ui'
+import { useOptionalLiveUpdates } from '../contexts/LiveUpdatesContext'
 import { CHART_COLORS } from '../lib/foundation'
 import { API_BASE_URL } from '../lib/api'
 import { UI_LABELS } from '../lib/uiLabels'
@@ -15,6 +17,7 @@ export default function LPMetricsPage() {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const liveUpdates = useOptionalLiveUpdates()
 
   useEffect(() => {
     const fetchMetricsData = async () => {
@@ -44,7 +47,7 @@ export default function LPMetricsPage() {
     }
 
     fetchMetricsData()
-  }, [user])
+  }, [liveUpdates?.lastEvent?.id, user])
 
   if (loading) {
     return (
@@ -401,6 +404,12 @@ export default function LPMetricsPage() {
           </Button>
         </div>
       </SectionCard>
+
+      <ActivityFeedCard
+        user={user}
+        title="Investor Activity Feed"
+        subtitle="Live portfolio events that can affect the metric and benchmark views"
+      />
     </div>
   )
 }
