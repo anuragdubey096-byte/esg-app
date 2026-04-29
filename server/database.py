@@ -27,9 +27,9 @@ def _database_url() -> str:
     if configured:
         # SQLAlchemy works best with explicit drivers.
         if configured.startswith('postgresql://'):
-            return configured.replace('postgresql://', 'postgresql+psycopg://', 1)
+            return configured.replace('postgresql://', 'postgresql+psycopg2://', 1)
         if configured.startswith('postgres://'):
-            return configured.replace('postgres://', 'postgresql+psycopg://', 1)
+            return configured.replace('postgres://', 'postgresql+psycopg2://', 1)
         return configured
 
     # Fallback for local development.
