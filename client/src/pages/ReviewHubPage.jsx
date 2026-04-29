@@ -73,13 +73,17 @@ function normalizeValue(value) {
   return String(value)
 }
 
+function buildCommentKey(companyId, metricKey) {
+  return `${companyId || 'none'}::${metricKey || 'unknown'}`
+}
+
 export default function ReviewHubPage() {
   const { user } = useOutletContext()
   const { companies, refresh } = useDashboardData(user)
   const [selectedCompanyId, setSelectedCompanyId] = useState(null)
   const [actionMessage, setActionMessage] = useState('')
   const [reviewCommentDraft, setReviewCommentDraft] = useState('')
-  const [metricCommentsByCompany, setMetricCommentsByCompany] = useState({})
+  const [metricCommentsByCell, setMetricCommentsByCell] = useState({})
 
   const submissionRows = useMemo(() => {
     return companies.filter(c => getLatestSubmission(c)).map(c => {
@@ -115,16 +119,11 @@ export default function ReviewHubPage() {
     }
   }, [selectedCompanyId, submissionRows])
 
-  const selectedCompanyKey = String(selectedCompany.id || 'none')
-
   const handleMetricCommentChange = (commentKey, value) => {
     if (!commentKey) return
-    setMetricCommentsByCompany((current) => ({
+    setMetricCommentsByCell((current) => ({
       ...current,
-      [selectedCompanyKey]: {
-        ...(current[selectedCompanyKey] || {}),
-        [commentKey]: value,
-      },
+      [commentKey]: value,
     }))
   }
 
@@ -133,7 +132,6 @@ export default function ReviewHubPage() {
       ? selectedCompany.payload
       : {}
     const validationFlags = Array.isArray(selectedCompany.validationFlags) ? selectedCompany.validationFlags : []
-    const companyComments = metricCommentsByCompany[selectedCompanyKey] || {}
 
     const payloadYear = Number(payloadForValidation.reporting_year || 0) || null
     const targetYear = payloadYear
@@ -165,12 +163,12 @@ export default function ReviewHubPage() {
 
         return {
           id: index + 1,
-          commentKey: field.key,
+          commentKey: buildCommentKey(selectedCompany.id, field.key),
           metric: field.label,
           value: normalizeValue(rawValue),
           validation: mostSevereFlag ? toValidationFromSeverity(mostSevereFlag.severity) : 'Pass',
           confidence: normalizeValue(confidence),
-          comment: companyComments[field.key] || '',
+          comment: '',
         }
       })
       .filter(Boolean)
@@ -181,12 +179,12 @@ export default function ReviewHubPage() {
       if (!firstFlag) return
       rows.push({
         id: rows.length + 1,
-        commentKey: fieldName,
+        commentKey: buildCommentKey(selectedCompany.id, fieldName),
         metric: toMetricLabel(fieldName),
         value: normalizeValue(payloadForValidation[fieldName]),
         validation: toValidationFromSeverity(firstFlag.severity),
         confidence: 'NA',
-        comment: companyComments[fieldName] || '',
+        comment: '',
       })
     })
 
@@ -194,17 +192,17 @@ export default function ReviewHubPage() {
       const checks = validateSubmissionData(payloadForValidation)
       return checks.checks.map((check, index) => ({
         id: index + 1,
-        commentKey: check.label,
+        commentKey: buildCommentKey(selectedCompany.id, check.label),
         metric: check.label,
         value: check.message,
         validation: check.status === 'fail' ? 'Fail' : check.status === 'warning' ? 'Warning' : 'Pass',
         confidence: 'NA',
-        comment: companyComments[check.label] || '',
+        comment: '',
       }))
     }
 
     return rows
-  }, [metricCommentsByCompany, selectedCompany, selectedCompanyKey])
+  }, [selectedCompany])
 
   const summary = getValidationSummary(dataRows)
 
@@ -303,10 +301,11 @@ export default function ReviewHubPage() {
       render: (row) => (
         <input
           className="inline-comment"
-          value={row.comment}
+          value={metricCommentsByCell[row.commentKey] || row.comment || ''}
           onChange={(event) => handleMetricCommentChange(row.commentKey, event.target.value)}
           aria-label={`${row.metric} comment`}
           placeholder="Add comment"
+          autoComplete="off"
         />
       ),
     },
