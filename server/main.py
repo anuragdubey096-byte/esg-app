@@ -1,5 +1,6 @@
 import csv
 import json
+import os
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -56,6 +57,10 @@ from schemas import (
     UserResponse,
 )
 from new_esg_module import router as new_esg_router
+try:
+    from openai import OpenAI
+except ImportError:  # pragma: no cover - optional dependency at runtime
+    OpenAI = None
 
 BASE_DIR = Path(__file__).resolve().parent
 EXPORT_DIR = BASE_DIR / 'exports'
@@ -64,6 +69,7 @@ EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 ALLOWED_REPORT_TYPES = {'edci', 'sfdr'}
 ALLOWED_CYCLE_STATUSES = {'draft', 'active', 'closed'}
 ALLOWED_REVIEW_STATUSES = {'submitted', 'under review', 'approved', 'rejected', 'resubmission requested'}
+OPENAI_DEFAULT_MODEL = os.getenv('OPENAI_MODEL', 'gpt-4o-mini')
 ALLOWED_REVIEW_TRANSITIONS = {
     'submitted': {'under review'},
     'under review': {'approved', 'rejected', 'resubmission requested'},
@@ -1487,6 +1493,205 @@ def build_investor_analytics(db: Session) -> dict:
             'accuracy': round(accuracy_total / reporting_count, 2),
             'confidence': round(confidence_total / reporting_count, 2),
         },
+    }
+
+
+def _call_openai_narrative(prompt: str) -> dict | None:
+    api_key = str(os.getenv('OPENAI_API_KEY') or '').strip()
+    if not api_key or OpenAI is None:
+        return None
+
+    try:
+        client = OpenAI(api_key=api_key)
+        response = client.chat.completions.create(
+            model=OPENAI_DEFAULT_MODEL,
+            temperature=0.2,
+            response_format={'type': 'json_object'},
+            messages=[
+                {
+                    'role': 'system',
+                    'content': (
+                        'Return strict JSON with keys: headline, summary, highlights, watchouts, recommendations. '
+                        'highlights/watchouts/recommendations must be arrays of short strings.'
+                    ),
+                },
+                {'role': 'user', 'content': prompt},
+            ],
+        )
+        content = (((response.choices or [None])[0] or {}).message or {}).content
+        if not content:
+            return None
+        parsed = json.loads(content)
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        return None
+
+
+def _fallback_portfolio_narrative(analytics: dict) -> dict:
+    score = float(analytics.get('portfolio_esg_score') or 0)
+    approved = int((analytics.get('status_counts') or {}).get('Approved', 0))
+    companies = int(analytics.get('total_companies') or 0)
+    top_sector = ', '.join((analytics.get('underperforming_sectors') or [])[:2]) or 'portfolio watch sectors'
+    return {
+        'headline': 'Investor Portfolio ESG Summary',
+        'summary': (
+            f'Portfolio ESG score is {score:.1f} across {companies} companies with {approved} approved submissions. '
+            f'Focus remains on {top_sector} and consistency of approved data quality.'
+        ),
+        'highlights': [
+            f"Portfolio ESG score: {score:.1f}/100",
+            f"Approved submissions: {approved}",
+            f"Data confidence index: {float((analytics.get('data_quality') or {}).get('confidence') or 0):.1f}%",
+        ],
+        'watchouts': [
+            f"Average emissions: {float(analytics.get('average_ghg_emissions') or 0):.1f} tCO2e",
+            f"Governance adoption: {float(analytics.get('governance_adoption_percent') or 0):.1f}%",
+        ],
+        'recommendations': [
+            'Keep investor updates tied to approved submissions only.',
+            'Prioritize remediation for sectors with recurring underperformance.',
+        ],
+    }
+
+
+def _fallback_company_narrative(company: Company, payload: dict, status_label: str) -> dict:
+    total_ghg = safe_number(payload.get('total_ghg_emissions'))
+    reduction = safe_number(payload.get('reduction_target_percent'))
+    female_rep = safe_number(payload.get('female_representation_percent'))
+    return {
+        'headline': f'{company.name} ESG Snapshot',
+        'summary': (
+            f'{company.name} is currently {status_label}. '
+            f'Total GHG emissions are {total_ghg:.1f} tCO2e with a reduction target of {reduction:.1f}% and '
+            f'female representation at {female_rep:.1f}%.'
+        ),
+        'highlights': [
+            f"Current status: {status_label}",
+            f"Total GHG emissions: {total_ghg:.1f} tCO2e",
+            f"Reduction target: {reduction:.1f}%",
+        ],
+        'watchouts': [
+            'Validate confidence tags and policy-document references before final approval.',
+        ],
+        'recommendations': [
+            'Address outstanding validation warnings before next investor update.',
+            'Keep narrative aligned with latest approved submission values.',
+        ],
+    }
+
+
+def _normalize_narrative_payload(payload: dict | None, fallback: dict) -> dict:
+    source = payload if isinstance(payload, dict) else {}
+
+    def _list_value(key: str) -> list[str]:
+        raw = source.get(key)
+        if isinstance(raw, list):
+            items = [str(item).strip() for item in raw if str(item).strip()]
+            if items:
+                return items[:5]
+        return list(fallback.get(key) or [])
+
+    return {
+        'headline': str(source.get('headline') or fallback.get('headline') or '').strip(),
+        'summary': str(source.get('summary') or fallback.get('summary') or '').strip(),
+        'highlights': _list_value('highlights'),
+        'watchouts': _list_value('watchouts'),
+        'recommendations': _list_value('recommendations'),
+    }
+
+
+@app.get('/narrative/summary')
+def narrative_summary(
+    audience: str = Query(default='lp'),
+    company_id: int | None = Query(default=None),
+    tone: str = Query(default='board-ready'),
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
+    normalized_audience = str(audience or 'lp').strip().lower()
+    if normalized_audience in {'lp', 'investor', 'portfolio'}:
+        normalized_audience = 'lp'
+    elif normalized_audience == 'company':
+        normalized_audience = 'company'
+    else:
+        raise HTTPException(status_code=400, detail='Invalid narrative audience')
+
+    if normalized_audience == 'company':
+        if role == 'investor':
+            raise HTTPException(status_code=403, detail='Investors cannot access company-level narrative summaries')
+
+        target_company = None
+        if company_id is not None:
+            target_company = db.query(Company).filter(Company.id == company_id).first()
+        elif role == 'company':
+            request_user = find_request_user(db, email)
+            if request_user:
+                target_company = db.query(Company).filter(Company.user_id == request_user.id).first()
+        if target_company is None:
+            target_company = db.query(Company).order_by(Company.id.asc()).first()
+        if target_company is None:
+            raise HTTPException(status_code=404, detail='No company data available for narrative summary')
+
+        if role == 'company':
+            request_user = find_request_user(db, email)
+            if request_user and target_company.user_id != request_user.id:
+                raise HTTPException(status_code=403, detail='Company users can only access their own narrative summary')
+
+        latest_submission = (
+            db.query(Submission)
+            .filter(Submission.company_id == target_company.id)
+            .order_by(Submission.id.desc())
+            .first()
+        )
+        payload = parse_submission(latest_submission)
+        status_label = normalize_status_label((latest_submission.status if latest_submission else target_company.current_status))
+        fallback = _fallback_company_narrative(target_company, payload, status_label)
+        prompt = (
+            f"Write a concise ESG company narrative for {target_company.name}.\n"
+            f"Audience: {normalized_audience}. Tone: {tone}.\n"
+            f"Status: {status_label}\n"
+            f"Key payload: {json.dumps(payload, default=str)[:5000]}"
+        )
+        ai_payload = _call_openai_narrative(prompt)
+        normalized_payload = _normalize_narrative_payload(ai_payload, fallback)
+        generated_at = datetime.now(timezone.utc).isoformat()
+        return {
+            'narrative_id': 0,
+            'scope': 'company',
+            'audience': normalized_audience,
+            'tone': tone,
+            'company_id': target_company.id,
+            'company_name': target_company.name,
+            'provider': 'openai' if ai_payload else 'fallback',
+            'fallback_used': not bool(ai_payload),
+            'generated_at': generated_at,
+            **normalized_payload,
+        }
+
+    if role == 'company':
+        raise HTTPException(status_code=403, detail='Company users cannot access portfolio-level narrative summaries')
+
+    analytics = build_investor_analytics(db)
+    fallback = _fallback_portfolio_narrative(analytics)
+    prompt = (
+        "Write a concise portfolio ESG narrative for LP/investor audience.\n"
+        f"Tone: {tone}. Use these analytics: {json.dumps(analytics, default=str)[:7000]}"
+    )
+    ai_payload = _call_openai_narrative(prompt)
+    normalized_payload = _normalize_narrative_payload(ai_payload, fallback)
+    generated_at = datetime.now(timezone.utc).isoformat()
+    return {
+        'narrative_id': 0,
+        'scope': 'portfolio',
+        'audience': 'lp',
+        'tone': tone,
+        'company_id': None,
+        'company_name': None,
+        'provider': 'openai' if ai_payload else 'fallback',
+        'fallback_used': not bool(ai_payload),
+        'generated_at': generated_at,
+        **normalized_payload,
     }
 
 
