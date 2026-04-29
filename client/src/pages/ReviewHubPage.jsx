@@ -82,7 +82,6 @@ export default function ReviewHubPage() {
   const { companies, refresh } = useDashboardData(user)
   const [selectedCompanyId, setSelectedCompanyId] = useState(null)
   const [actionMessage, setActionMessage] = useState('')
-  const [reviewCommentDraft, setReviewCommentDraft] = useState('')
   const [metricCommentsByCell, setMetricCommentsByCell] = useState({})
 
   const submissionRows = useMemo(() => {
@@ -206,31 +205,6 @@ export default function ReviewHubPage() {
 
   const summary = getValidationSummary(dataRows)
 
-  const handleRunValidation = async () => {
-    if (!selectedCompany.submissionId) {
-      setActionMessage('No submission is available for backend validation.')
-      return
-    }
-
-    try {
-      const response = await fetch(`${BACKEND_URL}/submissions/${selectedCompany.submissionId}/validate`, {
-        method: 'POST',
-        headers: {
-          'x-user-role': user?.role || '',
-          'x-user-email': user?.email || '',
-        },
-      })
-      if (!response.ok) {
-        const errorPayload = await response.json().catch(() => ({}))
-        throw new Error(errorPayload.detail || `Validation failed (${response.status})`)
-      }
-      await refresh()
-      setActionMessage('Backend validation complete. Review checks refreshed.')
-    } catch (error) {
-      setActionMessage(error.message || 'Unable to run backend validation right now.')
-    }
-  }
-
   const managerPost = async (path, method = 'POST', body = null) => {
     const response = await fetch(`${BACKEND_URL}${path}`, {
       method,
@@ -280,14 +254,15 @@ export default function ReviewHubPage() {
   }
 
   const handleAddComment = async () => {
-    const trimmed = reviewCommentDraft.trim()
+    const comment = window.prompt('Enter reviewer comment', '')
+    if (comment == null) return
+    const trimmed = comment.trim()
     if (!trimmed) {
       setActionMessage('Comment was empty, nothing was saved.')
       return
     }
     const currentStatus = toApiReviewStatus(selectedCompany.status)
     await handleReviewAction(currentStatus, 'Reviewer comment saved.', trimmed)
-    setReviewCommentDraft('')
   }
 
   const columns = [
@@ -365,16 +340,8 @@ export default function ReviewHubPage() {
         <DataTable columns={columns} rows={dataRows} pageSize={7} />
 
         <div className="action-row">
-          <button type="button" className="button" onClick={handleRunValidation}>Run Backend Validation</button>
-          <button type="button" className="button good" onClick={() => handleReviewAction('approved', 'Marked as Pass and logged.')}>Pass</button>
-          <button type="button" className="button warning" onClick={() => handleReviewAction('resubmission requested', 'Marked as Fail and logged.')}>Fail</button>
-          <input
-            className="inline-comment review-comment-input"
-            value={reviewCommentDraft}
-            onChange={(event) => setReviewCommentDraft(event.target.value)}
-            placeholder="Add admin comment for selected company"
-            aria-label="Reviewer comment"
-          />
+          <button type="button" className="button good" onClick={() => handleReviewAction('approved', 'Submission approved and logged.')}>Approve</button>
+          <button type="button" className="button warning" onClick={() => handleReviewAction('resubmission requested', 'Resubmission request sent and logged.')}>Request Resubmission</button>
           <button type="button" className="button" onClick={handleAddComment}>Add Comment</button>
           {actionMessage ? <p className="action-message">{actionMessage}</p> : null}
         </div>
