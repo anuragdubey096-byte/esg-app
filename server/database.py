@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 
 from sqlalchemy import create_engine
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -23,14 +24,20 @@ def _load_env_local() -> None:
 
 def _database_url() -> str:
     _load_env_local()
-    configured = os.getenv('DATABASE_URL', '').strip()
+    configured = os.getenv('DATABASE_URL', '').strip().strip('"').strip("'")
     if configured:
         # SQLAlchemy works best with explicit drivers.
         if configured.startswith('postgresql://'):
-            return configured.replace('postgresql://', 'postgresql+psycopg2://', 1)
-        if configured.startswith('postgres://'):
-            return configured.replace('postgres://', 'postgresql+psycopg2://', 1)
-        return configured
+            configured = configured.replace('postgresql://', 'postgresql+psycopg2://', 1)
+        elif configured.startswith('postgres://'):
+            configured = configured.replace('postgres://', 'postgresql+psycopg2://', 1)
+
+        try:
+            make_url(configured)
+            return configured
+        except Exception:
+            # Fall through to SQLite fallback when DATABASE_URL is malformed.
+            pass
 
     # Fallback for local development. Vercel's source filesystem is read-only,
     # so use /tmp for ephemeral SQLite in serverless runtime.
