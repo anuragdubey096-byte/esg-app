@@ -5,6 +5,7 @@ import SectionCard from '../components/SectionCard'
 import StatusBadge from '../components/StatusBadge'
 import useDashboardData, { getLatestSubmission, parseSubmissionPayload, calculateESGScore, normalizeStatus } from '../hooks/useDashboardData'
 import { validateSubmissionData } from '../esgValidation'
+import { ESG_FORM_SECTIONS } from '../esgFormConfig'
 
 const BACKEND_URL = 'http://127.0.0.1:8000'
 
@@ -41,6 +42,37 @@ function getValidationSummary(rows) {
   }
 }
 
+const METRIC_FIELDS = ESG_FORM_SECTIONS.flatMap((section) =>
+  section.fields
+    .filter((field) => !field.name.endsWith('_document_reference') && field.name !== 'reduction_strategy_description')
+    .map((field) => ({
+      key: field.name,
+      label: field.label,
+    }))
+)
+
+function toMetricLabel(fieldName) {
+  const mapped = METRIC_FIELDS.find((field) => field.key === fieldName)
+  if (mapped) return mapped.label
+  return String(fieldName || '')
+    .replace(/_confidence$/, ' confidence')
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase())
+}
+
+function toValidationFromSeverity(severity) {
+  const normalized = String(severity || '').trim().toLowerCase()
+  if (normalized === 'high') return 'Fail'
+  if (normalized === 'medium') return 'Warning'
+  if (normalized === 'low') return 'Warning'
+  return 'Pass'
+}
+
+function normalizeValue(value) {
+  if (value === null || value === undefined || value === '') return 'Not provided'
+  return String(value)
+}
+
 export default function ReviewHubPage() {
   const { user } = useOutletContext()
   const { companies, refresh } = useDashboardData(user)
@@ -61,6 +93,8 @@ export default function ReviewHubPage() {
         esgScore: calculateESGScore(status, payload),
         payload,
         submissionId: latest?.id || null,
+        reviewActions: c.review_actions || [],
+        validationFlags: c.validation_flags || [],
       }
     })
   }, [companies])
@@ -74,6 +108,8 @@ export default function ReviewHubPage() {
       esgScore: 0,
       payload: {},
       submissionId: null,
+      reviewActions: [],
+      validationFlags: [],
     }
   }, [selectedCompanyId, submissionRows])
 
@@ -81,15 +117,79 @@ export default function ReviewHubPage() {
     const payloadForValidation = selectedCompany.payload && typeof selectedCompany.payload === 'object'
       ? selectedCompany.payload
       : {}
-    const checks = validateSubmissionData(payloadForValidation)
-    return checks.checks.map((check, index) => ({
-      id: index + 1,
-      metric: check.label,
-      value: check.message,
-      validation: check.status === 'fail' ? 'Fail' : check.status === 'warning' ? 'Warning' : 'Pass',
-      confidence: 'NA',
-      comment: '',
-    }))
+    const reviewActions = Array.isArray(selectedCompany.reviewActions) ? selectedCompany.reviewActions : []
+    const validationFlags = Array.isArray(selectedCompany.validationFlags) ? selectedCompany.validationFlags : []
+
+    const latestReviewAction = [...reviewActions].sort((a, b) => (b.id || 0) - (a.id || 0))[0]
+    const latestReviewComment = String(latestReviewAction?.review_comment || '').trim()
+
+    const payloadYear = Number(payloadForValidation.reporting_year || 0) || null
+    const latestActionYear = Number(latestReviewAction?.reporting_year || 0) || null
+    const targetYear = payloadYear || latestActionYear
+    const yearFlags = targetYear
+      ? validationFlags.filter((flag) => Number(flag.reporting_year || 0) === targetYear)
+      : validationFlags
+
+    const flagsByField = yearFlags.reduce((accumulator, flag) => {
+      const key = flag.field_name || 'general'
+      if (!accumulator[key]) accumulator[key] = []
+      accumulator[key].push(flag)
+      return accumulator
+    }, {})
+
+    const rows = METRIC_FIELDS
+      .map((field, index) => {
+        const rawValue = payloadForValidation[field.key]
+        const confidence = payloadForValidation[`${field.key}_confidence`] || 'NA'
+        const fieldFlags = flagsByField[field.key] || []
+
+        if (rawValue === undefined && fieldFlags.length === 0) return null
+
+        const mostSevereFlag = [...fieldFlags].sort((left, right) => {
+          const rank = { high: 3, medium: 2, low: 1 }
+          const leftRank = rank[String(left.severity || '').toLowerCase()] || 0
+          const rightRank = rank[String(right.severity || '').toLowerCase()] || 0
+          return rightRank - leftRank
+        })[0]
+
+        return {
+          id: index + 1,
+          metric: field.label,
+          value: normalizeValue(rawValue),
+          validation: mostSevereFlag ? toValidationFromSeverity(mostSevereFlag.severity) : 'Pass',
+          confidence: normalizeValue(confidence),
+          comment: mostSevereFlag?.issue_description || latestReviewComment || '',
+        }
+      })
+      .filter(Boolean)
+
+    Object.keys(flagsByField).forEach((fieldName) => {
+      if (METRIC_FIELDS.some((field) => field.key === fieldName)) return
+      const firstFlag = flagsByField[fieldName]?.[0]
+      if (!firstFlag) return
+      rows.push({
+        id: rows.length + 1,
+        metric: toMetricLabel(fieldName),
+        value: normalizeValue(payloadForValidation[fieldName]),
+        validation: toValidationFromSeverity(firstFlag.severity),
+        confidence: 'NA',
+        comment: firstFlag.issue_description || latestReviewComment || '',
+      })
+    })
+
+    if (!rows.length) {
+      const checks = validateSubmissionData(payloadForValidation)
+      return checks.checks.map((check, index) => ({
+        id: index + 1,
+        metric: check.label,
+        value: check.message,
+        validation: check.status === 'fail' ? 'Fail' : check.status === 'warning' ? 'Warning' : 'Pass',
+        confidence: 'NA',
+        comment: latestReviewComment,
+      }))
+    }
+
+    return rows
   }, [selectedCompany])
 
   const summary = getValidationSummary(dataRows)
@@ -181,13 +281,13 @@ export default function ReviewHubPage() {
 
   const columns = [
     { key: 'metric', label: 'Metric', sortable: true },
-    { key: 'value', label: 'Check Details', sortable: false },
+    { key: 'value', label: 'Value', sortable: false },
     { key: 'validation', label: 'Validation Status', sortable: true, render: (row) => <StatusBadge value={row.validation} /> },
     { key: 'confidence', label: 'Confidence', sortable: false },
     {
       key: 'comment',
       label: 'Comment',
-      render: (row) => <input className="inline-comment" defaultValue={row.comment} aria-label={`${row.metric} comment`} />,
+      render: (row) => <input className="inline-comment" value={row.comment} readOnly aria-label={`${row.metric} comment`} />,
     },
   ]
 
@@ -210,7 +310,7 @@ export default function ReviewHubPage() {
           </div>
         </div>
 
-        <div className="summary-grid three">
+        <div className="summary-grid four">
           <article className="summary-box">
             <p>Errors</p>
             <strong>{summary.errors}</strong>
