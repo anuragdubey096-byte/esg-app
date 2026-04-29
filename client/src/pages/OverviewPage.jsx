@@ -5,6 +5,7 @@ import KpiCard from '../components/KpiCard'
 import SectionCard from '../components/SectionCard'
 import StatusBadge from '../components/StatusBadge'
 import useDashboardData, { getLatestSubmission, normalizeStatus } from '../hooks/useDashboardData'
+import useNarrativeSummary from '../hooks/useNarrativeSummary'
 
 function formatDays(value) {
   if (value == null) return 'N/A'
@@ -47,6 +48,7 @@ function buildFallbackSummary(companies) {
 export default function OverviewPage() {
   const { user } = useOutletContext()
   const { companies, summary, loading, error } = useDashboardData(user)
+  const narrative = useNarrativeSummary({ user, audience: 'lp', tone: 'board-ready', enabled: Boolean(user) })
 
   const managerSummary = useMemo(() => {
     if (summary && typeof summary === 'object' && summary.status_breakdown) {
@@ -137,6 +139,17 @@ export default function OverviewPage() {
           </article>
         </div>
         <p className="text-sm text-slate-600 mt-3">{formatDays(cycleBanner.days_remaining)}</p>
+      </SectionCard>
+
+      <SectionCard title="AI Portfolio Narrative" subtitle="OpenAI-generated management summary from latest approved portfolio data">
+        {narrative.loading ? <p>Generating summary...</p> : null}
+        {narrative.error ? <p>{narrative.error}</p> : null}
+        {!narrative.loading && !narrative.error && narrative.data ? (
+          <>
+            <h4>{narrative.data.headline || 'Portfolio Narrative'}</h4>
+            <p>{narrative.data.summary || 'No narrative summary available.'}</p>
+          </>
+        ) : null}
       </SectionCard>
 
       <SectionCard title="Upcoming Deadlines (Next 7 Days)" subtitle="Only non-submitted companies appear here">

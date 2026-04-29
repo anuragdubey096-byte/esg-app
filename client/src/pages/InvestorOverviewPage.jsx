@@ -17,6 +17,7 @@ import DataTable from '../components/DataTable'
 import KpiCard from '../components/KpiCard'
 import SectionCard from '../components/SectionCard'
 import useDashboardData from '../hooks/useDashboardData'
+import useNarrativeSummary from '../hooks/useNarrativeSummary'
 
 const funnelColors = {
   'Not Started': '#ef4444',
@@ -29,6 +30,7 @@ const funnelColors = {
 export default function InvestorOverviewPage() {
   const { user } = useOutletContext()
   const { summary, loading, error } = useDashboardData(user)
+  const narrative = useNarrativeSummary({ user, audience: 'lp', tone: 'investor-ready', enabled: Boolean(user) })
 
   const analytics = summary || {}
   const scoreBreakdown = analytics.score_breakdown || { E: 0, S: 0, G: 0 }
@@ -99,6 +101,17 @@ export default function InvestorOverviewPage() {
           trendLabel="portfolio policy coverage"
         />
       </section>
+
+      <SectionCard title="AI Investor Summary" subtitle="OpenAI-generated narrative from current portfolio analytics">
+        {narrative.loading ? <p>Generating summary...</p> : null}
+        {narrative.error ? <p>{narrative.error}</p> : null}
+        {!narrative.loading && !narrative.error && narrative.data ? (
+          <>
+            <h4>{narrative.data.headline || 'Portfolio ESG Narrative'}</h4>
+            <p>{narrative.data.summary || 'No narrative summary available.'}</p>
+          </>
+        ) : null}
+      </SectionCard>
 
       <section className="two-col-grid">
         <SectionCard title="Submission Funnel" subtitle="Portfolio reporting lifecycle">

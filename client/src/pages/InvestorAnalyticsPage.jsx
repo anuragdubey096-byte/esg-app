@@ -14,10 +14,12 @@ import {
 } from 'recharts'
 import SectionCard from '../components/SectionCard'
 import useDashboardData from '../hooks/useDashboardData'
+import useNarrativeSummary from '../hooks/useNarrativeSummary'
 
 export default function InvestorAnalyticsPage() {
   const { user } = useOutletContext()
   const { summary, loading, error } = useDashboardData(user)
+  const narrative = useNarrativeSummary({ user, audience: 'lp', tone: 'board-ready', enabled: Boolean(user) })
 
   const analytics = summary || {}
 
@@ -68,6 +70,17 @@ export default function InvestorAnalyticsPage() {
 
   return (
     <div className="page-grid">
+      <SectionCard title="AI Analytics Narrative" subtitle="OpenAI-generated interpretation of portfolio analytics">
+        {narrative.loading ? <p>Generating summary...</p> : null}
+        {narrative.error ? <p>{narrative.error}</p> : null}
+        {!narrative.loading && !narrative.error && narrative.data ? (
+          <>
+            <h4>{narrative.data.headline || 'Portfolio Analytics Summary'}</h4>
+            <p>{narrative.data.summary || 'No narrative summary available.'}</p>
+          </>
+        ) : null}
+      </SectionCard>
+
       <section className="two-col-grid">
         <SectionCard title="Emissions Trend" subtitle="Portfolio total emissions over recent periods">
           <div className="chart-wrap">
