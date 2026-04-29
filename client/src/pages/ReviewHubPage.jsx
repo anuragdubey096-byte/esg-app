@@ -78,6 +78,8 @@ export default function ReviewHubPage() {
   const { companies, refresh } = useDashboardData(user)
   const [selectedCompanyId, setSelectedCompanyId] = useState(null)
   const [actionMessage, setActionMessage] = useState('')
+  const [reviewCommentDraft, setReviewCommentDraft] = useState('')
+  const [metricCommentsByCompany, setMetricCommentsByCompany] = useState({})
 
   const submissionRows = useMemo(() => {
     return companies.filter(c => getLatestSubmission(c)).map(c => {
@@ -113,19 +115,28 @@ export default function ReviewHubPage() {
     }
   }, [selectedCompanyId, submissionRows])
 
+  const selectedCompanyKey = String(selectedCompany.id || 'none')
+
+  const handleMetricCommentChange = (commentKey, value) => {
+    if (!commentKey) return
+    setMetricCommentsByCompany((current) => ({
+      ...current,
+      [selectedCompanyKey]: {
+        ...(current[selectedCompanyKey] || {}),
+        [commentKey]: value,
+      },
+    }))
+  }
+
   const dataRows = useMemo(() => {
     const payloadForValidation = selectedCompany.payload && typeof selectedCompany.payload === 'object'
       ? selectedCompany.payload
       : {}
-    const reviewActions = Array.isArray(selectedCompany.reviewActions) ? selectedCompany.reviewActions : []
     const validationFlags = Array.isArray(selectedCompany.validationFlags) ? selectedCompany.validationFlags : []
-
-    const latestReviewAction = [...reviewActions].sort((a, b) => (b.id || 0) - (a.id || 0))[0]
-    const latestReviewComment = String(latestReviewAction?.review_comment || '').trim()
+    const companyComments = metricCommentsByCompany[selectedCompanyKey] || {}
 
     const payloadYear = Number(payloadForValidation.reporting_year || 0) || null
-    const latestActionYear = Number(latestReviewAction?.reporting_year || 0) || null
-    const targetYear = payloadYear || latestActionYear
+    const targetYear = payloadYear
     const yearFlags = targetYear
       ? validationFlags.filter((flag) => Number(flag.reporting_year || 0) === targetYear)
       : validationFlags
@@ -154,11 +165,12 @@ export default function ReviewHubPage() {
 
         return {
           id: index + 1,
+          commentKey: field.key,
           metric: field.label,
           value: normalizeValue(rawValue),
           validation: mostSevereFlag ? toValidationFromSeverity(mostSevereFlag.severity) : 'Pass',
           confidence: normalizeValue(confidence),
-          comment: mostSevereFlag?.issue_description || latestReviewComment || '',
+          comment: companyComments[field.key] || '',
         }
       })
       .filter(Boolean)
@@ -169,11 +181,12 @@ export default function ReviewHubPage() {
       if (!firstFlag) return
       rows.push({
         id: rows.length + 1,
+        commentKey: fieldName,
         metric: toMetricLabel(fieldName),
         value: normalizeValue(payloadForValidation[fieldName]),
         validation: toValidationFromSeverity(firstFlag.severity),
         confidence: 'NA',
-        comment: firstFlag.issue_description || latestReviewComment || '',
+        comment: companyComments[fieldName] || '',
       })
     })
 
@@ -181,16 +194,17 @@ export default function ReviewHubPage() {
       const checks = validateSubmissionData(payloadForValidation)
       return checks.checks.map((check, index) => ({
         id: index + 1,
+        commentKey: check.label,
         metric: check.label,
         value: check.message,
         validation: check.status === 'fail' ? 'Fail' : check.status === 'warning' ? 'Warning' : 'Pass',
         confidence: 'NA',
-        comment: latestReviewComment,
+        comment: companyComments[check.label] || '',
       }))
     }
 
     return rows
-  }, [selectedCompany])
+  }, [metricCommentsByCompany, selectedCompany, selectedCompanyKey])
 
   const summary = getValidationSummary(dataRows)
 
@@ -268,15 +282,14 @@ export default function ReviewHubPage() {
   }
 
   const handleAddComment = async () => {
-    const comment = window.prompt('Enter reviewer comment', '')
-    if (comment == null) return
-    const trimmed = comment.trim()
+    const trimmed = reviewCommentDraft.trim()
     if (!trimmed) {
       setActionMessage('Comment was empty, nothing was saved.')
       return
     }
     const currentStatus = toApiReviewStatus(selectedCompany.status)
     await handleReviewAction(currentStatus, 'Reviewer comment saved.', trimmed)
+    setReviewCommentDraft('')
   }
 
   const columns = [
@@ -287,7 +300,15 @@ export default function ReviewHubPage() {
     {
       key: 'comment',
       label: 'Comment',
-      render: (row) => <input className="inline-comment" value={row.comment} readOnly aria-label={`${row.metric} comment`} />,
+      render: (row) => (
+        <input
+          className="inline-comment"
+          value={row.comment}
+          onChange={(event) => handleMetricCommentChange(row.commentKey, event.target.value)}
+          aria-label={`${row.metric} comment`}
+          placeholder="Add comment"
+        />
+      ),
     },
   ]
 
@@ -346,8 +367,15 @@ export default function ReviewHubPage() {
 
         <div className="action-row">
           <button type="button" className="button" onClick={handleRunValidation}>Run Backend Validation</button>
-          <button type="button" className="button good" onClick={() => handleReviewAction('approved', 'Submission approved and logged.')}>Approve</button>
-          <button type="button" className="button warning" onClick={() => handleReviewAction('resubmission requested', 'Resubmission request sent and logged.')}>Request Resubmission</button>
+          <button type="button" className="button good" onClick={() => handleReviewAction('approved', 'Marked as Pass and logged.')}>Pass</button>
+          <button type="button" className="button warning" onClick={() => handleReviewAction('resubmission requested', 'Marked as Fail and logged.')}>Fail</button>
+          <input
+            className="inline-comment review-comment-input"
+            value={reviewCommentDraft}
+            onChange={(event) => setReviewCommentDraft(event.target.value)}
+            placeholder="Add admin comment for selected company"
+            aria-label="Reviewer comment"
+          />
           <button type="button" className="button" onClick={handleAddComment}>Add Comment</button>
           {actionMessage ? <p className="action-message">{actionMessage}</p> : null}
         </div>
