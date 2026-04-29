@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { API_BASE_URL } from '../lib/api'
 
-const BACKEND_URL = 'http://127.0.0.1:8000'
+const BACKEND_URL = API_BASE_URL
 
 const STATUS_TO_UI = {
   'not started': 'Not Started',

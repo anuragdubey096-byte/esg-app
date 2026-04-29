@@ -6,8 +6,9 @@ import StatusBadge from '../components/StatusBadge'
 import useDashboardData, { getLatestSubmission, parseSubmissionPayload, calculateESGScore, normalizeStatus } from '../hooks/useDashboardData'
 import { validateSubmissionData } from '../esgValidation'
 import { ESG_FORM_SECTIONS } from '../esgFormConfig'
+import { API_BASE_URL } from '../lib/api'
 
-const BACKEND_URL = 'http://127.0.0.1:8000'
+const BACKEND_URL = API_BASE_URL
 
 function toApiReviewStatus(statusLabel) {
   const normalized = String(statusLabel || '').trim().toLowerCase()

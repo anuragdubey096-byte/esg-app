@@ -2,8 +2,9 @@ import { useMemo, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import SectionCard from '../components/SectionCard'
 import useDashboardData from '../hooks/useDashboardData'
+import { API_BASE_URL } from '../lib/api'
 
-const BACKEND_URL = 'http://127.0.0.1:8000'
+const BACKEND_URL = API_BASE_URL
 const reportFrameworks = ['EDCI', 'SFDR']
 
 export default function ReportsPage() {

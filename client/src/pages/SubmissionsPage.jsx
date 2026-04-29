@@ -15,8 +15,9 @@ import useDashboardData, {
   normalizeStatus,
   parseSubmissionPayload,
 } from '../hooks/useDashboardData'
+import { API_BASE_URL } from '../lib/api'
 
-const BACKEND_URL = 'http://127.0.0.1:8000'
+const BACKEND_URL = API_BASE_URL
 
 const numericFields = new Set(
   ESG_FORM_SECTIONS.flatMap((section) =>

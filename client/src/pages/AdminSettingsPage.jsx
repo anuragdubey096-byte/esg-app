@@ -4,9 +4,10 @@ import DataTable from '../components/DataTable'
 import SectionCard from '../components/SectionCard'
 import StatusBadge from '../components/StatusBadge'
 import useDashboardData from '../hooks/useDashboardData'
+import { API_BASE_URL } from '../lib/api'
 
 const adminSettingsTabs = ['Data Collection Cycles', 'Users']
-const BACKEND_URL = 'http://127.0.0.1:8000'
+const BACKEND_URL = API_BASE_URL
 
 export default function AdminSettingsPage() {
   const { user } = useOutletContext()

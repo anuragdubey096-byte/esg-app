@@ -63,7 +63,10 @@ except ImportError:  # pragma: no cover - optional dependency at runtime
     OpenAI = None
 
 BASE_DIR = Path(__file__).resolve().parent
-EXPORT_DIR = BASE_DIR / 'exports'
+if os.getenv('VERCEL'):
+    EXPORT_DIR = Path('/tmp/exports')
+else:
+    EXPORT_DIR = BASE_DIR / 'exports'
 EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 
 ALLOWED_REPORT_TYPES = {'edci', 'sfdr'}

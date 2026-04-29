@@ -1,7 +1,8 @@
 import LoginForm from './components/auth/LoginForm'
 import LoginLayout from './components/auth/LoginLayout'
+import { API_BASE_URL } from './lib/api'
 
-const backendUrl = 'http://127.0.0.1:8000'
+const backendUrl = API_BASE_URL
 
 export default function LoginPage({ onLogin }) {
   const authenticate = async ({ email, password }) => {

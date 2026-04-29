@@ -55,7 +55,12 @@ def _fallback_narrative(audience: str, tone: str) -> dict:
 
 try:
     from main import app as main_app  # noqa: E402
-    app = main_app  # type: ignore[assignment]
+    wrapper_app = FastAPI(title='ESG API Bootstrap')
+    # Support both `/api/*` (production frontend) and root paths (local tooling)
+    # by mounting the backend app under both prefixes.
+    wrapper_app.mount('/api', main_app)
+    wrapper_app.mount('/', main_app)
+    app = wrapper_app  # type: ignore[assignment]
 except Exception:
     # Keep API alive with critical fallback endpoints even if full app bootstrap fails.
     app = FastAPI(title='ESG API Fallback')
