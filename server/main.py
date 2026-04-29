@@ -3922,6 +3922,7 @@ def normalize_manager_bucket(status: str | None) -> str:
         'not started': 'Not Started',
         'in progress': 'In Progress',
         'submitted': 'Submitted',
+        'pending review': 'Under Review',
         'under review': 'Under Review',
         'approved': 'Approved',
         'rejected': 'Resubmission Requested',

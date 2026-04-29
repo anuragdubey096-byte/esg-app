@@ -51,6 +51,8 @@ export default function ImpactStoryCard({
   subtitle = NARRATIVE_UI_COPY.impactStory.subtitle,
   story,
   maxInsights = 4,
+  variant = 'default',
+  className = '',
 }) {
   if (!story || typeof story !== 'object' || Object.keys(story).length === 0) return null
 
@@ -65,8 +67,10 @@ export default function ImpactStoryCard({
   const chartSeries = story.chart_series || {}
   const statusDistribution = Array.isArray(chartSeries.status_distribution) ? chartSeries.status_distribution : []
 
+  const cardClassName = `${variant === 'investor' ? 'impact-card impact-card-investor' : 'impact-card'} ${className}`.trim()
+
   return (
-    <SectionCard title={title} subtitle={subtitle}>
+    <SectionCard title={title} subtitle={subtitle} className={cardClassName}>
       <div className="space-y-6">
         <div className="space-y-3">
           {story.headline ? <h3 className="ui-text-display text-[color:var(--ui-text)]">{story.headline}</h3> : null}

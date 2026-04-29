@@ -161,6 +161,7 @@ export default function LPReportsPage() {
         loading={narrative.loading}
         error={narrative.error}
         onRefresh={narrative.refresh}
+        variant="investor"
       />
 
       <SectionCard title="Current Year Reports" subtitle="Download latest investor-ready outputs">
@@ -256,10 +257,11 @@ export default function LPReportsPage() {
 
       {download?.impact_story ? (
         <ImpactStoryCard
-          title="Investor Impact Package"
+          title="Portfolio Narrative Package"
           subtitle="The intelligence block returned with the latest generated export"
           story={download.impact_story}
           maxInsights={4}
+          variant="investor"
         />
       ) : null}
 

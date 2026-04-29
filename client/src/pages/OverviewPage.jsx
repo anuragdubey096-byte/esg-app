@@ -10,7 +10,7 @@ import KpiCard from '../components/KpiCard'
 import NewsletterCard from '../components/NewsletterCard'
 import SectionCard from '../components/SectionCard'
 import StatusBadge from '../components/StatusBadge'
-import useDashboardData, { getLatestSubmission, normalizeStatus } from '../hooks/useDashboardData'
+import useDashboardData from '../hooks/useDashboardData'
 import useAnomalySummary from '../hooks/useAnomalySummary'
 import useExternalContextFeed from '../hooks/useExternalContextFeed'
 import useNewsletterSummary from '../hooks/useNewsletterSummary'
@@ -25,38 +25,6 @@ function formatDays(value) {
   return `${value} days remaining`
 }
 
-function buildFallbackSummary(companies) {
-  const status_breakdown = {
-    'Not Started': 0,
-    'In Progress': 0,
-    'Submitted': 0,
-    'Under Review': 0,
-    'Approved': 0,
-    'Resubmission Requested': 0,
-  }
-
-  companies.forEach((company) => {
-    const latest = getLatestSubmission(company)
-    const status = normalizeStatus(latest?.status || company?.current_status || 'Not Started')
-    if (status_breakdown[status] !== undefined) {
-      status_breakdown[status] += 1
-    }
-  })
-
-  return {
-    status_breakdown,
-    cycle_banner: {
-      active_cycle_year: null,
-      submission_open_date: null,
-      submission_deadline: null,
-      days_remaining: null,
-      cycle_status: 'closed',
-    },
-    upcoming_deadlines: [],
-    progress_rows: [],
-  }
-}
-
 export default function OverviewPage() {
   const { user } = useOutletContext()
   const { companies, summary, loading, error, refresh } = useDashboardData(user)
@@ -69,12 +37,7 @@ export default function OverviewPage() {
   const anomalySummary = useAnomalySummary({ user, enabled: Boolean(user) })
   const externalContext = useExternalContextFeed({ user, enabled: Boolean(user), limit: 5 })
 
-  const managerSummary = useMemo(() => {
-    if (summary && typeof summary === 'object' && summary.status_breakdown) {
-      return summary
-    }
-    return buildFallbackSummary(companies)
-  }, [companies, summary])
+  const managerSummary = useMemo(() => (summary && typeof summary === 'object' ? summary : {}), [summary])
   const statusChartData = useMemo(
     () => Object.keys(STATUS_COLORS).map((label) => ({ name: label, value: Number(managerSummary.status_breakdown?.[label] || 0), color: STATUS_COLORS[label] })),
     [managerSummary.status_breakdown]

@@ -164,21 +164,25 @@ export default function LPDashboardPage() {
 
   return (
     <div className="page-grid">
-      <NarrativeSummaryCard
-        title="Investor Narrative Summary"
-        subtitle={NARRATIVE_UI_COPY.pages.lpDashboardNarrativeSubtitle}
-        data={narrative.data}
-        loading={narrative.loading}
-        error={narrative.error}
-        onRefresh={narrative.refresh}
-      />
+      <section className="investor-narrative-grid">
+        <NarrativeSummaryCard
+          title="Investor Narrative Summary"
+          subtitle={NARRATIVE_UI_COPY.pages.lpDashboardNarrativeSubtitle}
+          data={narrative.data}
+          loading={narrative.loading}
+          error={narrative.error}
+          onRefresh={narrative.refresh}
+          variant="investor"
+        />
 
-      <ImpactStoryCard
-        title="Impact Intelligence"
-        subtitle={NARRATIVE_UI_COPY.pages.lpDashboardImpactSubtitle}
-        story={impactStory}
-        maxInsights={4}
-      />
+        <ImpactStoryCard
+          title="Portfolio Narrative Intelligence"
+          subtitle={NARRATIVE_UI_COPY.pages.lpDashboardImpactSubtitle}
+          story={impactStory}
+          maxInsights={4}
+          variant="investor"
+        />
+      </section>
 
       <NewsletterCard
         title="Investor Newsletter Draft"

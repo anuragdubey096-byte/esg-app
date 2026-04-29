@@ -260,6 +260,25 @@ def import_validation_flags(db, data_dir: Path):
 
 
 def import_submissions(db, data_dir: Path):
+    review_rows = load_csv_rows(data_dir / EXPECTED_FILES['review_actions'])
+
+    def normalize_fixture_submission_status(value: str | None) -> str:
+        normalized = str(value or '').strip().lower()
+        aliases = {
+            'pending review': 'under review',
+            'resubmission required': 'resubmission requested',
+        }
+        return aliases.get(normalized, normalized or 'submitted')
+
+    review_status_by_company_year: dict[tuple[str, int], str] = {}
+    for row in review_rows:
+        company_code = (row.get('company_id') or '').strip()
+        reporting_year = to_int(row.get('reporting_year'))
+        review_status = normalize_fixture_submission_status(row.get('review_status'))
+        if not company_code or reporting_year is None:
+            continue
+        review_status_by_company_year[(company_code, reporting_year)] = review_status
+
     for key in ('submissions_previous', 'submissions_current'):
         rows = load_csv_rows(data_dir / EXPECTED_FILES[key])
         for row in rows:
@@ -267,11 +286,16 @@ def import_submissions(db, data_dir: Path):
             if not company:
                 continue
             payload = {k: v for k, v in row.items() if v is not None}
+            reporting_year = to_int(row.get('reporting_year'))
+            submission_status = normalize_fixture_submission_status(
+                review_status_by_company_year.get((company.code, reporting_year))
+                or company.current_status
+            )
             db.add(
                 Submission(
                     company_id=company.id,
                     esg_data=json.dumps(payload),
-                    status='submitted',
+                    status=submission_status,
                 )
             )
     db.commit()

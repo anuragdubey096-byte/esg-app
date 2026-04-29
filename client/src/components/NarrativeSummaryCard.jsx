@@ -12,9 +12,12 @@ export default function NarrativeSummaryCard({
   loading,
   error,
   onRefresh,
+  variant = 'default',
+  className = '',
 }) {
   const [expanded, setExpanded] = useState(false)
   const summaryBlocks = data?.summary ? buildSummaryBlocks(data.summary) : []
+  const cardClassName = `${variant === 'investor' ? 'narrative-card narrative-card-investor' : 'narrative-card'} ${className}`.trim()
   const freshnessTone =
     data?.freshness_status === 'current'
       ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
@@ -36,7 +39,7 @@ export default function NarrativeSummaryCard({
 
   if (loading) {
     return (
-      <SectionCard title={title} subtitle={subtitle} actions={actions}>
+      <SectionCard title={title} subtitle={subtitle} actions={actions} className={cardClassName}>
         {expanded ? (
           <div className="flex items-center gap-3 py-4 text-[color:var(--ui-text-muted)]">
             <div className="h-4 w-4 animate-spin rounded-full border-2 border-[color:var(--ui-border)] border-t-[color:var(--ui-text)]" />
@@ -51,7 +54,7 @@ export default function NarrativeSummaryCard({
 
   if (error) {
     return (
-      <SectionCard title={title} subtitle={subtitle} actions={actions}>
+      <SectionCard title={title} subtitle={subtitle} actions={actions} className={cardClassName}>
         {expanded ? (
           <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
             {error}
@@ -65,7 +68,7 @@ export default function NarrativeSummaryCard({
 
   if (!data?.available) {
     return (
-      <SectionCard title={title} subtitle={subtitle} actions={actions}>
+      <SectionCard title={title} subtitle={subtitle} actions={actions} className={cardClassName}>
         {expanded ? (
           <EmptyState
             title={NARRATIVE_UI_COPY.summaryCard.notReadyTitle}
@@ -93,9 +96,9 @@ export default function NarrativeSummaryCard({
   ].filter(Boolean)
 
   return (
-    <SectionCard title={title} subtitle={subtitle} actions={actions}>
+    <SectionCard title={title} subtitle={subtitle} actions={actions} className={cardClassName}>
       {!expanded ? (
-        <div className="space-y-3">
+        <div className="narrative-card-preview space-y-3">
           {data.freshness_label ? (
             <div className={`inline-flex rounded-full border px-3 py-1 text-xs ui-text-strong ${freshnessTone}`}>
               {data.freshness_label}

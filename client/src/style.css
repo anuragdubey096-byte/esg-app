@@ -980,6 +980,52 @@ small {
   padding-bottom: var(--ui-space-3);
 }
 
+.investor-narrative-grid {
+  display: grid;
+  gap: var(--ui-space-4);
+}
+
+@media (min-width: 1200px) {
+  .investor-narrative-grid {
+    grid-template-columns: 1.05fr 1fr;
+    align-items: start;
+  }
+}
+
+.narrative-card-investor {
+  border-color: color-mix(in srgb, var(--ui-brand-primary) 22%, var(--ui-border));
+  background:
+    radial-gradient(circle at 88% -14%, color-mix(in srgb, var(--ui-brand-accent) 26%, transparent), transparent 55%),
+    linear-gradient(170deg, color-mix(in srgb, var(--ui-brand-primary) 8%, var(--ui-surface)), var(--ui-surface));
+}
+
+.narrative-card-investor .ui-card-header {
+  border-bottom: 1px solid color-mix(in srgb, var(--ui-brand-primary) 20%, var(--ui-border));
+}
+
+.narrative-card-preview {
+  border-left: 3px solid color-mix(in srgb, var(--ui-brand-secondary) 60%, white);
+  padding-left: var(--ui-space-3);
+}
+
+.impact-card-investor {
+  border-color: color-mix(in srgb, var(--ui-brand-secondary) 24%, var(--ui-border));
+  background:
+    radial-gradient(circle at 14% -16%, color-mix(in srgb, var(--ui-brand-secondary) 14%, transparent), transparent 50%),
+    linear-gradient(165deg, color-mix(in srgb, var(--ui-brand-accent) 8%, var(--ui-surface)), var(--ui-surface));
+}
+
+.impact-card-investor .ui-card-header {
+  border-bottom: 1px solid color-mix(in srgb, var(--ui-brand-secondary) 20%, var(--ui-border));
+}
+
+.impact-card-investor .ui-card-body > .space-y-6 > .space-y-3:first-child {
+  border: 1px solid color-mix(in srgb, var(--ui-brand-secondary) 20%, var(--ui-panel-border));
+  border-radius: var(--ui-radius-lg);
+  padding: var(--ui-space-3);
+  background: color-mix(in srgb, var(--ui-brand-secondary) 6%, var(--ui-surface));
+}
+
 .ui-card-footer {
   padding-top: 0;
   padding-bottom: var(--ui-space-3);

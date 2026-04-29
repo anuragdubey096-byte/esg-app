@@ -41,95 +41,10 @@ export function parseSubmissionPayload(submission) {
   }
 }
 
-export function getProgressFromStatus(status) {
-  if (status === 'Approved') return 100
-  if (status === 'Under Review') return 84
-  if (status === 'Submitted') return 85
-  if (status === 'Resubmission Required') return 58
-  if (status === 'In Progress') return 46
-  return 8
-}
-
-export function calculateESGScore(status, payload) {
-  const baseline = {
-    'Not Started': 34,
-    'In Progress': 52,
-    Submitted: 68,
-    'Under Review': 75,
-    Approved: 82,
-    'Resubmission Required': 48,
-    Rejected: 44,
-  }[status] || 50
-
-  if (!payload) return baseline
-
-  let score = baseline
-
-  const reductionTarget = Number(payload.reduction_target_percent || 0)
-  const femaleRepresentation = Number(payload.female_representation_percent || 0)
-  const independentBoard = Number(payload.independent_board_members_percent || 0)
-  const trifr = Number(payload.trifr || 0)
-  const corruptionCases = Number(payload.confirmed_cases_of_corruption || 0)
-  const totalEmissions = Number(payload.total_ghg_emissions || 0)
-
-  score += Math.min(12, reductionTarget * 0.28)
-  score += Math.min(10, femaleRepresentation * 0.12)
-  score += Math.min(8, independentBoard * 0.1)
-  score += Math.max(0, 7 - trifr * 2)
-  score += corruptionCases === 0 ? 4 : -Math.min(8, corruptionCases * 2)
-  score -= Math.min(10, totalEmissions / 500)
-
-  return Math.max(0, Math.min(100, Math.round(score)))
-}
-
-function parseDateString(dateString) {
-  if (!dateString) return null
-  const parsed = new Date(`${dateString}T00:00:00`)
-  return Number.isNaN(parsed.getTime()) ? null : parsed
-}
-
 export function getPreferredCycle(cycles) {
   if (!cycles?.length) return null
   const activeCycle = cycles.find((cycle) => String(cycle.status).toLowerCase() === 'active')
   return activeCycle || cycles[0]
-}
-
-export function getDaysToDeadline(cycles) {
-  const cycle = getPreferredCycle(cycles)
-  const deadline = parseDateString(cycle?.submission_deadline)
-  if (!deadline) return null
-
-  const now = new Date()
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
-  return Math.ceil((deadline.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
-}
-
-export function buildRecentMonthLabels(count = 6) {
-  const monthLabels = []
-  const now = new Date()
-  for (let index = count - 1; index >= 0; index -= 1) {
-    const value = new Date(now.getFullYear(), now.getMonth() - index, 1)
-    monthLabels.push(value.toLocaleString('en-US', { month: 'short' }))
-  }
-  return monthLabels
-}
-
-export function getRiskLevel({ status, esgScore, deadline }) {
-  if (status === 'Approved') return 'Low'
-  if (status === 'Resubmission Required' || status === 'Rejected') return 'High'
-
-  const deadlineDate = parseDateString(deadline)
-  if (deadlineDate) {
-    const now = new Date()
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
-    const diff = Math.ceil((deadlineDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
-    if (diff < 0) return 'High'
-    if (diff <= 7) return status === 'Not Started' ? 'High' : 'Medium'
-  }
-
-  if (esgScore < 55) return 'High'
-  if (esgScore < 70) return 'Medium'
-  return 'Low'
 }
 
 export default function useDashboardData(user) {

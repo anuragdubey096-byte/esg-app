@@ -1,0 +1,17 @@
+.git
+.github
+.vscode
+node_modules
+client/node_modules
+client/dist
+run-logs
+server/exports
+server/__pycache__
+api/__pycache__
+**/__pycache__
+*.pyc
+*.pyo
+*.sqlite
+*.log
+*.out.log
+*.err.log
