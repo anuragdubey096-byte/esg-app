@@ -189,6 +189,31 @@ def find_request_user(db: Session, email: str | None) -> User | None:
     return None
 
 
+def _provision_company_for_user(db: Session, user: User) -> Company:
+    existing_company = db.query(Company).filter(Company.user_id == user.id).first()
+    if existing_company:
+        return existing_company
+
+    base_name = (user.name or '').strip() or (user.email.split('@')[0] if user.email else f'company-{user.id}')
+    company_name = f'{base_name} Company'
+    generated_code = f'AUTO-{user.id}'
+
+    company = Company(
+        code=generated_code,
+        name=company_name,
+        sector='Unassigned',
+        user_id=user.id,
+        asset_class='Unassigned',
+        geography='Unassigned',
+        client_visible='TRUE',
+        current_status='not started',
+    )
+    db.add(company)
+    db.commit()
+    db.refresh(company)
+    return company
+
+
 def table_has_column(db: Session, table_name: str, column_name: str) -> bool:
     pragma_rows = db.execute(text(f'PRAGMA table_info({table_name})')).mappings().all()
     return any(row.get('name') == column_name for row in pragma_rows)
@@ -567,8 +592,24 @@ def add_submission(company_id: int, submission: SubmissionCreateRequest, db: Ses
     return submission_record
 
 @app.get('/dashboard/company/{user_id}', response_model=List[CompanyDetail], dependencies=[Depends(block_investors)])
-def company_dashboard(user_id: int, db: Session = Depends(get_db)):
+def company_dashboard(
+    user_id: int,
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
     companies = db.query(Company).filter(Company.user_id == user_id).all()
+    if companies or role != 'company':
+        return companies
+
+    request_user = find_request_user(db, email)
+    if request_user and normalize_role(request_user.role) == 'company':
+        companies = db.query(Company).filter(Company.user_id == request_user.id).all()
+        if companies:
+            return companies
+        provisioned_company = _provision_company_for_user(db, request_user)
+        return [provisioned_company]
+
     return companies
 
 @app.patch('/submissions/{submission_id}/status', response_model=SubmissionInfo, dependencies=[Depends(require_manager)])
