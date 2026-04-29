@@ -55,7 +55,13 @@ def _fallback_narrative(audience: str, tone: str) -> dict:
 
 
 try:
-    from main import app as main_app  # noqa: E402
+    from main import app as main_app, startup_event as main_startup_event  # noqa: E402
+    try:
+        # Mounted sub-apps may not always receive lifespan startup hooks
+        # in this serverless wrapper, so trigger bootstrap explicitly.
+        main_startup_event()
+    except Exception:
+        pass
     wrapper_app = FastAPI(title='ESG API Bootstrap')
     # Support both `/api/*` (production frontend) and root paths (local tooling)
     # by mounting the backend app under both prefixes.
