@@ -1,25 +1,25 @@
 company_id,reporting_year,flag_type,field_name,issue_description,severity
-C008,2024,formula_mismatch,total_ghg_emissions,"Reported total_ghg_emissions (97800) does not equal scope_1 (19800) + scope_2_location_based (15200) + scope_3 (48200) = 83200. Variance of 14600 tCO2e.",High
-C013,2024,range_error,water_recycled_reused,"water_recycled_reused (14200) exceeds total_water_withdrawal (178000) - no error. Recheck: prior flag was incorrectly raised. Cleared.",Low
-C015,2024,range_error,waste_diverted_from_landfill,"waste_diverted_from_landfill (41600) exceeds total_waste_generated (44200). Diversion rate of 94% is plausible but total waste figure may be understated. Confirm source data.",High
-C005,2024,missing_document,air_quality_control_measures,"air_quality_control_measures = No but no explanation or remediation plan provided. Flag for reviewer attention.",Medium
-C005,2023,missing_document,air_quality_control_measures,"Air quality control measures absent for second consecutive year. Escalation required.",High
-C010,2024,missing_document,esg_policy_document_reference,"board_level_esg_oversight = No and no ESG policy document provided. Submission is incomplete.",High
-C017,2023,missing_document,esg_policy_document_reference,"board_level_esg_oversight = No with no document reference. ESG oversight gap identified.",Medium
-C013,2023,missing_document,cybersecurity_policy_document_reference,"cybersecurity_policy_in_place = No and no document reference. Cybersecurity gap identified for forestry company.",High
-C008,2023,data_quality_warning,confirmed_cases_of_corruption,"confirmed_cases_of_corruption = 1. Reviewer must confirm investigation status and outcome before approval.",High
-C003,2023,data_quality_warning,total_fatalities,"total_fatalities = 1 in 2023. Evidence of corrective action plan required. Review WHS policy implementation.",High
-C010,2023,data_quality_warning,total_fatalities,"total_fatalities = 2 in 2023. Two fatalities in reporting period. Mandatory escalation and corrective action review.",Critical
-C020,2023,data_quality_warning,total_fatalities,"total_fatalities = 2 in 2023. Two fatalities in ground operations. Safety investigation evidence required.",Critical
-C020,2024,data_quality_warning,total_fatalities,"total_fatalities = 1 in 2024. Continued fatality rate in aviation ground operations. Escalate to investment committee.",Critical
-C004,2024,range_error,renewable_energy_consumption,"renewable_energy_consumption (52000 MWh) exceeds total_energy_consumption (58000 MWh). Difference is within plausible range for renewable energy company with net exports but confirm methodology.",Medium
+C008,2024,formula_mismatch,total_ghg_emissions,Reported total_ghg_emissions (97800) does not equal scope_1 (19800) + scope_2_location_based (15200) + scope_3 (48200) = 83200. Variance of 14600 tCO2e.,High
+C013,2024,range_error,water_recycled_reused,water_recycled_reused (14200) exceeds total_water_withdrawal (178000) - no error. Recheck: prior flag was incorrectly raised. Cleared.,Low
+C015,2024,range_error,waste_diverted_from_landfill,waste_diverted_from_landfill (41600) exceeds total_waste_generated (44200). Diversion rate of 94% is plausible but total waste figure may be understated. Confirm source data.,High
+C005,2024,missing_document,air_quality_control_measures,air_quality_control_measures = No but no explanation or remediation plan provided. Flag for reviewer attention.,Medium
+C005,2023,missing_document,air_quality_control_measures,Air quality control measures absent for second consecutive year. Escalation required.,High
+C010,2024,missing_document,esg_policy_document_reference,board_level_esg_oversight = No and no ESG policy document provided. Submission is incomplete.,High
+C017,2023,missing_document,esg_policy_document_reference,board_level_esg_oversight = No with no document reference. ESG oversight gap identified.,Medium
+C013,2023,missing_document,cybersecurity_policy_document_reference,cybersecurity_policy_in_place = No and no document reference. Cybersecurity gap identified for forestry company.,High
+C008,2023,data_quality_warning,confirmed_cases_of_corruption,confirmed_cases_of_corruption = 1. Reviewer must confirm investigation status and outcome before approval.,High
+C003,2023,data_quality_warning,total_fatalities,total_fatalities = 1 in 2023. Evidence of corrective action plan required. Review WHS policy implementation.,High
+C010,2023,data_quality_warning,total_fatalities,total_fatalities = 2 in 2023. Two fatalities in reporting period. Mandatory escalation and corrective action review.,Critical
+C020,2023,data_quality_warning,total_fatalities,total_fatalities = 2 in 2023. Two fatalities in ground operations. Safety investigation evidence required.,Critical
+C020,2024,data_quality_warning,total_fatalities,total_fatalities = 1 in 2024. Continued fatality rate in aviation ground operations. Escalate to investment committee.,Critical
+C004,2024,range_error,renewable_energy_consumption,renewable_energy_consumption (52000 MWh) exceeds total_energy_consumption (58000 MWh). Difference is within plausible range for renewable energy company with net exports but confirm methodology.,Medium
 C008,2024,yoy_variance,scope_1_emissions,"Scope 1 emissions increased from 18200 (2023) to 19800 (2024), a rise of 8.8% despite stated reduction strategy. Investigate cause.",Medium
-C008,2024,yoy_variance,cyber_incidents_in_reporting_period,"Cyber incidents increased from 3 (2023) to 4 (2024). Cybersecurity policy effectiveness to be reviewed.",Medium
-C003,2024,yoy_variance,total_ghg_emissions,"Total GHG reduced 7.6% YoY (103300 to 95400). Validate against fleet modernisation milestones.",Low
-C015,2024,yoy_variance,trifr,"TRIFR increased from 8.4 (2023) to 7.6 (2024) - minor improvement. However absolute incident numbers remain high for workforce size.",Medium
-C010,2024,missing_document,submission_notes,"Company has not commenced submission for 2024 cycle. All fields are blank. Reminder issued.",High
-C018,2024,data_quality_warning,total_ghg_emissions,"All 2024 figures are Estimated. Data system migration cited. Total emissions confidence = Estimated. Requires full resubmission with measured data.",High
-C006,2024,missing_document,air_quality_control_measures,"air_quality_control_measures = No for financial services company. Acceptable given office-only operations but confirm.",Low
-C005,2024,yoy_variance,female_leadership_representation_percent,"Female leadership representation increased from 33% to 35% - modest improvement. On track but below portfolio average.",Low
-C017,2024,yoy_variance,scope_1_emissions,"Scope 1 decreased from 88400 to 82000 (-7.2%). Positive trend but absolute level remains highest in portfolio.",Medium
-C013,2024,data_quality_warning,total_ghg_emissions,"Scope 3 is Estimated for forestry company. Significant supply chain and land-use emissions likely underreported.",Medium
+C008,2024,yoy_variance,cyber_incidents_in_reporting_period,Cyber incidents increased from 3 (2023) to 4 (2024). Cybersecurity policy effectiveness to be reviewed.,Medium
+C003,2024,yoy_variance,total_ghg_emissions,Total GHG reduced 7.6% YoY (103300 to 95400). Validate against fleet modernisation milestones.,Low
+C015,2024,yoy_variance,trifr,TRIFR increased from 8.4 (2023) to 7.6 (2024) - minor improvement. However absolute incident numbers remain high for workforce size.,Medium
+C010,2024,missing_document,submission_notes,Company has not commenced submission for 2024 cycle. All fields are blank. Reminder issued.,High
+C018,2024,data_quality_warning,total_ghg_emissions,All 2024 figures are Estimated. Data system migration cited. Total emissions confidence = Estimated. Requires full resubmission with measured data.,High
+C006,2024,missing_document,air_quality_control_measures,air_quality_control_measures = No for financial services company. Acceptable given office-only operations but confirm.,Low
+C005,2024,yoy_variance,female_leadership_representation_percent,Female leadership representation increased from 33% to 35% - modest improvement. On track but below portfolio average.,Low
+C017,2024,yoy_variance,scope_1_emissions,Scope 1 decreased from 88400 to 82000 (-7.2%). Positive trend but absolute level remains highest in portfolio.,Medium
+C013,2024,data_quality_warning,total_ghg_emissions,Scope 3 is Estimated for forestry company. Significant supply chain and land-use emissions likely underreported.,Medium

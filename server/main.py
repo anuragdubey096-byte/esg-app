@@ -103,6 +103,7 @@ from schemas import (
     NewsletterExportResponse,
     NewsletterSendResponse,
     NewsletterSummaryResponse,
+    DashboardNarrativeMaterialResponse,
     NarrativeSummaryResponse,
     NarrativeHistoryItem,
     NarrativeHistoryResponse,
@@ -9649,6 +9650,652 @@ def _build_fallback_newsletter(context: dict) -> dict:
 
     _IMPACT_INTELLIGENCE_CACHE[cache_key] = json.loads(json.dumps(result, default=str))
     return result
+
+
+DASHBOARD_MATERIAL_TITLES = {
+    'manager_brief': 'Portfolio Executive Brief',
+    'investor_narrative': 'Investor Portfolio Narrative',
+    'company_guidance': 'Submission Guidance',
+    'trend_summary': 'What Changed Since Last Cycle',
+    'attention_summary': 'Risk & Attention Summary',
+}
+
+DASHBOARD_MATERIAL_ALLOWED_BY_ROLE = {
+    'manager': {'manager_brief', 'trend_summary', 'attention_summary'},
+    'investor': {'investor_narrative', 'trend_summary', 'attention_summary'},
+    'company': {'company_guidance', 'trend_summary', 'attention_summary'},
+}
+
+
+def _normalize_dashboard_material_text(value: Any, fallback: str = 'not available') -> str:
+    text_value = str(value or '').strip()
+    return text_value or fallback
+
+
+def _normalize_dashboard_material_items(value: Any, fallback_value: Any, *, count: int) -> List[str]:
+    items = _normalize_narrative_items(value, fallback_value, limit=count)
+    normalized = [_normalize_dashboard_material_text(item) for item in items if _normalize_dashboard_material_text(item)]
+    while len(normalized) < count:
+        normalized.append('not available')
+    return normalized[:count]
+
+
+def _to_int_years(values: Any) -> List[int]:
+    years: List[int] = []
+    if not isinstance(values, list):
+        return years
+    for value in values:
+        text_value = str(value or '').strip()
+        if text_value.isdigit():
+            years.append(int(text_value))
+    return sorted(set(years))
+
+
+def _build_manager_material_context(db: Session) -> dict:
+    dashboard_payload = manager_dashboard(db)
+    summary = (dashboard_payload or {}).get('summary') or {}
+    cycle_banner = summary.get('cycle_banner') or {}
+    anomaly_summary = _build_portfolio_anomaly_summary(db)
+    external_context = _build_external_context_feed(db, role='manager', company=None, limit=4)
+    source_years = _to_int_years([cycle_banner.get('active_cycle_year')])
+    return {
+        'role': 'manager',
+        'manager_summary': summary,
+        'cycle_banner': cycle_banner,
+        'anomaly_summary': anomaly_summary,
+        'external_context_items': (external_context.get('items') or [])[:4],
+        'source_years': source_years,
+    }
+
+
+def _build_investor_material_context(db: Session) -> dict:
+    dashboard_payload = investor_dashboard(db)
+    emissions_trend = (dashboard_payload or {}).get('emissions_trend') or []
+    source_years = _to_int_years([row.get('period') for row in emissions_trend if isinstance(row, dict)])
+    return {
+        'role': 'investor',
+        'investor_analytics': dashboard_payload or {},
+        'impact_story': (dashboard_payload or {}).get('impact_story') or {},
+        'source_years': source_years,
+    }
+
+
+def _build_company_material_context(db: Session, *, email: str | None) -> dict:
+    user = find_request_user(db, email)
+    company = find_company_for_user(db, user)
+    if not company:
+        raise HTTPException(status_code=404, detail='Company not found for authenticated user')
+    dashboard_payload = company_dashboard(db, email=email)
+    source_years = _to_int_years([(dashboard_payload or {}).get('current_cycle_year')])
+    return {
+        'role': 'company',
+        'company': {
+            'id': company.id,
+            'name': company.name,
+            'sector': company.sector,
+            'asset_class': company.asset_class,
+            'geography': company.geography,
+        },
+        'company_dashboard': dashboard_payload or {},
+        'impact_story': (dashboard_payload or {}).get('impact_story') or {},
+        'anomaly_summary': _build_company_anomaly_summary(db, company),
+        'source_years': source_years,
+    }
+
+
+def _build_attention_material_context(db: Session, *, role: str, email: str | None) -> dict:
+    if role == 'manager':
+        return {
+            'role': 'manager',
+            'anomaly_summary': _build_portfolio_anomaly_summary(db),
+            'source_years': [],
+        }
+    if role == 'investor':
+        return {
+            'role': 'investor',
+            'anomaly_summary': _build_portfolio_anomaly_summary(db),
+            'source_years': [],
+        }
+    if role == 'company':
+        company_context = _build_company_material_context(db, email=email)
+        return {
+            'role': 'company',
+            'anomaly_summary': company_context.get('anomaly_summary') or {},
+            'source_years': company_context.get('source_years') or [],
+        }
+    raise HTTPException(status_code=403, detail='Dashboard narrative materials are restricted to portal roles')
+
+
+def _build_trend_material_context(db: Session, *, role: str, email: str | None) -> dict:
+    if role == 'manager':
+        manager_dashboard_payload = manager_dashboard(db)
+        manager_context = _build_manager_material_context(db)
+        return {
+            'role': 'manager',
+            'impact_story': (manager_dashboard_payload or {}).get('impact_story') or {},
+            'source_years': manager_context.get('source_years') or [],
+        }
+    if role == 'investor':
+        investor_context = _build_investor_material_context(db)
+        return {
+            'role': 'investor',
+            'investor_analytics': investor_context.get('investor_analytics') or {},
+            'impact_story': investor_context.get('impact_story') or {},
+            'source_years': investor_context.get('source_years') or [],
+        }
+    if role == 'company':
+        company_context = _build_company_material_context(db, email=email)
+        return {
+            'role': 'company',
+            'impact_story': company_context.get('impact_story') or {},
+            'source_years': company_context.get('source_years') or [],
+        }
+    raise HTTPException(status_code=403, detail='Dashboard narrative materials are restricted to portal roles')
+
+
+def _build_material_context_for_role(db: Session, *, role: str, email: str | None, material_type: str) -> dict:
+    if material_type == 'manager_brief':
+        if role != 'manager':
+            raise HTTPException(status_code=403, detail='This dashboard material is not available for your role')
+        return _build_manager_material_context(db)
+    if material_type == 'investor_narrative':
+        if role != 'investor':
+            raise HTTPException(status_code=403, detail='This dashboard material is not available for your role')
+        return _build_investor_material_context(db)
+    if material_type == 'company_guidance':
+        if role != 'company':
+            raise HTTPException(status_code=403, detail='This dashboard material is not available for your role')
+        return _build_company_material_context(db, email=email)
+    if material_type == 'trend_summary':
+        return _build_trend_material_context(db, role=role, email=email)
+    if material_type == 'attention_summary':
+        return _build_attention_material_context(db, role=role, email=email)
+    raise HTTPException(status_code=403, detail='Dashboard narrative materials are restricted to portal roles')
+
+
+def _build_manager_brief_prompt(context: dict) -> str:
+    return (
+        'You are generating a manager dashboard narrative material.\n'
+        'Use only the provided live JSON context.\n'
+        'Do not invent facts.\n'
+        'Do not speculate.\n'
+        'If a value is missing, return "not available" for that field.\n'
+        'Return valid JSON only with this exact shape:\n'
+        '{'
+        '"headline":"string",'
+        '"summary":"string",'
+        '"priority_actions":["string","string","string"],'
+        '"watchouts":["string","string"],'
+        '"deadline_note":"string"'
+        '}\n'
+        f'Live JSON context:\n{json.dumps(context, indent=2, sort_keys=True, default=str)}'
+    )
+
+
+def _build_investor_narrative_prompt(context: dict) -> str:
+    return (
+        'You are generating an investor dashboard narrative material.\n'
+        'Use only the provided live JSON context.\n'
+        'Do not invent facts.\n'
+        'Do not speculate.\n'
+        'If a value is missing, return "not available" for that field.\n'
+        'Return valid JSON only with this exact shape:\n'
+        '{'
+        '"headline":"string",'
+        '"summary":"string",'
+        '"highlights":["string","string","string"],'
+        '"watchlist":["string","string"],'
+        '"board_note":"string"'
+        '}\n'
+        f'Live JSON context:\n{json.dumps(context, indent=2, sort_keys=True, default=str)}'
+    )
+
+
+def _build_company_guidance_prompt(context: dict) -> str:
+    return (
+        'You are generating a company dashboard narrative material.\n'
+        'Use only the provided live JSON context.\n'
+        'Do not invent facts.\n'
+        'Do not speculate.\n'
+        'If a value is missing, return "not available" for that field.\n'
+        'Return valid JSON only with this exact shape:\n'
+        '{'
+        '"headline":"string",'
+        '"status_summary":"string",'
+        '"next_steps":["string","string","string"],'
+        '"sections_to_focus":["string","string"],'
+        '"review_readiness":"string"'
+        '}\n'
+        f'Live JSON context:\n{json.dumps(context, indent=2, sort_keys=True, default=str)}'
+    )
+
+
+def _build_trend_summary_prompt(context: dict) -> str:
+    return (
+        'You are generating a dashboard trend summary material.\n'
+        'Use only the provided live JSON context.\n'
+        'Do not invent facts.\n'
+        'Do not speculate.\n'
+        'If a value is missing, return "not available" for that field.\n'
+        'Return valid JSON only with this exact shape:\n'
+        '{'
+        '"headline":"string",'
+        '"summary":"string",'
+        '"changes":["string","string","string"]'
+        '}\n'
+        f'Live JSON context:\n{json.dumps(context, indent=2, sort_keys=True, default=str)}'
+    )
+
+
+def _build_attention_summary_prompt(context: dict) -> str:
+    return (
+        'You are generating a dashboard risk and attention summary material.\n'
+        'Use only the provided live JSON context.\n'
+        'Do not invent facts.\n'
+        'Do not speculate.\n'
+        'If a value is missing, return "not available" for that field.\n'
+        'Return valid JSON only with this exact shape:\n'
+        '{'
+        '"headline":"string",'
+        '"summary":"string",'
+        '"attention_items":["string","string","string"]'
+        '}\n'
+        f'Live JSON context:\n{json.dumps(context, indent=2, sort_keys=True, default=str)}'
+    )
+
+
+def _manager_brief_payload_dict(*, headline: str, summary: str, priority_actions: Any, watchouts: Any, deadline_note: str) -> dict:
+    return {
+        'headline': _normalize_dashboard_material_text(headline),
+        'summary': _normalize_dashboard_material_text(summary),
+        'priority_actions': _normalize_dashboard_material_items(priority_actions, [], count=3),
+        'watchouts': _normalize_dashboard_material_items(watchouts, [], count=2),
+        'deadline_note': _normalize_dashboard_material_text(deadline_note),
+    }
+
+
+def _investor_narrative_payload_dict(*, headline: str, summary: str, highlights: Any, watchlist: Any, board_note: str) -> dict:
+    return {
+        'headline': _normalize_dashboard_material_text(headline),
+        'summary': _normalize_dashboard_material_text(summary),
+        'highlights': _normalize_dashboard_material_items(highlights, [], count=3),
+        'watchlist': _normalize_dashboard_material_items(watchlist, [], count=2),
+        'board_note': _normalize_dashboard_material_text(board_note),
+    }
+
+
+def _company_guidance_payload_dict(*, headline: str, status_summary: str, next_steps: Any, sections_to_focus: Any, review_readiness: str) -> dict:
+    return {
+        'headline': _normalize_dashboard_material_text(headline),
+        'status_summary': _normalize_dashboard_material_text(status_summary),
+        'next_steps': _normalize_dashboard_material_items(next_steps, [], count=3),
+        'sections_to_focus': _normalize_dashboard_material_items(sections_to_focus, [], count=2),
+        'review_readiness': _normalize_dashboard_material_text(review_readiness),
+    }
+
+
+def _trend_summary_payload_dict(*, headline: str, summary: str, changes: Any) -> dict:
+    return {
+        'headline': _normalize_dashboard_material_text(headline),
+        'summary': _normalize_dashboard_material_text(summary),
+        'changes': _normalize_dashboard_material_items(changes, [], count=3),
+    }
+
+
+def _attention_summary_payload_dict(*, headline: str, summary: str, attention_items: Any) -> dict:
+    return {
+        'headline': _normalize_dashboard_material_text(headline),
+        'summary': _normalize_dashboard_material_text(summary),
+        'attention_items': _normalize_dashboard_material_items(attention_items, [], count=3),
+    }
+
+
+def _build_manager_brief_fallback(context: dict) -> dict:
+    summary = context.get('manager_summary') or {}
+    cycle_banner = context.get('cycle_banner') or {}
+    anomaly_summary = context.get('anomaly_summary') or {}
+    anomaly_items = anomaly_summary.get('items') or []
+    external_context_items = context.get('external_context_items') or []
+    status_breakdown = summary.get('status_breakdown') or {}
+    total_companies = sum(int(value or 0) for value in status_breakdown.values())
+    headline = (
+        f"Portfolio executive brief for FY{cycle_banner.get('active_cycle_year')}"
+        if cycle_banner.get('active_cycle_year')
+        else 'Portfolio executive brief'
+    )
+    summary_text = (
+        f"{total_companies} companies are in the current reporting view. "
+        f"Cycle status: {_normalize_dashboard_material_text(cycle_banner.get('cycle_status'))}. "
+        f"{_normalize_dashboard_material_text(anomaly_summary.get('summary'))}."
+    )
+    priority_actions: List[str] = []
+    for item in anomaly_items:
+        if len(priority_actions) >= 3:
+            break
+        if not isinstance(item, dict):
+            continue
+        metric_name = _normalize_dashboard_material_text(item.get('metric_name'))
+        recommendation = _normalize_dashboard_material_text(item.get('recommendation'))
+        priority_actions.append(f'{metric_name}: {recommendation}')
+    if len(priority_actions) < 3:
+        for row in (summary.get('upcoming_deadlines') or []):
+            if len(priority_actions) >= 3:
+                break
+            if not isinstance(row, dict):
+                continue
+            company_name = _normalize_dashboard_material_text(row.get('company_name'))
+            days_remaining = _normalize_dashboard_material_text(row.get('days_remaining'))
+            priority_actions.append(f'{company_name}: confirm submission readiness ({days_remaining} days left).')
+    if len(priority_actions) < 3 and external_context_items:
+        for item in external_context_items:
+            if len(priority_actions) >= 3:
+                break
+            if not isinstance(item, dict):
+                continue
+            action_prompt = _normalize_dashboard_material_text(item.get('action_prompt'))
+            priority_actions.append(action_prompt)
+    primary_watchout = _normalize_dashboard_material_text(anomaly_summary.get('headline'))
+    secondary_watchout = 'not available'
+    for item in anomaly_items:
+        if not isinstance(item, dict):
+            continue
+        metric_name = _normalize_dashboard_material_text(item.get('metric_name'))
+        rationale = _normalize_dashboard_material_text(item.get('rationale'))
+        secondary_watchout = f'{metric_name}: {rationale}'
+        break
+    watchouts = [primary_watchout, secondary_watchout]
+    days_remaining = cycle_banner.get('days_remaining')
+    if isinstance(days_remaining, int):
+        deadline_note = (
+            f"{days_remaining} days remain in the active cycle."
+            if days_remaining >= 0
+            else f"{abs(days_remaining)} days past the current deadline."
+        )
+    else:
+        deadline_note = 'not available'
+    return _manager_brief_payload_dict(
+        headline=headline,
+        summary=summary_text,
+        priority_actions=priority_actions,
+        watchouts=watchouts,
+        deadline_note=deadline_note,
+    )
+
+
+def _build_investor_narrative_fallback(context: dict) -> dict:
+    analytics = context.get('investor_analytics') or {}
+    impact_story = context.get('impact_story') or {}
+    reporting_companies = int(analytics.get('reporting_companies') or 0)
+    total_companies = int(analytics.get('total_companies') or 0)
+    portfolio_score = analytics.get('portfolio_esg_score')
+    summary_text = (
+        f"Portfolio ESG score is {_normalize_dashboard_material_text(portfolio_score)} with "
+        f"{reporting_companies} of {total_companies} companies reporting. "
+        f"{_normalize_dashboard_material_text(impact_story.get('summary'))}."
+    )
+    highlights = list((impact_story.get('highlights') or [])[:3])
+    if len(highlights) < 3:
+        top_performers = analytics.get('top_performers') or []
+        for item in top_performers:
+            if len(highlights) >= 3:
+                break
+            if isinstance(item, dict):
+                company_name = _normalize_dashboard_material_text(item.get('company_name'))
+                score = _normalize_dashboard_material_text(item.get('esg_score'))
+                highlights.append(f'{company_name} is currently at ESG score {score}.')
+    watchlist = list((impact_story.get('watchouts') or [])[:2])
+    if len(watchlist) < 2:
+        bottom_performers = analytics.get('bottom_performers') or []
+        for item in bottom_performers:
+            if len(watchlist) >= 2:
+                break
+            if isinstance(item, dict):
+                company_name = _normalize_dashboard_material_text(item.get('company_name'))
+                score = _normalize_dashboard_material_text(item.get('esg_score'))
+                watchlist.append(f'{company_name} remains on the watchlist at ESG score {score}.')
+    return _investor_narrative_payload_dict(
+        headline=_normalize_dashboard_material_text(impact_story.get('headline'), 'Investor portfolio narrative'),
+        summary=summary_text,
+        highlights=highlights,
+        watchlist=watchlist,
+        board_note=_normalize_dashboard_material_text(impact_story.get('trend_summary')),
+    )
+
+
+def _build_company_guidance_fallback(context: dict) -> dict:
+    dashboard = context.get('company_dashboard') or {}
+    anomaly_summary = context.get('anomaly_summary') or {}
+    section_breakdown = dashboard.get('section_breakdown') or {}
+    section_rows = sorted(
+        [
+            (str(section or '').strip(), int(value or 0))
+            for section, value in section_breakdown.items()
+            if str(section or '').strip()
+        ],
+        key=lambda pair: pair[1],
+    )
+    sections_to_focus = [f'{name} ({value}% complete)' for name, value in section_rows[:2]]
+    next_steps: List[str] = []
+    for item in (anomaly_summary.get('items') or []):
+        if len(next_steps) >= 3:
+            break
+        if not isinstance(item, dict):
+            continue
+        next_steps.append(_normalize_dashboard_material_text(item.get('recommendation')))
+    if len(next_steps) < 3:
+        for section_name, value in section_rows:
+            if len(next_steps) >= 3:
+                break
+            next_steps.append(f'Increase completion in {section_name} from {value}% before review.')
+    validation_errors = int(dashboard.get('outstanding_validation_errors') or 0)
+    completion_percent = int(dashboard.get('overall_completion_percent') or 0)
+    review_readiness = (
+        'Ready for review'
+        if validation_errors == 0 and completion_percent >= 95
+        else f'Not review-ready: {validation_errors} validation issue(s) remain and completion is {completion_percent}%.'
+    )
+    return _company_guidance_payload_dict(
+        headline=f"{_normalize_dashboard_material_text((context.get('company') or {}).get('name'))} submission guidance",
+        status_summary=(
+            f"Status is {_normalize_dashboard_material_text(dashboard.get('submission_status'))} with "
+            f"{completion_percent}% completion and {validation_errors} outstanding validation issue(s)."
+        ),
+        next_steps=next_steps,
+        sections_to_focus=sections_to_focus,
+        review_readiness=review_readiness,
+    )
+
+
+def _comparison_change_lines(rows: Any) -> List[str]:
+    if not isinstance(rows, list):
+        return []
+    lines: List[str] = []
+    for row in rows:
+        if len(lines) >= 3:
+            break
+        if not isinstance(row, dict):
+            continue
+        metric_name = _normalize_dashboard_material_text(row.get('metric_name'))
+        trend_percent = row.get('trend_percent')
+        if trend_percent is None:
+            current_value = _normalize_dashboard_material_text(row.get('current_value'))
+            previous_value = _normalize_dashboard_material_text(row.get('previous_value'))
+            lines.append(f'{metric_name}: current {current_value}, previous {previous_value}.')
+            continue
+        try:
+            trend_value = float(trend_percent)
+            sign = '+' if trend_value >= 0 else ''
+            lines.append(f'{metric_name}: {sign}{trend_value:.1f}% versus last cycle.')
+        except (TypeError, ValueError):
+            lines.append(f'{metric_name}: {_normalize_dashboard_material_text(trend_percent)} versus last cycle.')
+    return lines
+
+
+def _build_trend_summary_fallback(context: dict) -> dict:
+    impact_story = context.get('impact_story') or {}
+    changes = _comparison_change_lines(impact_story.get('comparison_rows'))
+    if len(changes) < 3:
+        changes.extend(_coerce_narrative_items(impact_story.get('highlights'))[: max(0, 3 - len(changes))])
+    return _trend_summary_payload_dict(
+        headline=_normalize_dashboard_material_text(impact_story.get('headline'), 'What changed since last cycle'),
+        summary=_normalize_dashboard_material_text(impact_story.get('trend_summary') or impact_story.get('summary')),
+        changes=changes,
+    )
+
+
+def _build_attention_summary_fallback(context: dict) -> dict:
+    anomaly_summary = context.get('anomaly_summary') or {}
+    attention_items: List[str] = []
+    for item in (anomaly_summary.get('items') or []):
+        if len(attention_items) >= 3:
+            break
+        if not isinstance(item, dict):
+            continue
+        company_name = _normalize_dashboard_material_text(item.get('company_name'))
+        metric_name = _normalize_dashboard_material_text(item.get('metric_name'))
+        recommendation = _normalize_dashboard_material_text(item.get('recommendation'))
+        attention_items.append(f'{company_name} - {metric_name}: {recommendation}')
+    return _attention_summary_payload_dict(
+        headline=_normalize_dashboard_material_text(anomaly_summary.get('headline'), 'Risk & attention summary'),
+        summary=_normalize_dashboard_material_text(anomaly_summary.get('summary')),
+        attention_items=attention_items,
+    )
+
+
+def _normalize_manager_brief_payload(payload: Optional[dict], fallback_payload: dict) -> dict:
+    safe_payload = payload if isinstance(payload, dict) else {}
+    return _manager_brief_payload_dict(
+        headline=safe_payload.get('headline') or fallback_payload.get('headline'),
+        summary=safe_payload.get('summary') or fallback_payload.get('summary'),
+        priority_actions=safe_payload.get('priority_actions'),
+        watchouts=safe_payload.get('watchouts'),
+        deadline_note=safe_payload.get('deadline_note') or fallback_payload.get('deadline_note'),
+    )
+
+
+def _normalize_investor_narrative_payload(payload: Optional[dict], fallback_payload: dict) -> dict:
+    safe_payload = payload if isinstance(payload, dict) else {}
+    return _investor_narrative_payload_dict(
+        headline=safe_payload.get('headline') or fallback_payload.get('headline'),
+        summary=safe_payload.get('summary') or fallback_payload.get('summary'),
+        highlights=safe_payload.get('highlights'),
+        watchlist=safe_payload.get('watchlist'),
+        board_note=safe_payload.get('board_note') or fallback_payload.get('board_note'),
+    )
+
+
+def _normalize_company_guidance_payload(payload: Optional[dict], fallback_payload: dict) -> dict:
+    safe_payload = payload if isinstance(payload, dict) else {}
+    return _company_guidance_payload_dict(
+        headline=safe_payload.get('headline') or fallback_payload.get('headline'),
+        status_summary=safe_payload.get('status_summary') or fallback_payload.get('status_summary'),
+        next_steps=safe_payload.get('next_steps'),
+        sections_to_focus=safe_payload.get('sections_to_focus'),
+        review_readiness=safe_payload.get('review_readiness') or fallback_payload.get('review_readiness'),
+    )
+
+
+def _normalize_trend_summary_payload(payload: Optional[dict], fallback_payload: dict) -> dict:
+    safe_payload = payload if isinstance(payload, dict) else {}
+    return _trend_summary_payload_dict(
+        headline=safe_payload.get('headline') or fallback_payload.get('headline'),
+        summary=safe_payload.get('summary') or fallback_payload.get('summary'),
+        changes=safe_payload.get('changes'),
+    )
+
+
+def _normalize_attention_summary_payload(payload: Optional[dict], fallback_payload: dict) -> dict:
+    safe_payload = payload if isinstance(payload, dict) else {}
+    return _attention_summary_payload_dict(
+        headline=safe_payload.get('headline') or fallback_payload.get('headline'),
+        summary=safe_payload.get('summary') or fallback_payload.get('summary'),
+        attention_items=safe_payload.get('attention_items'),
+    )
+
+
+def _generate_dashboard_material(material_type: str, context: dict) -> tuple[dict, bool]:
+    if material_type == 'manager_brief':
+        prompt = _build_manager_brief_prompt(context)
+        fallback = _build_manager_brief_fallback(context)
+        openai_payload = _call_openai_summary(prompt)
+        payload = _normalize_manager_brief_payload(openai_payload, fallback)
+        return payload, not bool(openai_payload)
+    if material_type == 'investor_narrative':
+        prompt = _build_investor_narrative_prompt(context)
+        fallback = _build_investor_narrative_fallback(context)
+        openai_payload = _call_openai_summary(prompt)
+        payload = _normalize_investor_narrative_payload(openai_payload, fallback)
+        return payload, not bool(openai_payload)
+    if material_type == 'company_guidance':
+        prompt = _build_company_guidance_prompt(context)
+        fallback = _build_company_guidance_fallback(context)
+        openai_payload = _call_openai_summary(prompt)
+        payload = _normalize_company_guidance_payload(openai_payload, fallback)
+        return payload, not bool(openai_payload)
+    if material_type == 'trend_summary':
+        prompt = _build_trend_summary_prompt(context)
+        fallback = _build_trend_summary_fallback(context)
+        openai_payload = _call_openai_summary(prompt)
+        payload = _normalize_trend_summary_payload(openai_payload, fallback)
+        return payload, not bool(openai_payload)
+    if material_type == 'attention_summary':
+        prompt = _build_attention_summary_prompt(context)
+        fallback = _build_attention_summary_fallback(context)
+        openai_payload = _call_openai_summary(prompt)
+        payload = _normalize_attention_summary_payload(openai_payload, fallback)
+        return payload, not bool(openai_payload)
+    raise HTTPException(status_code=400, detail='Unsupported dashboard material type')
+
+
+@app.get('/dashboard/material', response_model=DashboardNarrativeMaterialResponse)
+@app.get('/dashboard/materials', response_model=DashboardNarrativeMaterialResponse)
+def dashboard_narrative_material(
+    material_type: str = Query(...),
+    force_refresh: bool = Query(default=False),
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
+    normalized_role = normalize_role(role)
+    if normalized_role not in DASHBOARD_MATERIAL_ALLOWED_BY_ROLE:
+        raise HTTPException(status_code=403, detail='Dashboard narrative materials are restricted to portal users')
+
+    normalized_material_type = str(material_type or '').strip().lower()
+    if normalized_material_type not in DASHBOARD_MATERIAL_TITLES:
+        raise HTTPException(status_code=400, detail='Unsupported dashboard material type')
+
+    allowed_types = DASHBOARD_MATERIAL_ALLOWED_BY_ROLE.get(normalized_role, set())
+    if normalized_material_type not in allowed_types:
+        raise HTTPException(status_code=403, detail='This dashboard material is not available for your role')
+
+    cache_key = (
+        f"dashboard:material:{normalized_role}:{normalized_material_type}:"
+        f"{str(email or '').strip().lower()}"
+    )
+    if not force_refresh:
+        cached_payload = _get_timed_cache(cache_key)
+        if cached_payload is not None:
+            return DashboardNarrativeMaterialResponse(**cached_payload)
+
+    context = _build_material_context_for_role(
+        db,
+        role=normalized_role,
+        email=email,
+        material_type=normalized_material_type,
+    )
+    payload, fallback_used = _generate_dashboard_material(normalized_material_type, context)
+    response_payload = DashboardNarrativeMaterialResponse(
+        available=True,
+        material_type=normalized_material_type,
+        title=DASHBOARD_MATERIAL_TITLES[normalized_material_type],
+        generated_at=datetime.utcnow().isoformat(),
+        payload=payload,
+        source_years=_to_int_years(context.get('source_years') or []),
+        cached=False,
+        fallback_used=fallback_used,
+        message=None,
+    ).model_dump()
+    return _set_timed_cache(cache_key, response_payload)
 
 
 SEARCH_SCORE_WEIGHTS = SEARCH_RANKING.get('weights') or {}

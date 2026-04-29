@@ -35,15 +35,25 @@ function formatDaysRemaining(value) {
   return `${value} days remaining`
 }
 
+function formatOptionalNumeric(value, formatter) {
+  if (value === null || value === undefined || value === '') return 'N/A'
+  return formatter(Number(value))
+}
+
+function formatCompanyScore(value) {
+  if (value === null || value === undefined || value === '') return 'N/A'
+  return Number(value).toFixed(2)
+}
+
 function SectorTooltip({ active, payload, label }) {
   if (!active || !payload?.length) return null
   const row = payload[0]?.payload || {}
   return (
     <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-sm">
       <p className="text-sm ui-text-strong text-slate-800">{label}</p>
-      <p className="text-xs text-slate-600">Avg ESG Score: {Number(row.avg_esg_score || 0).toFixed(1)}</p>
-      <p className="text-xs text-slate-600">Avg GHG: {Number(row.avg_ghg_emissions || 0).toLocaleString()} tCO2e</p>
-      <p className="text-xs text-slate-600">Companies: {Number(row.company_count || 0)}</p>
+      <p className="text-xs text-slate-600">Avg ESG Score: {formatOptionalNumeric(row.avg_esg_score, (value) => value.toFixed(1))}</p>
+      <p className="text-xs text-slate-600">Avg GHG: {formatOptionalNumeric(row.avg_ghg_emissions, (value) => `${value.toLocaleString()} tCO2e`)}</p>
+      <p className="text-xs text-slate-600">Companies: {formatOptionalNumeric(row.company_count, (value) => value.toString())}</p>
     </div>
   )
 }
@@ -130,8 +140,8 @@ export default function AnalyticsPage() {
           <p className="eyebrow">Manager Analytics</p>
           <h1>Portfolio performance, grounded in live submission data.</h1>
           <p>
-            The charts below are rendered from backend analytics, so the view stays aligned with the imported fixture
-            dataset and current database state.
+            The charts below are rendered from backend analytics, so the view stays aligned with current approved
+            submissions and the live database state.
           </p>
           <div className="analytics-hero-chips">
             <span className="analytics-chip analytics-chip-manager-live">Backend-fed</span>
@@ -149,11 +159,11 @@ export default function AnalyticsPage() {
             </article>
             <article className="summary-box">
               <p>Reporting Companies</p>
-              <strong>{data?.summary_cards?.[1]?.value ?? '0'}</strong>
+              <strong>{data?.summary_cards?.[1]?.value ?? 'N/A'}</strong>
             </article>
             <article className="summary-box">
               <p>Portfolio ESG Score</p>
-              <strong>{data?.summary_cards?.[0]?.value ?? '0.0'}</strong>
+              <strong>{data?.summary_cards?.[0]?.value ?? 'N/A'}</strong>
             </article>
           </div>
         </div>
@@ -273,7 +283,7 @@ export default function AnalyticsPage() {
               {topPerformers.map((item, index) => (
                 <li key={`${item.company_name}-${index}`} className="flex items-center justify-between rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-2">
                   <span className="font-medium text-slate-800">{item.company_name}</span>
-                  <span className="text-sm ui-text-strong text-emerald-700">{Number(item.esg_score || 0).toFixed(2)}</span>
+                  <span className="text-sm ui-text-strong text-emerald-700">{formatCompanyScore(item.esg_score)}</span>
                 </li>
               ))}
             </ul>
@@ -285,7 +295,7 @@ export default function AnalyticsPage() {
               {bottomPerformers.map((item, index) => (
                 <li key={`${item.company_name}-${index}`} className="flex items-center justify-between rounded-lg border border-rose-100 bg-rose-50 px-3 py-2">
                   <span className="font-medium text-slate-800">{item.company_name}</span>
-                  <span className="text-sm ui-text-strong text-rose-700">{Number(item.esg_score || 0).toFixed(2)}</span>
+                  <span className="text-sm ui-text-strong text-rose-700">{formatCompanyScore(item.esg_score)}</span>
                 </li>
               ))}
             </ul>

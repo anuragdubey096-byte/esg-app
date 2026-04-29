@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate, useOutletContext } from 'react-router-dom'
 import ActivityFeedCard from '../components/ActivityFeedCard'
 import AnomalySummaryCard from '../components/AnomalySummaryCard'
+import DashboardNarrativeMaterialCard from '../components/DashboardNarrativeMaterialCard'
 import ExternalContextFeedCard from '../components/ExternalContextFeedCard'
 import ImpactStoryCard from '../components/ImpactStoryCard'
 import SectionCard from '../components/SectionCard'
@@ -9,6 +10,7 @@ import KpiCard from '../components/KpiCard'
 import { Button } from '../components/ui'
 import { useOptionalLiveUpdates } from '../contexts/LiveUpdatesContext'
 import useAnomalySummary from '../hooks/useAnomalySummary'
+import useDashboardNarrativeMaterial from '../hooks/useDashboardNarrativeMaterial'
 import useExternalContextFeed from '../hooks/useExternalContextFeed'
 import { API_BASE_URL } from '../lib/api'
 import { UI_LABELS } from '../lib/uiLabels'
@@ -22,6 +24,8 @@ export default function CompanyDashboardPage() {
   const liveUpdates = useOptionalLiveUpdates()
   const anomalySummary = useAnomalySummary({ user, enabled: Boolean(user), companyScoped: true })
   const externalContext = useExternalContextFeed({ user, enabled: Boolean(user), companyId: data?.company_id || null, limit: 4 })
+  const companyGuidance = useDashboardNarrativeMaterial({ user, materialType: 'company_guidance', enabled: Boolean(user) })
+  const trendSummary = useDashboardNarrativeMaterial({ user, materialType: 'trend_summary', enabled: Boolean(user) })
 
   const fetchDashboard = async () => {
     try {
@@ -102,14 +106,14 @@ export default function CompanyDashboardPage() {
   const deadlineUrgency = data.deadline_urgency || 'green'
   const deadline = data.deadline || 'n/a'
   const hasEditableCycle = Boolean(data.current_cycle_id)
-  const daysRemaining = Number(data.days_remaining || 0)
-  const overallCompletionPercent = Number(data.overall_completion_percent || 0)
-  const completedDataPoints = Number(data.completed_data_points || 0)
-  const totalDataPoints = Number(data.total_data_points || 0)
+  const daysRemaining = data.days_remaining == null ? null : Number(data.days_remaining)
+  const overallCompletionPercent = Number(data.overall_completion_percent ?? 0)
+  const completedDataPoints = Number(data.completed_data_points ?? 0)
+  const totalDataPoints = Number(data.total_data_points ?? 0)
   const sectionBreakdown = data.section_breakdown && typeof data.section_breakdown === 'object' ? data.section_breakdown : {}
-  const validationErrorCount = Number(data.outstanding_validation_errors || 0)
+  const validationErrorCount = Number(data.outstanding_validation_errors ?? 0)
   const sectionsRequiringCorrection = Array.isArray(data.sections_requiring_correction) ? data.sections_requiring_correction : []
-  const actionItemsInProgress = Number(data.action_items_in_progress || 0)
+  const actionItemsInProgress = Number(data.action_items_in_progress ?? 0)
 
   const statusColors = {
     grey: 'bg-gray-100 text-gray-800',
@@ -169,11 +173,11 @@ export default function CompanyDashboardPage() {
               <p className="ui-text-display text-gray-800 mt-1">{deadline}</p>
               <p className="ui-text-display ui-text-strong mt-2">
                 <span className={`${deadlineUrgency === 'red' ? 'text-red-600' : deadlineUrgency === 'amber' ? 'text-yellow-600' : 'text-green-600'}`}>
-                  {daysRemaining} days remaining
+                  {daysRemaining == null ? 'Deadline not available' : `${daysRemaining} days remaining`}
                 </span>
               </p>
             </div>
-            {daysRemaining < 7 && (
+            {daysRemaining != null && daysRemaining < 7 && (
               <div className="text-right">
                 <div className="inline-block bg-red-500 text-white px-4 py-2 rounded-full ui-text-strong animate-pulse">
                   URGENT
@@ -223,7 +227,7 @@ export default function CompanyDashboardPage() {
         <SectionCard title="Outstanding Issues">
           <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
             <p className="ui-text-strong text-amber-900">
-              ⚠️ {validationErrorCount} validation error{validationErrorCount !== 1 ? 's' : ''} found
+              Warning: {validationErrorCount} validation error{validationErrorCount !== 1 ? 's' : ''} found
             </p>
             {sectionsRequiringCorrection.length > 0 && (
               <div className="mt-3">
@@ -251,7 +255,7 @@ export default function CompanyDashboardPage() {
         <SectionCard title="ESG Improvement Initiatives">
           <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
             <p className="ui-text-strong text-blue-900">
-              📋 {actionItemsInProgress} action plan{actionItemsInProgress !== 1 ? 's' : ''} in progress
+              {actionItemsInProgress} action plan{actionItemsInProgress !== 1 ? 's' : ''} in progress
             </p>
             <Button
               onClick={() => navigate('/company/action-plans')}
@@ -272,7 +276,7 @@ export default function CompanyDashboardPage() {
         />
         <KpiCard
           title="Cycle Year"
-          value={data.current_cycle_year || '—'}
+          value={data.current_cycle_year || 'N/A'}
           subtitle="Reporting Period"
           trend={null}
         />
@@ -298,6 +302,24 @@ export default function CompanyDashboardPage() {
           maxInsights={4}
         />
       ) : null}
+
+      <DashboardNarrativeMaterialCard
+        title="Submission Guidance"
+        subtitle="AI-assisted guidance generated from live completion, validation, anomaly, and impact data"
+        data={companyGuidance.data}
+        loading={companyGuidance.loading}
+        error={companyGuidance.error}
+        onRefresh={companyGuidance.refresh}
+      />
+
+      <DashboardNarrativeMaterialCard
+        title="What Changed Since Last Cycle"
+        subtitle="Shared trend summary generated from live company comparison context"
+        data={trendSummary.data}
+        loading={trendSummary.loading}
+        error={trendSummary.error}
+        onRefresh={trendSummary.refresh}
+      />
 
       <AnomalySummaryCard
         title="Company Anomaly Watchlist"

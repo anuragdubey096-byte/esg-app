@@ -23,9 +23,37 @@ import useAnomalySummary from '../hooks/useAnomalySummary'
 import useDashboardData from '../hooks/useDashboardData'
 import useExternalContextFeed from '../hooks/useExternalContextFeed'
 
+function hasValue(value) {
+  return value !== null && value !== undefined && value !== ''
+}
+
+function formatScore(value) {
+  return hasValue(value) ? `${Number(value).toFixed(1)}/100` : 'N/A'
+}
+
+function formatPercent(value) {
+  return hasValue(value) ? `${Number(value).toFixed(1)}%` : 'N/A'
+}
+
+function formatCoverage(reporting, total) {
+  if (!hasValue(reporting) && !hasValue(total)) return 'N/A'
+  return `${Number(reporting ?? 0)}/${Number(total ?? 0)}`
+}
+
+function formatEsgBreakdown(scoreBreakdown) {
+  const e = hasValue(scoreBreakdown?.E) ? Number(scoreBreakdown.E).toFixed(1) : 'N/A'
+  const s = hasValue(scoreBreakdown?.S) ? Number(scoreBreakdown.S).toFixed(1) : 'N/A'
+  const g = hasValue(scoreBreakdown?.G) ? Number(scoreBreakdown.G).toFixed(1) : 'N/A'
+  return `${e} / ${s} / ${g}`
+}
+
+function formatEmissionsTotal(value) {
+  return hasValue(value) ? `${Number(value).toLocaleString()} tCO2e` : 'N/A'
+}
+
 function formatTrend(value) {
-  if (value == null) return 'n/a'
-  return `${Number(value || 0).toFixed(1)}%`
+  if (!hasValue(value)) return 'n/a'
+  return `${Number(value).toFixed(1)}%`
 }
 
 export default function InvestorAnalyticsPage() {
@@ -35,19 +63,19 @@ export default function InvestorAnalyticsPage() {
   const externalContext = useExternalContextFeed({ user, enabled: Boolean(user), limit: 4 })
 
   const analytics = summary || {}
-  const scoreBreakdown = analytics.score_breakdown || { E: 0, S: 0, G: 0 }
-  const emissionsTotals = analytics.emissions_totals || { scope_1: 0, scope_2: 0, scope_3: 0, total: 0 }
-  const dataQuality = analytics.data_quality || { completeness: 0, accuracy: 0, confidence: 0 }
+  const scoreBreakdown = analytics.score_breakdown || {}
+  const emissionsTotals = analytics.emissions_totals || {}
+  const dataQuality = analytics.data_quality || {}
   const impactStory = analytics.impact_story || null
 
   const submissionFunnelData = useMemo(() => {
     const funnel = analytics.submission_funnel || {}
     return [
-      { name: 'Not Started', value: Number(funnel['Not Started'] || 0), color: STATUS_COLORS['Not Started'] },
-      { name: 'In Progress', value: Number(funnel['In Progress'] || 0), color: STATUS_COLORS['In Progress'] },
-      { name: 'Submitted', value: Number(funnel.Submitted || 0), color: STATUS_COLORS.Submitted },
-      { name: 'Approved', value: Number(funnel.Approved || 0), color: STATUS_COLORS.Approved },
-      { name: 'Rejected', value: Number(funnel.Rejected || 0), color: STATUS_COLORS.Rejected },
+      { name: 'Not Started', value: Number(funnel['Not Started'] ?? 0), color: STATUS_COLORS['Not Started'] },
+      { name: 'In Progress', value: Number(funnel['In Progress'] ?? 0), color: STATUS_COLORS['In Progress'] },
+      { name: 'Submitted', value: Number(funnel.Submitted ?? 0), color: STATUS_COLORS.Submitted },
+      { name: 'Approved', value: Number(funnel.Approved ?? 0), color: STATUS_COLORS.Approved },
+      { name: 'Rejected', value: Number(funnel.Rejected ?? 0), color: STATUS_COLORS.Rejected },
     ]
   }, [analytics.submission_funnel])
 
@@ -57,22 +85,22 @@ export default function InvestorAnalyticsPage() {
       bucket: 'Top',
       company: item.company_name,
       sector: item.sector,
-      score: Number(item.esg_score || 0).toFixed(1),
+      score: hasValue(item.esg_score) ? Number(item.esg_score).toFixed(1) : 'N/A',
     }))
     const bottomRows = (analytics.bottom_performers || []).map((item, index) => ({
       id: `bottom-${index}`,
       bucket: 'Bottom',
       company: item.company_name,
       sector: item.sector,
-      score: Number(item.esg_score || 0).toFixed(1),
+      score: hasValue(item.esg_score) ? Number(item.esg_score).toFixed(1) : 'N/A',
     }))
     return [...topRows, ...bottomRows]
   }, [analytics.bottom_performers, analytics.top_performers])
 
   const heroMetrics = [
-    { label: 'Portfolio ESG Score', value: `${Number(analytics.portfolio_esg_score || 0).toFixed(1)}/100`, hint: 'Backend portfolio average' },
-    { label: 'Reporting Coverage', value: `${analytics.reporting_companies || 0}/${analytics.total_companies || 0}`, hint: 'Companies submitted' },
-    { label: 'Governance Adoption', value: `${Number(analytics.governance_adoption_percent || 0).toFixed(1)}%`, hint: 'Policy coverage' },
+    { label: 'Portfolio ESG Score', value: formatScore(analytics.portfolio_esg_score), hint: 'Backend portfolio average' },
+    { label: 'Reporting Coverage', value: formatCoverage(analytics.reporting_companies, analytics.total_companies), hint: 'Companies submitted' },
+    { label: 'Governance Adoption', value: formatPercent(analytics.governance_adoption_percent), hint: 'Policy coverage' },
   ]
 
   if (loading) {
@@ -103,7 +131,7 @@ export default function InvestorAnalyticsPage() {
           <h1>Portfolio signals, surfaced live for investor review.</h1>
           <p>
             Every chart on this page is rendered from the live backend summary, so the investor view stays aligned with
-            the imported data and current portfolio state.
+            approved submission data and the current portfolio state.
           </p>
           <div className="analytics-hero-chips">
             <span className="analytics-chip analytics-chip-investor-live">Backend-fed</span>
@@ -123,23 +151,23 @@ export default function InvestorAnalyticsPage() {
             ))}
           </div>
           <div className="mt-3 text-sm text-slate-100/80">
-            {heroMetrics.map((metric) => metric.hint).join(' · ')}
+            {heroMetrics.map((metric) => metric.hint).join(' | ')}
           </div>
         </div>
       </section>
 
       <section className="kpi-grid">
-        <KpiCard title="Portfolio ESG Score" value={`${Number(analytics.portfolio_esg_score || 0).toFixed(1)}/100`} />
-        <KpiCard title="E / S / G" value={`${scoreBreakdown.E || 0} / ${scoreBreakdown.S || 0} / ${scoreBreakdown.G || 0}`} />
+        <KpiCard title="Portfolio ESG Score" value={formatScore(analytics.portfolio_esg_score)} />
+        <KpiCard title="E / S / G" value={formatEsgBreakdown(scoreBreakdown)} />
         <KpiCard
           title="Reporting Coverage"
-          value={`${analytics.reporting_companies || 0}/${analytics.total_companies || 0}`}
+          value={formatCoverage(analytics.reporting_companies, analytics.total_companies)}
           trendLabel="companies submitted"
         />
-        <KpiCard title="Total Emissions" value={`${Number(emissionsTotals.total || 0).toLocaleString()} tCO2e`} />
+        <KpiCard title="Total Emissions" value={formatEmissionsTotal(emissionsTotals.total)} />
         <KpiCard
           title="Governance Adoption"
-          value={`${Number(analytics.governance_adoption_percent || 0).toFixed(1)}%`}
+          value={formatPercent(analytics.governance_adoption_percent)}
           trendLabel="portfolio policy coverage"
         />
       </section>
@@ -189,9 +217,9 @@ export default function InvestorAnalyticsPage() {
             <ResponsiveContainer width="100%" height={280}>
               <BarChart
                 data={[
-                  { name: 'Scope 1', value: Number(emissionsTotals.scope_1 || 0) },
-                  { name: 'Scope 2', value: Number(emissionsTotals.scope_2 || 0) },
-                  { name: 'Scope 3', value: Number(emissionsTotals.scope_3 || 0) },
+                  { name: 'Scope 1', value: Number(emissionsTotals.scope_1 ?? 0) },
+                  { name: 'Scope 2', value: Number(emissionsTotals.scope_2 ?? 0) },
+                  { name: 'Scope 3', value: Number(emissionsTotals.scope_3 ?? 0) },
                 ]}
               >
                 <CartesianGrid strokeDasharray="3 3" vertical={false} />
@@ -211,9 +239,9 @@ export default function InvestorAnalyticsPage() {
             <ResponsiveContainer width="100%" height={280}>
               <BarChart
                 data={[
-                  { metric: 'Completeness', score: Number(dataQuality.completeness || 0) },
-                  { metric: 'Accuracy', score: Number(dataQuality.accuracy || 0) },
-                  { metric: 'Confidence', score: Number(dataQuality.confidence || 0) },
+                  { metric: 'Completeness', score: Number(dataQuality.completeness ?? 0) },
+                  { metric: 'Accuracy', score: Number(dataQuality.accuracy ?? 0) },
+                  { metric: 'Confidence', score: Number(dataQuality.confidence ?? 0) },
                 ]}
               >
                 <CartesianGrid strokeDasharray="3 3" vertical={false} />

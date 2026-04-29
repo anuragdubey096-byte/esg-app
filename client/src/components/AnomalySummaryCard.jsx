@@ -43,7 +43,7 @@ export default function AnomalySummaryCard({
                     <div>
                       <p className="text-sm ui-text-strong">{item.metric_name}</p>
                       <p className="mt-1 text-xs uppercase tracking-wide opacity-70">
-                        {item.company_name ? `${item.company_name} • ` : ''}
+                        {item.company_name ? `${item.company_name} | ` : ''}
                         {item.severity} severity
                       </p>
                     </div>

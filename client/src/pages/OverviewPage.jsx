@@ -5,12 +5,14 @@ import AnomalySummaryCard from '../components/AnomalySummaryCard'
 import ExternalContextFeedCard from '../components/ExternalContextFeedCard'
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts'
 import DataTable from '../components/DataTable'
+import DashboardNarrativeMaterialCard from '../components/DashboardNarrativeMaterialCard'
 import ImpactStoryCard from '../components/ImpactStoryCard'
 import KpiCard from '../components/KpiCard'
 import NewsletterCard from '../components/NewsletterCard'
 import SectionCard from '../components/SectionCard'
 import StatusBadge from '../components/StatusBadge'
 import useDashboardData from '../hooks/useDashboardData'
+import useDashboardNarrativeMaterial from '../hooks/useDashboardNarrativeMaterial'
 import useAnomalySummary from '../hooks/useAnomalySummary'
 import useExternalContextFeed from '../hooks/useExternalContextFeed'
 import useNewsletterSummary from '../hooks/useNewsletterSummary'
@@ -36,6 +38,9 @@ export default function OverviewPage() {
   })
   const anomalySummary = useAnomalySummary({ user, enabled: Boolean(user) })
   const externalContext = useExternalContextFeed({ user, enabled: Boolean(user), limit: 5 })
+  const managerBrief = useDashboardNarrativeMaterial({ user, materialType: 'manager_brief', enabled: Boolean(user) })
+  const trendSummary = useDashboardNarrativeMaterial({ user, materialType: 'trend_summary', enabled: Boolean(user) })
+  const attentionSummary = useDashboardNarrativeMaterial({ user, materialType: 'attention_summary', enabled: Boolean(user) })
 
   const managerSummary = useMemo(() => (summary && typeof summary === 'object' ? summary : {}), [summary])
   const statusChartData = useMemo(
@@ -177,7 +182,7 @@ export default function OverviewPage() {
             </article>
             <article className="summary-box">
               <p>Reporting Companies</p>
-              <strong>{companies.length || 0}</strong>
+              <strong>{companies.length}</strong>
             </article>
             <article className="summary-box">
               <p>Progress Rows</p>
@@ -219,6 +224,34 @@ export default function OverviewPage() {
         story={impactStory}
         maxInsights={4}
       />
+
+      <DashboardNarrativeMaterialCard
+        title="Portfolio Executive Brief"
+        subtitle="AI-assisted operational narrative from live cycle, submission, anomaly, and context signals"
+        data={managerBrief.data}
+        loading={managerBrief.loading}
+        error={managerBrief.error}
+        onRefresh={managerBrief.refresh}
+      />
+
+      <section className="two-col-grid">
+        <DashboardNarrativeMaterialCard
+          title="What Changed Since Last Cycle"
+          subtitle="Shared trend summary generated from live comparison context"
+          data={trendSummary.data}
+          loading={trendSummary.loading}
+          error={trendSummary.error}
+          onRefresh={trendSummary.refresh}
+        />
+        <DashboardNarrativeMaterialCard
+          title="Risk & Attention Summary"
+          subtitle="Shared anomaly-backed attention summary for manager action"
+          data={attentionSummary.data}
+          loading={attentionSummary.loading}
+          error={attentionSummary.error}
+          onRefresh={attentionSummary.refresh}
+        />
+      </section>
 
       <ActivityFeedCard
         user={user}

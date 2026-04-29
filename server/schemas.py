@@ -658,6 +658,18 @@ class NewsletterSendResponse(BaseModel):
     message: Optional[str] = None
 
 
+class DashboardNarrativeMaterialResponse(BaseModel):
+    available: bool
+    material_type: str
+    title: str
+    generated_at: str
+    payload: Dict[str, Any] = {}
+    source_years: List[int] = []
+    cached: bool = False
+    fallback_used: bool = False
+    message: Optional[str] = None
+
+
 class NarrativeSummaryResponse(BaseModel):
     available: bool
     audience: Literal['company', 'lp', 'board']
