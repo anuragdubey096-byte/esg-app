@@ -13,6 +13,7 @@ if str(SERVER_DIR) not in sys.path:
     sys.path.insert(0, str(SERVER_DIR))
 
 app = FastAPI(title='ESG API Bootstrap')
+bootstrap_error = None
 
 
 def _fallback_narrative(audience: str, tone: str) -> dict:
@@ -61,7 +62,8 @@ try:
     wrapper_app.mount('/api', main_app)
     wrapper_app.mount('/', main_app)
     app = wrapper_app  # type: ignore[assignment]
-except Exception:
+except Exception as error:
+    bootstrap_error = f'{type(error).__name__}: {error}'
     # Keep API alive with critical fallback endpoints even if full app bootstrap fails.
     app = FastAPI(title='ESG API Fallback')
 
@@ -72,6 +74,7 @@ except Exception:
             'status': 'degraded',
             'mode': 'fallback',
             'vercel': bool(os.getenv('VERCEL')),
+            'bootstrap_error': bootstrap_error,
         }
 
     @app.get('/api/narrative/summary')
