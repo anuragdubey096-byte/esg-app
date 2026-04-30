@@ -16,7 +16,7 @@ try:
 except ImportError:  # pragma: no cover
     OpenAI = None
 
-router = APIRouter(prefix="/api/agent", tags=["agent"])
+router = APIRouter(prefix="/agent", tags=["agent"])
 
 OPENAI_MODEL = "gpt-4o"
 ALLOWED_ROLES = {"company", "manager", "investor"}
