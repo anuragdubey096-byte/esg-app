@@ -18,6 +18,7 @@ import {
 import DataTable from '../components/DataTable'
 import KpiCard from '../components/KpiCard'
 import SectionCard from '../components/SectionCard'
+import AdminAnalyticsSections from '../components/analytics/AdminAnalyticsSections'
 import useDashboardData, { getLatestSubmission, parseSubmissionPayload } from '../hooks/useDashboardData'
 
 const analyticsTabs = ['Environmental', 'Social', 'Governance', 'Benchmarking']
@@ -482,6 +483,8 @@ export default function AnalyticsPage() {
           </section>
         ) : null}
       </SectionCard>
+
+      <AdminAnalyticsSections user={user} />
     </div>
   )
 }

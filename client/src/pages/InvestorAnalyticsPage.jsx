@@ -18,6 +18,7 @@ import {
 import DataTable from '../components/DataTable'
 import KpiCard from '../components/KpiCard'
 import SectionCard from '../components/SectionCard'
+import LPAnalyticsSections from '../components/analytics/LPAnalyticsSections'
 import useDashboardData from '../hooks/useDashboardData'
 import useNewsletterPreview from '../hooks/useNewsletterPreview'
 import useNarrativeSummary from '../hooks/useNarrativeSummary'
@@ -316,6 +317,8 @@ export default function InvestorAnalyticsPage() {
           emptyMessage="No performer data available."
         />
       </SectionCard>
+
+      <LPAnalyticsSections user={user} />
     </div>
   )
 }
