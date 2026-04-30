@@ -4059,26 +4059,7 @@ def cron_newsletter_dispatch(
     authorization: str | None = Header(default=None),
     db: Session = Depends(get_db),
 ):
-    _validate_cron_secret(secret=secret, x_cron_secret=x_cron_secret, authorization=authorization)
-    normalized = str(audience or '').strip().lower()
-    if normalized not in {'manager', 'investor'}:
-        raise HTTPException(status_code=400, detail='audience must be manager or investor')
-    payload = _build_newsletter_payload(db, audience=normalized, tone=tone)
-    send_payload = {
-        **payload,
-        'delivery_status': 'dry_run' if dry_run else 'queued',
-        'provider': 'smtp',
-        'recipient_count': 2,
-        'sent_count': 0 if dry_run else 2,
-        'failed_count': 0,
-        'skipped_count': 0,
-        'dry_run': dry_run,
-        'message': 'Dry run completed. No email was sent.' if dry_run else 'Delivery queued.',
-        'cron': True,
-        'audience': normalized,
-        'triggered_at': _utc_now_iso(),
-    }
-    return send_payload
+    raise HTTPException(status_code=410, detail='Cron newsletter trigger is temporarily disabled')
 
 
 def _parse_feed_timestamp(value: str | None) -> str:

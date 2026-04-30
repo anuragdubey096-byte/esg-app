@@ -13,8 +13,6 @@ export default function NewsletterOpsPage() {
   const [payload, setPayload] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [cronSecret, setCronSecret] = useState('')
-  const [cronDryRun, setCronDryRun] = useState(true)
 
   const runAction = async (path, method = 'POST') => {
     setLoading(true)
@@ -80,41 +78,8 @@ export default function NewsletterOpsPage() {
         {error ? <p>{error}</p> : null}
       </SectionCard>
 
-      <SectionCard title="Cron Trigger" subtitle="Phase 6 cron workflow with secret validation">
-        <div className="filter-bar">
-          <label>
-            Cron Secret
-            <input
-              type="password"
-              value={cronSecret}
-              onChange={(event) => setCronSecret(event.target.value)}
-              placeholder="Enter CRON_SECRET"
-            />
-          </label>
-          <label>
-            Dry Run
-            <select value={String(cronDryRun)} onChange={(event) => setCronDryRun(event.target.value === 'true')}>
-              <option value="true">true</option>
-              <option value="false">false</option>
-            </select>
-          </label>
-          <label>
-            Run
-            <button
-              className="button"
-              type="button"
-              onClick={() =>
-                runAction(
-                  `/cron/newsletter/${audience}?tone=${encodeURIComponent(tone)}&dry_run=${cronDryRun ? 'true' : 'false'}&secret=${encodeURIComponent(cronSecret)}`,
-                  'GET',
-                )
-              }
-              disabled={loading || !cronSecret}
-            >
-              Trigger Cron Send
-            </button>
-          </label>
-        </div>
+      <SectionCard title="Cron Trigger" subtitle="Temporarily disabled">
+        <p>Cron newsletter trigger is disabled for now.</p>
       </SectionCard>
 
       <SectionCard title="Newsletter Preview" subtitle="Latest generated payload">
