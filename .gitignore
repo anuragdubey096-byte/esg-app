@@ -1,1 +1,23 @@
 .vercel
+
+# Frontend build artifacts
+client/dist/
+client/node_modules/
+
+# Python cache artifacts
+__pycache__/
+*.pyc
+
+# Runtime logs
+*.log
+*.err.log
+*.out.log
+run-logs/
+
+# Local env files
+.env
+.env.local
+server/.env.local
+
+# Generated exports/documents
+server/exports/
