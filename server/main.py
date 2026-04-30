@@ -134,6 +134,7 @@ NEWS_FEED_CACHE: dict[str, Any] = {
 
 app = FastAPI(title='ESG Data App')
 app.include_router(new_esg_router, prefix="/api/v2")
+app.include_router(__import__('routers.agent', fromlist=['router']).router)
 app.mount('/exports', StaticFiles(directory=EXPORT_DIR), name='exports')
 
 

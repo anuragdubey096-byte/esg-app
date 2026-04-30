@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Outlet, useLocation } from 'react-router-dom'
+import AgentChat from '../components/AgentChat/AgentChat'
 import Sidebar from '../components/Sidebar'
 import TopNavbar from '../components/TopNavbar'
 import { getDashboardTitle } from '../dashboardNavigation'
@@ -47,6 +48,7 @@ export default function AdminLayout({ user, onLogout, navItems }) {
         <main className="page-container">
           <Outlet context={{ user }} />
         </main>
+        <AgentChat user={user} />
       </div>
     </div>
   )
