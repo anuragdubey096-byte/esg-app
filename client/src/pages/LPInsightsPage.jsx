@@ -4,6 +4,7 @@ import SectionCard from '../components/SectionCard'
 import DataTable from '../components/DataTable'
 import KpiCard from '../components/KpiCard'
 import { API_BASE_URL } from '../lib/api'
+import useExternalContextFeed from '../hooks/useExternalContextFeed'
 
 const BACKEND_URL = API_BASE_URL
 
@@ -14,6 +15,7 @@ export default function LPInsightsPage() {
   const [reports, setReports] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const liveFeed = useExternalContextFeed({ user, limit: 8, enabled: Boolean(user) })
 
   useEffect(() => {
     let cancelled = false
@@ -127,6 +129,34 @@ export default function LPInsightsPage() {
       <SectionCard title="LP Reports Feed" subtitle="Available reporting documents">
         <p>Reports: {(reports?.available_reports || []).join(', ') || 'N/A'}</p>
         <p>Active cycle year: {reports?.active_cycle_year || 'N/A'}</p>
+      </SectionCard>
+
+      <SectionCard title="Live ESG News Feed" subtitle="Real-time external context for narratives and LP updates">
+        {liveFeed.loading ? <p>Loading latest ESG headlines...</p> : null}
+        {liveFeed.error ? <p>{liveFeed.error}</p> : null}
+        {!liveFeed.loading && !liveFeed.error ? (
+          <>
+            <p>
+              Sources online: {liveFeed.meta.source_count} | Mode: {liveFeed.meta.fallback_used ? 'fallback' : 'live'} | Updated:{' '}
+              {liveFeed.meta.generated_at || 'N/A'}
+            </p>
+            <ul className="mini-legend">
+              {(liveFeed.items || []).map((item) => (
+                <li key={item.id || `${item.title}-${item.published_at}`}>
+                  <span style={{ background: item.priority === 'high' ? '#dc2626' : '#2563eb' }} />
+                  {item.source_url ? (
+                    <a href={item.source_url} target="_blank" rel="noreferrer">
+                      {item.title || 'ESG update'}
+                    </a>
+                  ) : (
+                    <span>{item.title || 'ESG update'}</span>
+                  )}
+                  {item.source_label ? ` (${item.source_label})` : ''}
+                </li>
+              ))}
+            </ul>
+          </>
+        ) : null}
       </SectionCard>
     </div>
   )
