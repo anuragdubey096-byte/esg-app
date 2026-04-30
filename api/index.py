@@ -69,6 +69,7 @@ try:
     app = wrapper_app  # type: ignore[assignment]
 except Exception:
     # Keep API alive with critical fallback endpoints even if full app bootstrap fails.
+    BOOTSTRAP_ERROR = str(sys.exc_info()[1])
     app = FastAPI(title='ESG API Fallback')
 
     @app.get('/api/healthz')
@@ -78,6 +79,7 @@ except Exception:
             'status': 'degraded',
             'mode': 'fallback',
             'vercel': bool(os.getenv('VERCEL')),
+            'bootstrap_error': BOOTSTRAP_ERROR,
         }
 
     @app.get('/api/narrative/summary')
