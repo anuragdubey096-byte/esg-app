@@ -193,14 +193,40 @@ class ActionPlanCreateRequest(BaseModel):
     target_completion_date: str
     assigned_owner: str
 
+class CarbonBreakdownItem(BaseModel):
+    scope: str
+    category: str
+    activity: str
+    amount: float
+    unit: str
+    emission_factor_kg_per_unit: float
+    emissions_tco2e: float
+
 class GHGCalculatorRequest(BaseModel):
-    fuel_liters: float
-    electricity_kwh: float
+    # Legacy fields kept for compatibility.
+    fuel_liters: float = Field(default=0, ge=0)
+    electricity_kwh: float = Field(default=0, ge=0)
+    # Enhanced carbon calculator inputs.
+    natural_gas_kwh: float = Field(default=0, ge=0)
+    lpg_liters: float = Field(default=0, ge=0)
+    refrigerant_kg: float = Field(default=0, ge=0)
+    renewable_electricity_kwh: float = Field(default=0, ge=0)
+    grid_emission_factor_kg_per_kwh: Optional[float] = Field(default=None, ge=0)
+    business_travel_car_km: float = Field(default=0, ge=0)
+    business_travel_rail_km: float = Field(default=0, ge=0)
+    business_travel_flight_km: float = Field(default=0, ge=0)
+    waste_tonnes: float = Field(default=0, ge=0)
+    wastewater_m3: float = Field(default=0, ge=0)
 
 class GHGCalculatorResponse(BaseModel):
     scope_1_tco2e: float
     scope_2_tco2e: float
+    scope_2_market_tco2e: float
+    scope_3_tco2e: float
     total_tco2e: float
+    methodology_version: str
+    assumptions: List[str] = []
+    breakdown: List[CarbonBreakdownItem] = []
 
 class ReviewSubmissionRequest(BaseModel):
     reviewer_role: str

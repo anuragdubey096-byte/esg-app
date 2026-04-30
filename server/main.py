@@ -1192,15 +1192,180 @@ def create_action_plan(company_id: int, payload: ActionPlanCreateRequest, db: Se
     db.refresh(plan)
     return plan
 
+def _compute_carbon(payload: GHGCalculatorRequest) -> GHGCalculatorResponse:
+    factors = {
+        'diesel_liters': 2.68,  # kgCO2e per liter
+        'natural_gas_kwh': 0.183,  # kgCO2e per kWh
+        'lpg_liters': 1.51,  # kgCO2e per liter
+        'refrigerant_kg': 1430.0,  # kgCO2e per kg, R134a proxy
+        'grid_default_kwh': 0.5,  # kgCO2e per kWh
+        'travel_car_km': 0.171,  # kgCO2e per km
+        'travel_rail_km': 0.035,  # kgCO2e per km
+        'travel_flight_km': 0.146,  # kgCO2e per km
+        'waste_tonnes': 450.0,  # kgCO2e per tonne
+        'wastewater_m3': 0.708,  # kgCO2e per m3
+    }
+
+    grid_factor = payload.grid_emission_factor_kg_per_kwh
+    if grid_factor is None or grid_factor <= 0:
+        grid_factor = factors['grid_default_kwh']
+
+    electricity_total_kwh = max(float(payload.electricity_kwh or 0), 0.0)
+    renewable_kwh = max(float(payload.renewable_electricity_kwh or 0), 0.0)
+    renewable_kwh = min(renewable_kwh, electricity_total_kwh)
+    market_based_kwh = max(electricity_total_kwh - renewable_kwh, 0.0)
+
+    entries = [
+        {
+            'scope': 'Scope 1',
+            'category': 'Stationary Combustion',
+            'activity': 'Fuel (diesel/liquid fuel)',
+            'amount': max(float(payload.fuel_liters or 0), 0.0),
+            'unit': 'liters',
+            'factor': factors['diesel_liters'],
+        },
+        {
+            'scope': 'Scope 1',
+            'category': 'Stationary Combustion',
+            'activity': 'Natural Gas',
+            'amount': max(float(payload.natural_gas_kwh or 0), 0.0),
+            'unit': 'kWh',
+            'factor': factors['natural_gas_kwh'],
+        },
+        {
+            'scope': 'Scope 1',
+            'category': 'Stationary Combustion',
+            'activity': 'LPG',
+            'amount': max(float(payload.lpg_liters or 0), 0.0),
+            'unit': 'liters',
+            'factor': factors['lpg_liters'],
+        },
+        {
+            'scope': 'Scope 1',
+            'category': 'Fugitive Emissions',
+            'activity': 'Refrigerant Leakage',
+            'amount': max(float(payload.refrigerant_kg or 0), 0.0),
+            'unit': 'kg',
+            'factor': factors['refrigerant_kg'],
+        },
+        {
+            'scope': 'Scope 2 (Location)',
+            'category': 'Purchased Electricity',
+            'activity': 'Grid Electricity (location-based)',
+            'amount': electricity_total_kwh,
+            'unit': 'kWh',
+            'factor': grid_factor,
+        },
+        {
+            'scope': 'Scope 2 (Market)',
+            'category': 'Purchased Electricity',
+            'activity': 'Net Electricity after Renewable Procurement',
+            'amount': market_based_kwh,
+            'unit': 'kWh',
+            'factor': grid_factor,
+        },
+        {
+            'scope': 'Scope 3',
+            'category': 'Business Travel',
+            'activity': 'Travel by Car',
+            'amount': max(float(payload.business_travel_car_km or 0), 0.0),
+            'unit': 'km',
+            'factor': factors['travel_car_km'],
+        },
+        {
+            'scope': 'Scope 3',
+            'category': 'Business Travel',
+            'activity': 'Travel by Rail',
+            'amount': max(float(payload.business_travel_rail_km or 0), 0.0),
+            'unit': 'km',
+            'factor': factors['travel_rail_km'],
+        },
+        {
+            'scope': 'Scope 3',
+            'category': 'Business Travel',
+            'activity': 'Travel by Flight',
+            'amount': max(float(payload.business_travel_flight_km or 0), 0.0),
+            'unit': 'km',
+            'factor': factors['travel_flight_km'],
+        },
+        {
+            'scope': 'Scope 3',
+            'category': 'Waste',
+            'activity': 'Solid Waste',
+            'amount': max(float(payload.waste_tonnes or 0), 0.0),
+            'unit': 'tonnes',
+            'factor': factors['waste_tonnes'],
+        },
+        {
+            'scope': 'Scope 3',
+            'category': 'Wastewater',
+            'activity': 'Wastewater Treatment',
+            'amount': max(float(payload.wastewater_m3 or 0), 0.0),
+            'unit': 'm3',
+            'factor': factors['wastewater_m3'],
+        },
+    ]
+
+    breakdown = []
+    scope_1_kg = 0.0
+    scope_2_location_kg = 0.0
+    scope_2_market_kg = 0.0
+    scope_3_kg = 0.0
+
+    for entry in entries:
+        emissions_kg = float(entry['amount']) * float(entry['factor'])
+        scope = entry['scope']
+        if scope == 'Scope 1':
+            scope_1_kg += emissions_kg
+        elif scope == 'Scope 2 (Location)':
+            scope_2_location_kg += emissions_kg
+        elif scope == 'Scope 2 (Market)':
+            scope_2_market_kg += emissions_kg
+        elif scope == 'Scope 3':
+            scope_3_kg += emissions_kg
+
+        breakdown.append(
+            {
+                'scope': scope,
+                'category': entry['category'],
+                'activity': entry['activity'],
+                'amount': round(float(entry['amount']), 4),
+                'unit': entry['unit'],
+                'emission_factor_kg_per_unit': round(float(entry['factor']), 6),
+                'emissions_tco2e': round(emissions_kg / 1000.0, 6),
+            }
+        )
+
+    scope_1_tco2e = scope_1_kg / 1000.0
+    scope_2_location_tco2e = scope_2_location_kg / 1000.0
+    scope_2_market_tco2e = scope_2_market_kg / 1000.0
+    scope_3_tco2e = scope_3_kg / 1000.0
+    total_tco2e = scope_1_tco2e + scope_2_location_tco2e + scope_3_tco2e
+
+    return GHGCalculatorResponse(
+        scope_1_tco2e=round(scope_1_tco2e, 6),
+        scope_2_tco2e=round(scope_2_location_tco2e, 6),
+        scope_2_market_tco2e=round(scope_2_market_tco2e, 6),
+        scope_3_tco2e=round(scope_3_tco2e, 6),
+        total_tco2e=round(total_tco2e, 6),
+        methodology_version='carbon-calc-v2.0',
+        assumptions=[
+            'Location-based Scope 2 uses provided grid factor or default 0.5 kgCO2e/kWh.',
+            'Market-based Scope 2 adjusts purchased electricity by renewable procurement.',
+            'Scope 3 includes travel, waste, and wastewater categories included in this tool.',
+        ],
+        breakdown=breakdown,
+    )
+
+
 @app.post('/calculator/ghg', response_model=GHGCalculatorResponse)
 def calculate_ghg(payload: GHGCalculatorRequest):
-    scope_1 = payload.fuel_liters * 0.00268
-    scope_2 = payload.electricity_kwh * 0.0005
-    return GHGCalculatorResponse(
-        scope_1_tco2e=round(scope_1, 4),
-        scope_2_tco2e=round(scope_2, 4),
-        total_tco2e=round(scope_1 + scope_2, 4)
-    )
+    return _compute_carbon(payload)
+
+
+@app.post('/calculator/carbon', response_model=GHGCalculatorResponse)
+def calculate_carbon(payload: GHGCalculatorRequest):
+    return _compute_carbon(payload)
 
 @app.post('/company/{company_id}/upload-evidence')
 def upload_evidence(company_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):

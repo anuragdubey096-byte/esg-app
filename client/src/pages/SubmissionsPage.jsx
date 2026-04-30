@@ -182,6 +182,29 @@ function createPrefilledFormValues(company) {
   return base
 }
 
+function createInitialCarbonInputs() {
+  return {
+    fuel_liters: '',
+    natural_gas_kwh: '',
+    lpg_liters: '',
+    refrigerant_kg: '',
+    electricity_kwh: '',
+    renewable_electricity_kwh: '',
+    grid_emission_factor_kg_per_kwh: '',
+    business_travel_car_km: '',
+    business_travel_rail_km: '',
+    business_travel_flight_km: '',
+    waste_tonnes: '',
+    wastewater_m3: '',
+  }
+}
+
+function toCalculatorNumber(value) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed < 0) return 0
+  return parsed
+}
+
 export default function SubmissionsPage() {
   const { user } = useOutletContext()
   const navigate = useNavigate()
@@ -198,6 +221,10 @@ export default function SubmissionsPage() {
   const [activeTab, setActiveTab] = useState(ESG_FORM_SECTIONS.length ? ESG_FORM_SECTIONS[0].key : '')
   const [historicalContext, setHistoricalContext] = useState(null)
   const [historicalLoading, setHistoricalLoading] = useState(false)
+  const [carbonInputs, setCarbonInputs] = useState(createInitialCarbonInputs)
+  const [carbonResult, setCarbonResult] = useState(null)
+  const [carbonLoading, setCarbonLoading] = useState(false)
+  const [carbonError, setCarbonError] = useState('')
 
   const investorChartData = useMemo(() => {
     if (user?.role !== 'investor') return [];
@@ -449,6 +476,49 @@ export default function SubmissionsPage() {
     setFormValues((current) => ({ ...current, [name]: value }))
   }
 
+  const handleCarbonInputChange = (event) => {
+    const { name, value } = event.target
+    setCarbonInputs((current) => ({ ...current, [name]: value }))
+  }
+
+  const calculateAndApplyCarbon = async () => {
+    setCarbonLoading(true)
+    setCarbonError('')
+    setCarbonResult(null)
+
+    const payload = Object.fromEntries(
+      Object.entries(carbonInputs).map(([key, value]) => [key, toCalculatorNumber(value)])
+    )
+
+    try {
+      const response = await fetch(`${BACKEND_URL}/calculator/carbon`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      if (!response.ok) {
+        const errorPayload = await response.json().catch(() => ({}))
+        throw new Error(errorPayload.detail || `Carbon calculator failed (${response.status})`)
+      }
+
+      const data = await response.json()
+      setCarbonResult(data)
+      setFormValues((previous) => ({
+        ...previous,
+        scope_1_emissions: String(data.scope_1_tco2e ?? previous.scope_1_emissions ?? ''),
+        scope_2_location_based: String(data.scope_2_tco2e ?? previous.scope_2_location_based ?? ''),
+        scope_2_market_based: String(data.scope_2_market_tco2e ?? previous.scope_2_market_based ?? ''),
+        scope_3_emissions: String(data.scope_3_tco2e ?? previous.scope_3_emissions ?? ''),
+        total_ghg_emissions: String(data.total_tco2e ?? previous.total_ghg_emissions ?? ''),
+      }))
+      setFormMessage(`Carbon calculation applied. Total emissions: ${data.total_tco2e} tCO2e`)
+    } catch (calcError) {
+      setCarbonError(calcError.message || 'Carbon calculator failed')
+    } finally {
+      setCarbonLoading(false)
+    }
+  }
+
   useEffect(() => {
     let cancelled = false
     const loadHistoricalContext = async () => {
@@ -631,35 +701,115 @@ export default function SubmissionsPage() {
               )}
 
               <div className="rounded-xl border border-slate-200 bg-blue-50/50 p-4 workspace-panel workspace-panel-calculator">
-                <h4 className="mb-2 text-base font-semibold text-slate-800">Built-in GHG Calculator</h4>
-                <div className="flex flex-wrap items-end gap-4">
-                  <label className="flex-1 min-w-[150px]">
-                    <span className="block text-sm font-medium text-slate-700">Fuel (Liters)</span>
-                    <input type="number" id="calc_fuel" className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm mt-1" />
+                <h4 className="mb-2 text-base font-semibold text-slate-800">Built-in Carbon Calculator</h4>
+                <p className="mb-3 text-sm text-slate-600">
+                  Enter activity data to compute Scope 1, Scope 2 (location and market), and Scope 3 emissions.
+                </p>
+                <div className="grid gap-3 md:grid-cols-3">
+                  <label className="rounded-md border border-slate-200 bg-white p-2">
+                    <span className="block text-xs font-semibold uppercase text-slate-500">Fuel (Liters)</span>
+                    <input type="number" min="0" step="0.01" name="fuel_liters" value={carbonInputs.fuel_liters} onChange={handleCarbonInputChange} className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm mt-1" />
                   </label>
-                  <label className="flex-1 min-w-[150px]">
-                    <span className="block text-sm font-medium text-slate-700">Electricity (kWh)</span>
-                    <input type="number" id="calc_elec" className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm mt-1" />
+                  <label className="rounded-md border border-slate-200 bg-white p-2">
+                    <span className="block text-xs font-semibold uppercase text-slate-500">Natural Gas (kWh)</span>
+                    <input type="number" min="0" step="0.01" name="natural_gas_kwh" value={carbonInputs.natural_gas_kwh} onChange={handleCarbonInputChange} className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm mt-1" />
                   </label>
-                  <button type="button" className="button bg-blue-600 text-white" onClick={async () => {
-                    const fuel = parseFloat(document.getElementById('calc_fuel').value) || 0;
-                    const elec = parseFloat(document.getElementById('calc_elec').value) || 0;
-                    try {
-                      const res = await fetch(`${BACKEND_URL}/calculator/ghg`, {
-                        method: 'POST', headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ fuel_liters: fuel, electricity_kwh: elec })
-                      });
-                      const data = await res.json();
-                      setFormValues(prev => ({
-                        ...prev,
-                        scope_1_emissions: data.scope_1_tco2e.toString(),
-                        scope_2_location_based: data.scope_2_tco2e.toString(),
-                        total_ghg_emissions: data.total_tco2e.toString(),
-                      }));
-                      alert(`Calculated Total: ${data.total_tco2e} tCO2e`);
-                    } catch(e) { alert("Calculator error") }
-                  }}>Calculate & Apply</button>
+                  <label className="rounded-md border border-slate-200 bg-white p-2">
+                    <span className="block text-xs font-semibold uppercase text-slate-500">LPG (Liters)</span>
+                    <input type="number" min="0" step="0.01" name="lpg_liters" value={carbonInputs.lpg_liters} onChange={handleCarbonInputChange} className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm mt-1" />
+                  </label>
+                  <label className="rounded-md border border-slate-200 bg-white p-2">
+                    <span className="block text-xs font-semibold uppercase text-slate-500">Refrigerant Leakage (kg)</span>
+                    <input type="number" min="0" step="0.01" name="refrigerant_kg" value={carbonInputs.refrigerant_kg} onChange={handleCarbonInputChange} className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm mt-1" />
+                  </label>
+                  <label className="rounded-md border border-slate-200 bg-white p-2">
+                    <span className="block text-xs font-semibold uppercase text-slate-500">Electricity (kWh)</span>
+                    <input type="number" min="0" step="0.01" name="electricity_kwh" value={carbonInputs.electricity_kwh} onChange={handleCarbonInputChange} className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm mt-1" />
+                  </label>
+                  <label className="rounded-md border border-slate-200 bg-white p-2">
+                    <span className="block text-xs font-semibold uppercase text-slate-500">Renewable Electricity (kWh)</span>
+                    <input type="number" min="0" step="0.01" name="renewable_electricity_kwh" value={carbonInputs.renewable_electricity_kwh} onChange={handleCarbonInputChange} className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm mt-1" />
+                  </label>
+                  <label className="rounded-md border border-slate-200 bg-white p-2">
+                    <span className="block text-xs font-semibold uppercase text-slate-500">Grid Factor (kgCO2e/kWh)</span>
+                    <input type="number" min="0" step="0.0001" name="grid_emission_factor_kg_per_kwh" value={carbonInputs.grid_emission_factor_kg_per_kwh} onChange={handleCarbonInputChange} className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm mt-1" />
+                  </label>
+                  <label className="rounded-md border border-slate-200 bg-white p-2">
+                    <span className="block text-xs font-semibold uppercase text-slate-500">Travel by Car (km)</span>
+                    <input type="number" min="0" step="0.01" name="business_travel_car_km" value={carbonInputs.business_travel_car_km} onChange={handleCarbonInputChange} className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm mt-1" />
+                  </label>
+                  <label className="rounded-md border border-slate-200 bg-white p-2">
+                    <span className="block text-xs font-semibold uppercase text-slate-500">Travel by Rail (km)</span>
+                    <input type="number" min="0" step="0.01" name="business_travel_rail_km" value={carbonInputs.business_travel_rail_km} onChange={handleCarbonInputChange} className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm mt-1" />
+                  </label>
+                  <label className="rounded-md border border-slate-200 bg-white p-2">
+                    <span className="block text-xs font-semibold uppercase text-slate-500">Travel by Flight (km)</span>
+                    <input type="number" min="0" step="0.01" name="business_travel_flight_km" value={carbonInputs.business_travel_flight_km} onChange={handleCarbonInputChange} className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm mt-1" />
+                  </label>
+                  <label className="rounded-md border border-slate-200 bg-white p-2">
+                    <span className="block text-xs font-semibold uppercase text-slate-500">Waste (tonnes)</span>
+                    <input type="number" min="0" step="0.01" name="waste_tonnes" value={carbonInputs.waste_tonnes} onChange={handleCarbonInputChange} className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm mt-1" />
+                  </label>
+                  <label className="rounded-md border border-slate-200 bg-white p-2">
+                    <span className="block text-xs font-semibold uppercase text-slate-500">Wastewater (m3)</span>
+                    <input type="number" min="0" step="0.01" name="wastewater_m3" value={carbonInputs.wastewater_m3} onChange={handleCarbonInputChange} className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm mt-1" />
+                  </label>
                 </div>
+
+                <div className="mt-3 flex flex-wrap items-center gap-3">
+                  <button type="button" className="button bg-blue-600 text-white" onClick={calculateAndApplyCarbon} disabled={carbonLoading}>
+                    {carbonLoading ? 'Calculating...' : 'Calculate & Apply to Submission'}
+                  </button>
+                  <button
+                    type="button"
+                    className="button"
+                    onClick={() => {
+                      setCarbonInputs(createInitialCarbonInputs())
+                      setCarbonResult(null)
+                      setCarbonError('')
+                    }}
+                    disabled={carbonLoading}
+                  >
+                    Reset Calculator
+                  </button>
+                </div>
+
+                {carbonError ? <p className="mt-2 text-sm font-medium text-red-700">{carbonError}</p> : null}
+                {carbonResult ? (
+                  <div className="mt-3 rounded-lg border border-slate-200 bg-white p-3">
+                    <p className="text-sm font-semibold text-slate-800">
+                      Scope 1: {Number(carbonResult.scope_1_tco2e || 0).toFixed(4)} tCO2e | Scope 2 (Location): {Number(carbonResult.scope_2_tco2e || 0).toFixed(4)} tCO2e | Scope 2 (Market): {Number(carbonResult.scope_2_market_tco2e || 0).toFixed(4)} tCO2e | Scope 3: {Number(carbonResult.scope_3_tco2e || 0).toFixed(4)} tCO2e
+                    </p>
+                    <p className="text-sm font-bold text-slate-900 mt-1">Total: {Number(carbonResult.total_tco2e || 0).toFixed(4)} tCO2e</p>
+                    <p className="text-xs text-slate-500 mt-1">Method: {carbonResult.methodology_version || 'N/A'}</p>
+                    {Array.isArray(carbonResult.breakdown) && carbonResult.breakdown.length ? (
+                      <div className="mt-2 overflow-x-auto">
+                        <table className="data-table">
+                          <thead>
+                            <tr>
+                              <th>Scope</th>
+                              <th>Activity</th>
+                              <th>Amount</th>
+                              <th>Factor (kg/unit)</th>
+                              <th>Emissions (tCO2e)</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {carbonResult.breakdown.map((item) => (
+                              <tr key={`${item.scope}-${item.activity}`}>
+                                <td>{item.scope}</td>
+                                <td>{item.activity}</td>
+                                <td>{item.amount} {item.unit}</td>
+                                <td>{item.emission_factor_kg_per_unit}</td>
+                                <td>{Number(item.emissions_tco2e || 0).toFixed(6)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
 
               <div className="workspace-tabs flex overflow-x-auto border-b border-slate-200 mb-6 pb-2 gap-2">
