@@ -1787,7 +1787,8 @@ def _call_openai_narrative(prompt: str) -> dict | None:
                     'role': 'system',
                     'content': (
                         'Return strict JSON with keys: headline, summary, highlights, watchouts, recommendations. '
-                        'highlights/watchouts/recommendations must be arrays of short strings.'
+                        'The summary must be detailed, specific, and decision-useful (minimum 120 words). '
+                        'highlights/watchouts/recommendations must each be arrays of 3-5 specific strings.'
                     ),
                 },
                 {'role': 'user', 'content': prompt},
@@ -1811,7 +1812,10 @@ def _fallback_portfolio_narrative(analytics: dict) -> dict:
         'headline': 'Investor Portfolio ESG Summary',
         'summary': (
             f'Portfolio ESG score is {score:.1f} across {companies} companies with {approved} approved submissions. '
-            f'Focus remains on {top_sector} and consistency of approved data quality.'
+            f'Current operating performance suggests mixed maturity across the portfolio: reporting consistency is improving, '
+            f'but concentration in {top_sector} still creates outsized risk to aggregate results. '
+            f'Near-term execution should prioritize quality assurance on material metrics, faster closure of review comments, '
+            f'and clear accountability for remediation owners so approved data remains decision-grade for LP updates.'
         ),
         'highlights': [
             f"Portfolio ESG score: {score:.1f}/100",
@@ -1838,7 +1842,11 @@ def _fallback_company_narrative(company: Company, payload: dict, status_label: s
         'summary': (
             f'{company.name} is currently {status_label}. '
             f'Total GHG emissions are {total_ghg:.1f} tCO2e with a reduction target of {reduction:.1f}% and '
-            f'female representation at {female_rep:.1f}%.'
+            f'female representation at {female_rep:.1f}%. '
+            f'Operationally, this indicates the company has baseline ESG instrumentation in place, but data quality and '
+            f'control evidence should be reviewed before stakeholder distribution. '
+            f'The next reporting cycle should focus on improving confidence tags, closing validation warnings, and '
+            f'aligning claims with approved submission evidence so management and investor narratives remain audit-ready.'
         ),
         'highlights': [
             f"Current status: {status_label}",
@@ -1923,8 +1931,12 @@ def narrative_summary(
         status_label = normalize_status_label((latest_submission.status if latest_submission else target_company.current_status))
         fallback = _fallback_company_narrative(target_company, payload, status_label)
         prompt = (
-            f"Write a concise ESG company narrative for {target_company.name}.\n"
+            f"Write a detailed ESG company narrative for {target_company.name}.\n"
             f"Audience: {normalized_audience}. Tone: {tone}.\n"
+            "Requirements:\n"
+            "- Summary must be 120-220 words and include current performance, risk signals, and next-step actions.\n"
+            "- Tie conclusions to the provided data; do not use placeholders.\n"
+            "- Use clear management language suitable for review meetings.\n"
             f"Status: {status_label}\n"
             f"Key payload: {json.dumps(payload, default=str)[:5000]}"
         )
@@ -1950,8 +1962,13 @@ def narrative_summary(
     analytics = build_investor_analytics(db)
     fallback = _fallback_portfolio_narrative(analytics)
     prompt = (
-        "Write a concise portfolio ESG narrative for LP/investor audience.\n"
-        f"Tone: {tone}. Use these analytics: {json.dumps(analytics, default=str)[:7000]}"
+        "Write a detailed portfolio ESG narrative for LP/investor audience.\n"
+        f"Tone: {tone}.\n"
+        "Requirements:\n"
+        "- Summary must be 120-220 words and include portfolio performance, concentration risks, and execution priorities.\n"
+        "- Reference specific metrics from the analytics payload.\n"
+        "- Keep the narrative factual, board-ready, and decision-oriented.\n"
+        f"Use these analytics: {json.dumps(analytics, default=str)[:7000]}"
     )
     ai_payload = _call_openai_narrative(prompt)
     normalized_payload = _normalize_narrative_payload(ai_payload, fallback)
