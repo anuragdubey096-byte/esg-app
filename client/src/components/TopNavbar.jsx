@@ -1,9 +1,33 @@
+import { useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import useGlobalSearch from '../hooks/useGlobalSearch'
+
 function formatRoleLabel(role) {
   const value = String(role || 'manager').toLowerCase()
   return value.charAt(0).toUpperCase() + value.slice(1)
 }
 
 export default function TopNavbar({ title, user, onLogout, onMenuToggle }) {
+  const navigate = useNavigate()
+  const search = useGlobalSearch({ user, minChars: 2 })
+  const [searchOpen, setSearchOpen] = useState(false)
+
+  const visibleResults = useMemo(() => (search.results || []).slice(0, 8), [search.results])
+
+  const handlePickResult = (item) => {
+    if (item?.path) {
+      navigate(item.path)
+      setSearchOpen(false)
+      return
+    }
+    if (item?.type === 'ActionPlan') {
+      navigate('/action-plans')
+    } else if (item?.type === 'Company') {
+      navigate('/submissions')
+    }
+    setSearchOpen(false)
+  }
+
   return (
     <header className="top-navbar">
       <div className="brand-block">
@@ -18,10 +42,43 @@ export default function TopNavbar({ title, user, onLogout, onMenuToggle }) {
       </div>
 
       <div className="top-actions">
-        <label className="search-wrap" htmlFor="global-search">
-          <span>Search</span>
-          <input id="global-search" placeholder="Search company, metric, report..." />
-        </label>
+        <div className="search-panel">
+          <label className="search-wrap" htmlFor="global-search">
+            <span>Search</span>
+            <input
+              id="global-search"
+              placeholder="Search company, metric, report..."
+              value={search.query}
+              onChange={(event) => {
+                search.setQuery(event.target.value)
+                setSearchOpen(true)
+              }}
+              onFocus={() => setSearchOpen(true)}
+              onBlur={() => setTimeout(() => setSearchOpen(false), 120)}
+            />
+          </label>
+          {searchOpen && search.query.trim().length >= 2 ? (
+            <div className="search-results" role="listbox" aria-label="Global search results">
+              {search.loading ? <p>Searching...</p> : null}
+              {search.error ? <p>{search.error}</p> : null}
+              {!search.loading && !search.error && visibleResults.length === 0 ? (
+                <p>No matches found.</p>
+              ) : null}
+              {!search.loading && !search.error && visibleResults.length > 0 ? (
+                <ul>
+                  {visibleResults.map((item) => (
+                    <li key={`${item.type}-${item.id}`}>
+                      <button type="button" onMouseDown={() => handlePickResult(item)}>
+                        <strong>{item.title || item.name || 'Result'}</strong>
+                        <span>{item.subtitle || item.type || 'Result'}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
 
         <button className="icon-button" type="button" aria-label="Notifications">
           N

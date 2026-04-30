@@ -17,6 +17,7 @@ export default function ReportsPage() {
   const [message, setMessage] = useState('')
   const [download, setDownload] = useState(null)
   const [loading, setLoading] = useState(false)
+  const [lpFeed, setLpFeed] = useState(null)
 
   const portfolios = useMemo(() => ['All Portfolio Companies', ...companies.map((c) => c.name)], [companies])
   const periods = useMemo(() => {
@@ -55,11 +56,48 @@ export default function ReportsPage() {
     }
   }
 
+  const loadLpReports = async () => {
+    setLoading(true)
+    setMessage('Loading LP reports...')
+    try {
+      const response = await fetch(`${BACKEND_URL}/lp/reports`, {
+        headers: {
+          'x-user-role': user?.role || '',
+          'x-user-email': user?.email || '',
+        },
+      })
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}))
+        throw new Error(payload.detail || 'Failed to load LP reports')
+      }
+      const payload = await response.json()
+      setLpFeed(payload)
+      setMessage('LP reports feed loaded.')
+    } catch (error) {
+      setLpFeed(null)
+      setMessage(error.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
   return (
     <div className="page-grid">
       <SectionCard title="Reports" subtitle="Generate aligned reporting exports for LPs and internal committees">
         {user?.role !== 'manager' ? (
-          <p className="action-message">CSV/PDF exports are available to manager role only in V1.</p>
+          <div className="space-y-3">
+            <p className="action-message">Direct CSV/PDF export is manager-only. LP reports feed is available below.</p>
+            <button className="button" type="button" onClick={loadLpReports} disabled={loading}>
+              {loading ? 'Loading...' : 'Load LP Reports Feed'}
+            </button>
+            {lpFeed ? (
+              <div className="text-sm text-slate-700">
+                <p><strong>Available reports:</strong> {(lpFeed.available_reports || []).join(', ') || 'None'}</p>
+                <p><strong>Active cycle year:</strong> {lpFeed.active_cycle_year || 'N/A'}</p>
+                <p>{lpFeed.message || ''}</p>
+              </div>
+            ) : null}
+          </div>
         ) : null}
         <div className="framework-row">
           {reportFrameworks.map((item) => (

@@ -162,3 +162,51 @@ class ActionPlan(Base):
     status = Column(String, nullable=False, default='planned')
 
     company = relationship('Company', back_populates='action_plans')
+
+
+class NarrativeRecord(Base):
+    __tablename__ = 'narrative_records'
+
+    id = Column(Integer, primary_key=True, index=True)
+    audience = Column(String, nullable=False, default='lp')
+    scope = Column(String, nullable=False, default='portfolio')
+    tone = Column(String, nullable=False, default='board-ready')
+    status = Column(String, nullable=False, default='generated')
+    company_id = Column(Integer, nullable=True, index=True)
+    company_name = Column(String, nullable=True)
+
+    source_years = Column(Text, nullable=False, default='[]')
+    source_company_count = Column(Integer, nullable=False, default=0)
+    source_submission_count = Column(Integer, nullable=False, default=0)
+    latest_source_years = Column(Text, nullable=False, default='[]')
+    latest_source_company_count = Column(Integer, nullable=False, default=0)
+    latest_source_submission_count = Column(Integer, nullable=False, default=0)
+
+    provider = Column(String, nullable=False, default='fallback')
+    model = Column(String, nullable=True)
+    cached = Column(Boolean, nullable=False, default=False)
+    fallback_used = Column(Boolean, nullable=False, default=True)
+
+    freshness_status = Column(String, nullable=False, default='current')
+    freshness_label = Column(String, nullable=False, default='Current narrative')
+    freshness_reason = Column(Text, nullable=False, default='Narrative matches the latest approved data.')
+
+    generated_at = Column(String, nullable=False)
+    headline = Column(String, nullable=False, default='ESG narrative')
+    summary = Column(Text, nullable=False, default='')
+    highlights = Column(Text, nullable=False, default='[]')
+    watchouts = Column(Text, nullable=False, default='[]')
+    recommendations = Column(Text, nullable=False, default='[]')
+    message = Column(Text, nullable=True)
+    framework_tags = Column(Text, nullable=False, default='[]')
+
+    generated_payload = Column(Text, nullable=False, default='{}')
+    edited_payload = Column(Text, nullable=False, default='{}')
+    published_payload = Column(Text, nullable=False, default='{}')
+
+    approved_by_role = Column(String, nullable=True)
+    approved_at = Column(String, nullable=True)
+    edited_by_role = Column(String, nullable=True)
+    edited_at = Column(String, nullable=True)
+    updated_at = Column(String, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)

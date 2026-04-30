@@ -4,9 +4,12 @@ import ActionPlansPage from './pages/ActionPlansPage'
 import AdminSettingsPage from './pages/AdminSettingsPage'
 import AlertsRisksPage from './pages/AlertsRisksPage'
 import AnalyticsPage from './pages/AnalyticsPage'
+import AnomalyIntelPage from './pages/AnomalyIntelPage'
 import { getAllowedNavItems, getDefaultDashboardPath } from './dashboardNavigation'
 import InvestorAnalyticsPage from './pages/InvestorAnalyticsPage'
 import InvestorOverviewPage from './pages/InvestorOverviewPage'
+import LPInsightsPage from './pages/LPInsightsPage'
+import NewsletterOpsPage from './pages/NewsletterOpsPage'
 import OverviewPage from './pages/OverviewPage'
 import ReportsPage from './pages/ReportsPage'
 import ReviewHubPage from './pages/ReviewHubPage'
@@ -25,6 +28,9 @@ export default function Dashboard({ user, onLogout }) {
     '/alerts-risks': <AlertsRisksPage />,
     '/action-plans': <ActionPlansPage />,
     '/reports': <ReportsPage />,
+    '/lp-insights': <LPInsightsPage />,
+    '/newsletter-ops': <NewsletterOpsPage />,
+    '/anomaly-intel': <AnomalyIntelPage />,
     '/admin-settings': <AdminSettingsPage />,
   }
 

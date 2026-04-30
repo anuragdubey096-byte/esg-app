@@ -14,12 +14,14 @@ import {
 } from 'recharts'
 import SectionCard from '../components/SectionCard'
 import useDashboardData from '../hooks/useDashboardData'
+import useNewsletterPreview from '../hooks/useNewsletterPreview'
 import useNarrativeSummary from '../hooks/useNarrativeSummary'
 
 export default function InvestorAnalyticsPage() {
   const { user } = useOutletContext()
   const { summary, loading, error } = useDashboardData(user)
   const narrative = useNarrativeSummary({ user, audience: 'lp', tone: 'board-ready', enabled: Boolean(user) })
+  const newsletter = useNewsletterPreview({ user, audience: 'investor', tone: 'board-ready' })
 
   const analytics = summary || {}
 
@@ -78,6 +80,19 @@ export default function InvestorAnalyticsPage() {
             <h4>{narrative.data.headline || 'Portfolio Analytics Summary'}</h4>
             <p>{narrative.data.summary || 'No narrative summary available.'}</p>
           </>
+        ) : null}
+      </SectionCard>
+
+      <SectionCard title="Newsletter Preview" subtitle="Generate the latest LP newsletter draft from approved portfolio data">
+        <button className="button" type="button" onClick={newsletter.generate} disabled={newsletter.loading}>
+          {newsletter.loading ? 'Generating...' : 'Generate Newsletter Preview'}
+        </button>
+        {newsletter.error ? <p>{newsletter.error}</p> : null}
+        {newsletter.data ? (
+          <div className="mt-3 space-y-2 text-sm text-slate-700">
+            <p><strong>{newsletter.data.subject_line || 'Portfolio newsletter'}</strong></p>
+            <p>{newsletter.data.summary || 'No summary available.'}</p>
+          </div>
         ) : null}
       </SectionCard>
 

@@ -17,6 +17,8 @@ import DataTable from '../components/DataTable'
 import KpiCard from '../components/KpiCard'
 import SectionCard from '../components/SectionCard'
 import useDashboardData from '../hooks/useDashboardData'
+import useLiveActivity from '../hooks/useLiveActivity'
+import useNarrativeHistory from '../hooks/useNarrativeHistory'
 import useNarrativeSummary from '../hooks/useNarrativeSummary'
 
 const funnelColors = {
@@ -31,6 +33,17 @@ export default function InvestorOverviewPage() {
   const { user } = useOutletContext()
   const { summary, loading, error } = useDashboardData(user)
   const narrative = useNarrativeSummary({ user, audience: 'lp', tone: 'investor-ready', enabled: Boolean(user) })
+  const narrativeHistory = useNarrativeHistory({ user, audience: 'lp', limit: 5, enabled: Boolean(user) })
+  const liveActivity = useLiveActivity({ user, limit: 6, enabled: Boolean(user) })
+  const liveSocketBadge = useMemo(() => {
+    if (liveActivity.connectionStatus === 'connected') {
+      return { label: 'Connected', className: 'status-good' }
+    }
+    if (liveActivity.connectionStatus === 'error') {
+      return { label: 'Connection Error', className: 'status-critical' }
+    }
+    return { label: 'Reconnecting', className: 'status-warning' }
+  }, [liveActivity.connectionStatus])
 
   const analytics = summary || {}
   const scoreBreakdown = analytics.score_breakdown || { E: 0, S: 0, G: 0 }
@@ -182,6 +195,42 @@ export default function InvestorOverviewPage() {
             pageSize={8}
             emptyMessage="No performance ranking data available."
           />
+        </SectionCard>
+      </section>
+
+      <section className="two-col-grid">
+        <SectionCard title="Narrative History" subtitle="Recent generated portfolio narratives">
+          {narrativeHistory.loading ? <p>Loading narrative history...</p> : null}
+          {narrativeHistory.error ? <p>{narrativeHistory.error}</p> : null}
+          {!narrativeHistory.loading && !narrativeHistory.error ? (
+            <ul className="space-y-2 text-sm text-slate-700">
+              {(narrativeHistory.items || []).slice(0, 5).map((item) => (
+                <li key={item.narrative_id}>
+                  <strong>{item.headline || 'Portfolio narrative'}</strong>
+                  <p>{item.summary || 'No summary available.'}</p>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </SectionCard>
+
+        <SectionCard
+          title="Live Activity"
+          subtitle="Latest portfolio events and submission updates"
+          actions={<span className={`status-badge ${liveSocketBadge.className}`}>{liveSocketBadge.label}</span>}
+        >
+          {liveActivity.loading ? <p>Loading live activity...</p> : null}
+          {liveActivity.error ? <p>{liveActivity.error}</p> : null}
+          {!liveActivity.loading && !liveActivity.error ? (
+            <ul className="space-y-2 text-sm text-slate-700">
+              {(liveActivity.events || []).slice(0, 6).map((event) => (
+                <li key={event.id}>
+                  <strong>{event.title || 'Activity update'}</strong>
+                  <p>{event.message || 'No message provided.'}</p>
+                </li>
+              ))}
+            </ul>
+          ) : null}
         </SectionCard>
       </section>
     </div>

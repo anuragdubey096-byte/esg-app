@@ -49,6 +49,27 @@ const NAV_ITEMS = [
     roles: ['manager', 'investor', 'company'],
   },
   {
+    to: '/lp-insights',
+    label: 'LP Insights',
+    icon: 'L',
+    title: 'LP Insights Dashboard',
+    roles: ['investor'],
+  },
+  {
+    to: '/newsletter-ops',
+    label: 'Newsletter Ops',
+    icon: 'N',
+    title: 'Newsletter Operations',
+    roles: ['manager', 'investor'],
+  },
+  {
+    to: '/anomaly-intel',
+    label: 'Anomaly Intel',
+    icon: 'X',
+    title: 'Anomaly Intelligence',
+    roles: ['manager', 'investor', 'company'],
+  },
+  {
     to: '/admin-settings',
     label: 'Cycle Config',
     icon: 'T',
