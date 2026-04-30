@@ -1815,7 +1815,11 @@ def _fallback_portfolio_narrative(analytics: dict) -> dict:
             f'Current operating performance suggests mixed maturity across the portfolio: reporting consistency is improving, '
             f'but concentration in {top_sector} still creates outsized risk to aggregate results. '
             f'Near-term execution should prioritize quality assurance on material metrics, faster closure of review comments, '
-            f'and clear accountability for remediation owners so approved data remains decision-grade for LP updates.'
+            f'and clear accountability for remediation owners so approved data remains decision-grade for LP updates. '
+            f'In practice, this means setting weekly close-out targets for unresolved validation flags, requiring confidence-tag evidence '
+            f'for all material emissions and governance indicators, and aligning portfolio companies to a common remediation cadence. '
+            f'Management should track sector-level variance and exception trends in monthly operating reviews, then convert recurring issues '
+            f'into specific owner-led action plans with deadlines before the next investor communication cycle.'
         ),
         'highlights': [
             f"Portfolio ESG score: {score:.1f}/100",
@@ -1846,7 +1850,11 @@ def _fallback_company_narrative(company: Company, payload: dict, status_label: s
             f'Operationally, this indicates the company has baseline ESG instrumentation in place, but data quality and '
             f'control evidence should be reviewed before stakeholder distribution. '
             f'The next reporting cycle should focus on improving confidence tags, closing validation warnings, and '
-            f'aligning claims with approved submission evidence so management and investor narratives remain audit-ready.'
+            f'aligning claims with approved submission evidence so management and investor narratives remain audit-ready. '
+            f'Execution should include explicit ownership of unresolved data points, a short-cycle validation checklist before submission lock, '
+            f'and documented reconciliation for any metric drift versus prior periods. '
+            f'Leadership updates should separate confirmed performance progress from provisional estimates, so board and investor narratives '
+            f'reflect verified outcomes and clearly scoped near-term corrective actions.'
         ),
         'highlights': [
             f"Current status: {status_label}",
@@ -1874,9 +1882,28 @@ def _normalize_narrative_payload(payload: dict | None, fallback: dict) -> dict:
                 return items[:5]
         return list(fallback.get(key) or [])
 
+    def _word_count(text: str) -> int:
+        return len([part for part in text.split() if part.strip()])
+
+    def _detailed_summary(candidate: str, fallback_summary: str) -> str:
+        candidate_clean = str(candidate or '').strip()
+        fallback_clean = str(fallback_summary or '').strip()
+        if _word_count(candidate_clean) >= 120:
+            return candidate_clean
+        if _word_count(fallback_clean) >= 120:
+            return fallback_clean
+        if candidate_clean and fallback_clean and candidate_clean != fallback_clean:
+            merged = f'{candidate_clean} {fallback_clean}'.strip()
+            if _word_count(merged) >= 120:
+                return merged
+        return candidate_clean or fallback_clean
+
     return {
         'headline': str(source.get('headline') or fallback.get('headline') or '').strip(),
-        'summary': str(source.get('summary') or fallback.get('summary') or '').strip(),
+        'summary': _detailed_summary(
+            str(source.get('summary') or ''),
+            str(fallback.get('summary') or ''),
+        ),
         'highlights': _list_value('highlights'),
         'watchouts': _list_value('watchouts'),
         'recommendations': _list_value('recommendations'),
