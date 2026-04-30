@@ -81,6 +81,7 @@ function buildCommentKey(companyId, metricKey) {
 export default function ReviewHubPage() {
   const { user } = useOutletContext()
   const { companies, refresh } = useDashboardData(user)
+  const canAdminValidate = ['manager', 'admin'].includes(String(user?.role || '').trim().toLowerCase())
   const [selectedCompanyId, setSelectedCompanyId] = useState(null)
   const [actionMessage, setActionMessage] = useState('')
   const [metricCommentsByCell, setMetricCommentsByCell] = useState({})
@@ -164,6 +165,7 @@ export default function ReviewHubPage() {
         return {
           id: index + 1,
           commentKey: buildCommentKey(selectedCompany.id, field.key),
+          fieldKey: field.key,
           metric: field.label,
           value: normalizeValue(rawValue),
           validation: mostSevereFlag ? toValidationFromSeverity(mostSevereFlag.severity) : 'Pass',
@@ -180,6 +182,7 @@ export default function ReviewHubPage() {
       rows.push({
         id: rows.length + 1,
         commentKey: buildCommentKey(selectedCompany.id, fieldName),
+        fieldKey: fieldName,
         metric: toMetricLabel(fieldName),
         value: normalizeValue(payloadForValidation[fieldName]),
         validation: toValidationFromSeverity(firstFlag.severity),
@@ -193,6 +196,7 @@ export default function ReviewHubPage() {
       return checks.checks.map((check, index) => ({
         id: index + 1,
         commentKey: buildCommentKey(selectedCompany.id, check.label),
+        fieldKey: null,
         metric: check.label,
         value: check.message,
         validation: check.status === 'fail' ? 'Fail' : check.status === 'warning' ? 'Warning' : 'Pass',
@@ -266,6 +270,36 @@ export default function ReviewHubPage() {
     await handleReviewAction(currentStatus, 'Reviewer comment saved.', trimmed)
   }
 
+  const handleValidationDecision = async (row, decision) => {
+    if (!selectedCompany.submissionId) {
+      setActionMessage('No submission is selected for validation decision.')
+      return
+    }
+    if (!row?.fieldKey) {
+      setActionMessage('This row does not have a mappable field key.')
+      return
+    }
+
+    let comment = ''
+    if (decision === 'fail') {
+      const prompted = window.prompt('Optional fail reason for this metric', '')
+      if (prompted === null) return
+      comment = prompted.trim()
+    }
+
+    try {
+      await managerPost(`/submissions/${selectedCompany.submissionId}/validation-decision`, 'POST', {
+        field_name: row.fieldKey,
+        decision,
+        comment,
+      })
+      await refresh()
+      setActionMessage(`Validation marked as ${decision.toUpperCase()} for ${row.metric}.`)
+    } catch (error) {
+      setActionMessage(error.message || 'Unable to save validation decision right now.')
+    }
+  }
+
   const columns = [
     { key: 'metric', label: 'Metric', sortable: true },
     { key: 'value', label: 'Value', sortable: false },
@@ -283,6 +317,32 @@ export default function ReviewHubPage() {
           placeholder="Add comment"
           autoComplete="off"
         />
+      ),
+    },
+    {
+      key: 'validationActions',
+      label: 'Pass / Fail',
+      render: (row) => (
+        canAdminValidate ? (
+          <div className="inline-flex gap-2">
+            <button
+              type="button"
+              className="button text-xs"
+              onClick={() => handleValidationDecision(row, 'pass')}
+              disabled={!selectedCompany.submissionId || !row.fieldKey}
+            >
+              Pass
+            </button>
+            <button
+              type="button"
+              className="button warning text-xs"
+              onClick={() => handleValidationDecision(row, 'fail')}
+              disabled={!selectedCompany.submissionId || !row.fieldKey}
+            >
+              Fail
+            </button>
+          </div>
+        ) : <span>-</span>
       ),
     },
   ]

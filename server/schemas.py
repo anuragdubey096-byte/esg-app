@@ -225,6 +225,12 @@ class ValidationFlagInfo(BaseModel):
     class Config:
         from_attributes = True
 
+
+class ValidationDecisionRequest(BaseModel):
+    field_name: str
+    decision: str
+    comment: Optional[str] = None
+
 class CompanyDetail(BaseModel):
     id: int
     name: str

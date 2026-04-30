@@ -49,6 +49,7 @@ from schemas import (
     GHGCalculatorRequest,
     GHGCalculatorResponse,
     ReviewSubmissionRequest,
+    ValidationDecisionRequest,
     InvestorSummary,
     InvestorDashboardResponse,
     LoginRequest,
@@ -1126,6 +1127,73 @@ def validate_submission(submission_id: int, db: Session = Depends(get_db)):
 
     db.commit()
     return {"message": f"Validation complete. {flags_created} anomalies flagged.", "flagged": flags_created > 0}
+
+
+@app.post('/submissions/{submission_id}/validation-decision', dependencies=[Depends(require_manager)])
+def set_validation_decision(
+    submission_id: int,
+    payload: ValidationDecisionRequest,
+    db: Session = Depends(get_db),
+):
+    submission = db.query(Submission).filter(Submission.id == submission_id).first()
+    if not submission:
+        raise HTTPException(status_code=404, detail='Submission not found')
+
+    field_name = str(payload.field_name or '').strip()
+    if not field_name:
+        raise HTTPException(status_code=400, detail='field_name is required')
+
+    decision = str(payload.decision or '').strip().lower()
+    if decision not in {'pass', 'fail'}:
+        raise HTTPException(status_code=400, detail='decision must be pass or fail')
+
+    reporting_year = submission.cycle.cycle_year if submission.cycle else datetime.utcnow().year
+
+    existing_flags = (
+        db.query(ValidationFlag)
+        .filter(
+            ValidationFlag.company_id == submission.company_id,
+            ValidationFlag.reporting_year == reporting_year,
+            ValidationFlag.field_name == field_name,
+        )
+        .all()
+    )
+    for flag in existing_flags:
+        db.delete(flag)
+
+    if decision == 'pass':
+        db.add(
+            ValidationFlag(
+                company_id=submission.company_id,
+                reporting_year=reporting_year,
+                flag_type='Manual Validation',
+                field_name=field_name,
+                issue_description='Admin marked this metric as Pass.',
+                severity='Info',
+            )
+        )
+    else:
+        fail_comment = str(payload.comment or '').strip() or 'Admin manually marked this metric as Fail.'
+        db.add(
+            ValidationFlag(
+                company_id=submission.company_id,
+                reporting_year=reporting_year,
+                flag_type='Manual Validation',
+                field_name=field_name,
+                issue_description=fail_comment,
+                severity='High',
+            )
+        )
+
+    db.commit()
+    return {
+        'message': f'Validation decision recorded as {decision.upper()}.',
+        'submission_id': submission_id,
+        'company_id': submission.company_id,
+        'reporting_year': reporting_year,
+        'field_name': field_name,
+        'decision': decision,
+    }
 
 def parse_date_string(date_string: str | None):
     if not date_string:
@@ -3445,7 +3513,13 @@ def external_context_feed(limit: int = Query(default=12, ge=3, le=30)):
 
 @app.get('/anomalies/summary', dependencies=[Depends(require_manager_or_investor)])
 def anomalies_summary(db: Session = Depends(get_db)):
-    flags = db.query(ValidationFlag).order_by(ValidationFlag.id.desc()).limit(100).all()
+    flags = (
+        db.query(ValidationFlag)
+        .filter(func.lower(ValidationFlag.severity) != 'info')
+        .order_by(ValidationFlag.id.desc())
+        .limit(100)
+        .all()
+    )
     severity_counts = {'high': 0, 'medium': 0, 'low': 0}
     items = []
     for flag in flags:
@@ -3489,6 +3563,7 @@ def company_anomalies(
     flags = (
         db.query(ValidationFlag)
         .filter(ValidationFlag.company_id == target_company.id)
+        .filter(func.lower(ValidationFlag.severity) != 'info')
         .order_by(ValidationFlag.id.desc())
         .limit(50)
         .all()
