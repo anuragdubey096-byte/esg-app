@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import {
   Bar,
@@ -15,55 +15,281 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
+import DataTable from '../components/DataTable'
+import KpiCard from '../components/KpiCard'
 import SectionCard from '../components/SectionCard'
 import useDashboardData, { getLatestSubmission, parseSubmissionPayload } from '../hooks/useDashboardData'
 
-const analyticsTabs = ['Environmental', 'Social', 'Governance']
+const analyticsTabs = ['Environmental', 'Social', 'Governance', 'Benchmarking']
+
+function toNumber(value) {
+  if (value === null || value === undefined || value === '') return 0
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function toAverage(total, count) {
+  if (!count) return 0
+  return total / count
+}
+
+function toPct(value) {
+  return Math.max(0, Math.min(100, Number(value || 0)))
+}
+
+function clamp(value, min = 0, max = 100) {
+  return Math.max(min, Math.min(max, value))
+}
+
+function isYes(value) {
+  return String(value || '').trim().toLowerCase() === 'yes'
+}
+
+function firstMeaningfulNumber(...values) {
+  for (const value of values) {
+    const parsed = Number(value)
+    if (Number.isFinite(parsed)) return parsed
+  }
+  return 0
+}
 
 export default function AnalyticsPage() {
   const { user } = useOutletContext()
-  const { companies } = useDashboardData(user)
+  const { companies, loading, error } = useDashboardData(user)
   const [activeTab, setActiveTab] = useState(analyticsTabs[0])
 
-  const { emissionsData, energyData, trifrData, diversityData, governanceData } = useMemo(() => {
-    let energy = 0, renewable = 0, female = 0, count = 0
-    let esgYes = 0, whsYes = 0, cyberYes = 0
-    
-    companies.forEach(c => {
-      const payload = parseSubmissionPayload(getLatestSubmission(c))
-      if (payload) {
-        energy += payload.total_energy_consumption || 0
-        renewable += payload.renewable_energy_consumption || 0
-        female += payload.female_representation_percent || 0
-        if (payload.esg_policy_in_place === 'Yes') esgYes++
-        if (payload.whs_policy_in_place === 'Yes') whsYes++
-        if (payload.cybersecurity_policy_in_place === 'Yes') cyberYes++
-        count++
+  const analytics = useMemo(() => {
+    const records = companies
+      .map((company) => {
+        const latestSubmission = getLatestSubmission(company)
+        const payload = parseSubmissionPayload(latestSubmission)
+        if (!payload || typeof payload !== 'object') return null
+        return {
+          companyId: company.id,
+          companyName: company.name,
+          sector: company.sector || 'Unassigned',
+          payload,
+        }
+      })
+      .filter(Boolean)
+
+    const sectorMap = new Map()
+    const emissionsScopeTotals = { scope1: 0, scope2: 0, scope3: 0 }
+    let totalEnergy = 0
+    let renewableEnergy = 0
+    let totalFemaleRep = 0
+    let totalFemaleLeadership = 0
+    let totalTRIFR = 0
+    let totalIndependentBoard = 0
+    let policyChecks = 0
+    let policyYes = 0
+    let measuredConfidence = 0
+    let totalConfidence = 0
+
+    const benchmarkRows = records.map((record) => {
+      const payload = record.payload
+      const scope1 = toNumber(payload.scope_1_emissions)
+      const scope2 = firstMeaningfulNumber(payload.scope_2_location_based, payload.scope_2_market_based)
+      const scope3 = toNumber(payload.scope_3_emissions)
+      const emissions = firstMeaningfulNumber(payload.total_ghg_emissions, scope1 + scope2 + scope3)
+      const energy = toNumber(payload.total_energy_consumption)
+      const renewable = toNumber(payload.renewable_energy_consumption)
+      const water = toNumber(payload.total_water_withdrawal)
+      const waste = toNumber(payload.total_waste_generated)
+      const trifr = toNumber(payload.trifr)
+      const turnover = toNumber(payload.employee_turnover_rate)
+      const femaleRep = toPct(payload.female_representation_percent)
+      const femaleLeadership = toPct(payload.female_leadership_representation_percent)
+      const independentBoard = toPct(payload.independent_board_members_percent)
+      const boardFemale = toPct(payload.female_board_members_percent)
+      const employees = toNumber(payload.total_employees_fte)
+      const reductionTarget = toPct(payload.reduction_target_percent)
+
+      const policyFields = [
+        payload.esg_policy_in_place,
+        payload.whs_policy_in_place,
+        payload.cybersecurity_policy_in_place,
+        payload.board_level_esg_oversight,
+      ]
+      const policyYesCount = policyFields.filter((value) => isYes(value)).length
+      const policyScore = (policyYesCount / policyFields.length) * 100
+      const renewableShare = energy > 0 ? (renewable / energy) * 100 : 0
+      const emissionsIntensity = employees > 0 ? emissions / employees : 0
+      const environmentScore = clamp((renewableShare * 0.45) + (reductionTarget * 0.35) + Math.max(0, 30 - (emissions / 9000) * 10))
+      const socialScore = clamp((femaleRep * 0.32) + (femaleLeadership * 0.28) + Math.max(0, 24 - trifr * 5) + Math.max(0, 16 - turnover * 0.45))
+      const governanceScore = clamp((policyScore * 0.72) + (independentBoard * 0.2) + (boardFemale * 0.08))
+      const compositeScore = clamp((environmentScore * 0.45) + (socialScore * 0.3) + (governanceScore * 0.25))
+
+      emissionsScopeTotals.scope1 += scope1
+      emissionsScopeTotals.scope2 += scope2
+      emissionsScopeTotals.scope3 += scope3
+      totalEnergy += energy
+      renewableEnergy += renewable
+      totalFemaleRep += femaleRep
+      totalFemaleLeadership += femaleLeadership
+      totalTRIFR += trifr
+      totalIndependentBoard += independentBoard
+      policyChecks += policyFields.length
+      policyYes += policyYesCount
+
+      Object.keys(payload).forEach((key) => {
+        if (!key.endsWith('_confidence')) return
+        totalConfidence += 1
+        if (String(payload[key] || '').trim().toLowerCase() === 'measured') measuredConfidence += 1
+      })
+
+      const sectorKey = record.sector
+      if (!sectorMap.has(sectorKey)) {
+        sectorMap.set(sectorKey, {
+          sector: sectorKey,
+          companies: 0,
+          scope1: 0,
+          scope2: 0,
+          scope3: 0,
+          energy: 0,
+          water: 0,
+          waste: 0,
+          trifrTotal: 0,
+          femaleRepTotal: 0,
+          femaleLeadershipTotal: 0,
+          governanceYes: 0,
+          governanceChecks: 0,
+          emissionsIntensityTotal: 0,
+          emissionsIntensityCount: 0,
+        })
+      }
+      const sector = sectorMap.get(sectorKey)
+      sector.companies += 1
+      sector.scope1 += scope1
+      sector.scope2 += scope2
+      sector.scope3 += scope3
+      sector.energy += energy
+      sector.water += water
+      sector.waste += waste
+      sector.trifrTotal += trifr
+      sector.femaleRepTotal += femaleRep
+      sector.femaleLeadershipTotal += femaleLeadership
+      sector.governanceYes += policyYesCount
+      sector.governanceChecks += policyFields.length
+      if (emissionsIntensity > 0) {
+        sector.emissionsIntensityTotal += emissionsIntensity
+        sector.emissionsIntensityCount += 1
+      }
+
+      return {
+        id: record.companyId,
+        company: record.companyName,
+        sector: record.sector,
+        compositeScore: Number(compositeScore.toFixed(1)),
+        environmentScore: Number(environmentScore.toFixed(1)),
+        socialScore: Number(socialScore.toFixed(1)),
+        governanceScore: Number(governanceScore.toFixed(1)),
+        emissions: Number(emissions.toFixed(2)),
+        emissionsIntensity: Number(emissionsIntensity.toFixed(3)),
+        renewableShare: Number(renewableShare.toFixed(1)),
+        femaleLeadership: Number(femaleLeadership.toFixed(1)),
+        independentBoard: Number(independentBoard.toFixed(1)),
       }
     })
 
-    const validCount = count || 1
+    const sectorRows = Array.from(sectorMap.values()).map((item) => {
+      const totalSectorEmissions = item.scope1 + item.scope2 + item.scope3
+      return {
+        sector: item.sector,
+        scope1: Number(item.scope1.toFixed(2)),
+        scope2: Number(item.scope2.toFixed(2)),
+        scope3: Number(item.scope3.toFixed(2)),
+        totalEmissions: Number(totalSectorEmissions.toFixed(2)),
+        avgTRIFR: Number(toAverage(item.trifrTotal, item.companies).toFixed(2)),
+        avgFemaleRep: Number(toAverage(item.femaleRepTotal, item.companies).toFixed(1)),
+        avgFemaleLeadership: Number(toAverage(item.femaleLeadershipTotal, item.companies).toFixed(1)),
+        governanceAdoption: Number(
+          (item.governanceChecks ? (item.governanceYes / item.governanceChecks) * 100 : 0).toFixed(1)
+        ),
+        avgIntensity: Number(
+          toAverage(item.emissionsIntensityTotal, item.emissionsIntensityCount || item.companies).toFixed(3)
+        ),
+      }
+    })
+
+    const scopeMixData = [
+      { name: 'Scope 1', value: Number(emissionsScopeTotals.scope1.toFixed(2)), color: '#0f766e' },
+      { name: 'Scope 2', value: Number(emissionsScopeTotals.scope2.toFixed(2)), color: '#0284c7' },
+      { name: 'Scope 3', value: Number(emissionsScopeTotals.scope3.toFixed(2)), color: '#f97316' },
+    ]
+
+    const workforceMix = [
+      { name: 'Women', value: Number(toAverage(totalFemaleRep, records.length).toFixed(1)), color: '#ec4899' },
+      { name: 'Other', value: Number((100 - toAverage(totalFemaleRep, records.length)).toFixed(1)), color: '#3b82f6' },
+    ]
+
+    const boardMix = [
+      { name: 'Independent Board', value: Number(toAverage(totalIndependentBoard, records.length).toFixed(1)), color: '#0ea5e9' },
+      { name: 'Non-Independent', value: Number((100 - toAverage(totalIndependentBoard, records.length)).toFixed(1)), color: '#94a3b8' },
+    ]
+
+    const riskTierData = [
+      { name: 'Strong', value: benchmarkRows.filter((row) => row.compositeScore >= 75).length, color: '#16a34a' },
+      { name: 'Watchlist', value: benchmarkRows.filter((row) => row.compositeScore >= 55 && row.compositeScore < 75).length, color: '#d97706' },
+      { name: 'At Risk', value: benchmarkRows.filter((row) => row.compositeScore < 55).length, color: '#dc2626' },
+    ]
 
     return {
-      emissionsData: companies.map(c => {
-        const p = parseSubmissionPayload(getLatestSubmission(c))
-        return { name: c.name, scope1: p?.scope_1_emissions || 0, scope2: p?.scope_2_location_based || 0, scope3: p?.scope_3_emissions || 0 }
-      }),
-      energyData: [{ source: 'Renewable', value: renewable }, { source: 'Non-Renewable', value: Math.max(0, energy - renewable) }],
-      trifrData: companies.map(c => {
-         const p = parseSubmissionPayload(getLatestSubmission(c))
-         return { name: c.name, trifr: p?.trifr || 0 }
-      }),
-      diversityData: [{ name: 'Female', value: Math.round(female / validCount), color: '#ec4899' }, { name: 'Male', value: 100 - Math.round(female / validCount), color: '#3b82f6' }].filter(d => d.value > 0),
-      governanceData: [{ policy: 'ESG Policy', adoption: Math.round((esgYes / validCount) * 100) }, { policy: 'WHS Policy', adoption: Math.round((whsYes / validCount) * 100) }, { policy: 'Cyber Policy', adoption: Math.round((cyberYes / validCount) * 100) }]
+      totalCompanies: companies.length,
+      reportingCompanies: records.length,
+      avgTRIFR: Number(toAverage(totalTRIFR, records.length).toFixed(2)),
+      totalEmissions: Number((emissionsScopeTotals.scope1 + emissionsScopeTotals.scope2 + emissionsScopeTotals.scope3).toFixed(2)),
+      renewableShare: Number((totalEnergy > 0 ? (renewableEnergy / totalEnergy) * 100 : 0).toFixed(1)),
+      avgFemaleRep: Number(toAverage(totalFemaleRep, records.length).toFixed(1)),
+      avgFemaleLeadership: Number(toAverage(totalFemaleLeadership, records.length).toFixed(1)),
+      governanceAdoption: Number((policyChecks ? (policyYes / policyChecks) * 100 : 0).toFixed(1)),
+      confidenceMeasured: Number((totalConfidence ? (measuredConfidence / totalConfidence) * 100 : 0).toFixed(1)),
+      sectorRows: sectorRows.sort((left, right) => right.totalEmissions - left.totalEmissions),
+      scopeMixData,
+      workforceMix,
+      boardMix,
+      riskTierData,
+      topBenchmarkRows: [...benchmarkRows].sort((left, right) => right.compositeScore - left.compositeScore).slice(0, 10),
+      benchmarkRows,
     }
   }, [companies])
 
+  if (loading) {
+    return (
+      <div className="page-grid">
+        <SectionCard title="Admin Analytics" subtitle="Loading analytics from latest submissions...">
+          <p>Loading data from backend.</p>
+        </SectionCard>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="page-grid">
+        <SectionCard title="Admin Analytics" subtitle="Live data unavailable">
+          <p>{error}</p>
+        </SectionCard>
+      </div>
+    )
+  }
+
   return (
     <div className="page-grid">
+      <section className="kpi-grid">
+        <KpiCard title="Reporting Coverage" value={`${analytics.reportingCompanies}/${analytics.totalCompanies}`} trendLabel="companies with submissions" />
+        <KpiCard title="Portfolio Emissions" value={`${analytics.totalEmissions.toLocaleString()} tCO2e`} />
+        <KpiCard title="Renewable Share" value={`${analytics.renewableShare}%`} />
+        <KpiCard title="Avg TRIFR" value={analytics.avgTRIFR.toFixed(2)} />
+        <KpiCard title="Women Representation" value={`${analytics.avgFemaleRep}%`} />
+        <KpiCard title="Women Leadership" value={`${analytics.avgFemaleLeadership}%`} />
+        <KpiCard title="Governance Adoption" value={`${analytics.governanceAdoption}%`} />
+        <KpiCard title="Measured Confidence" value={`${analytics.confidenceMeasured}%`} />
+      </section>
+
       <SectionCard
-        title="ESG Analytics"
-        subtitle="Environmental, Social, Governance, and Benchmarking insights"
+        title="Admin ESG Analytics"
+        subtitle="Redesigned deep analytics by environmental, social, governance, and benchmark performance lenses"
         actions={
           <div className="tab-row">
             {analyticsTabs.map((tab) => (
@@ -79,89 +305,182 @@ export default function AnalyticsPage() {
           </div>
         }
       >
-        {activeTab === 'Environmental' && (
-          <div className="two-col-grid">
+        {activeTab === 'Environmental' ? (
+          <section className="two-col-grid">
             <div className="chart-wrap">
-              <h4>Emissions Trend</h4>
-              <ResponsiveContainer width="100%" height={280}>
-                <BarChart data={emissionsData}>
+              <h4>Emissions by Sector (Scope 1/2/3)</h4>
+              <ResponsiveContainer width="100%" height={310}>
+                <BarChart data={analytics.sectorRows.slice(0, 10)}>
                   <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                  <XAxis dataKey="name" tick={{ fontSize: 12 }} angle={-15} textAnchor="end" height={50} />
+                  <XAxis dataKey="sector" tick={{ fontSize: 11 }} angle={-18} textAnchor="end" height={60} />
                   <YAxis />
                   <Tooltip />
                   <Legend />
-                  <Bar dataKey="scope1" stackId="a" fill="#0ea5e9" name="Scope 1" />
-                  <Bar dataKey="scope2" stackId="a" fill="#14b8a6" name="Scope 2" />
-                  <Bar dataKey="scope3" stackId="a" fill="#f97316" name="Scope 3" />
+                  <Bar dataKey="scope1" stackId="emissions" fill="#0f766e" name="Scope 1" />
+                  <Bar dataKey="scope2" stackId="emissions" fill="#0284c7" name="Scope 2" />
+                  <Bar dataKey="scope3" stackId="emissions" fill="#f97316" name="Scope 3" />
                 </BarChart>
               </ResponsiveContainer>
             </div>
 
             <div className="chart-wrap">
-              <h4>Energy Mix</h4>
-              <ResponsiveContainer width="100%" height={280}>
-                <BarChart data={energyData}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                  <XAxis dataKey="source" />
-                  <YAxis />
-                  <Tooltip />
-                  <Bar dataKey="value" fill="#2563eb" radius={[8, 8, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-        )}
-
-        {activeTab === 'Social' && (
-          <div className="two-col-grid">
-            <div className="chart-wrap">
-              <h4>Portfolio TRIFR</h4>
-              <ResponsiveContainer width="100%" height={280}>
-                <BarChart data={trifrData}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                  <XAxis dataKey="name" tick={{ fontSize: 12 }} angle={-15} textAnchor="end" height={50} />
-                  <YAxis />
-                  <Tooltip />
-                  <Bar dataKey="trifr" fill="#0f766e" />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-
-            <div className="chart-wrap">
-              <h4>Diversity Mix</h4>
-              <ResponsiveContainer width="100%" height={280}>
+              <h4>Portfolio Emissions Mix</h4>
+              <ResponsiveContainer width="100%" height={310}>
                 <PieChart>
-                  <Pie data={diversityData} dataKey="value" nameKey="name" innerRadius={60} outerRadius={98}>
-                    {diversityData.map((entry) => <Cell key={entry.name} fill={entry.color} />)}
+                  <Pie data={analytics.scopeMixData} dataKey="value" nameKey="name" innerRadius={72} outerRadius={116}>
+                    {analytics.scopeMixData.map((entry) => (
+                      <Cell key={entry.name} fill={entry.color} />
+                    ))}
                   </Pie>
                   <Tooltip />
+                  <Legend />
                 </PieChart>
               </ResponsiveContainer>
-              <ul className="mini-legend">
-                {diversityData.map((entry) => (
-                  <li key={entry.name}>
-                    <span style={{ background: entry.color }} /> {entry.name}: {entry.value}%
-                  </li>
-                ))}
-              </ul>
             </div>
-          </div>
-        )}
 
-        {activeTab === 'Governance' && (
-          <div className="chart-wrap">
-            <h4>Governance Policy Adoption</h4>
-            <ResponsiveContainer width="100%" height={320}>
-              <BarChart data={governanceData}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                <XAxis dataKey="policy" />
-                <YAxis domain={[0, 100]} />
-                <Tooltip />
-                <Bar dataKey="adoption" fill="#8b5cf6" radius={[8, 8, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        )}
+            <div className="chart-wrap">
+              <h4>Emissions Intensity by Sector (tCO2e / FTE)</h4>
+              <ResponsiveContainer width="100%" height={290}>
+                <LineChart data={analytics.sectorRows.slice(0, 10)}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                  <XAxis dataKey="sector" tick={{ fontSize: 11 }} angle={-18} textAnchor="end" height={60} />
+                  <YAxis />
+                  <Tooltip />
+                  <Line type="monotone" dataKey="avgIntensity" stroke="#1d4ed8" strokeWidth={3} dot={{ r: 3 }} />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </section>
+        ) : null}
+
+        {activeTab === 'Social' ? (
+          <section className="two-col-grid">
+            <div className="chart-wrap">
+              <h4>Safety Performance by Sector (Avg TRIFR)</h4>
+              <ResponsiveContainer width="100%" height={300}>
+                <BarChart data={analytics.sectorRows.slice(0, 10)}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                  <XAxis dataKey="sector" tick={{ fontSize: 11 }} angle={-18} textAnchor="end" height={60} />
+                  <YAxis />
+                  <Tooltip />
+                  <Bar dataKey="avgTRIFR" fill="#0f766e" radius={[8, 8, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+
+            <div className="chart-wrap">
+              <h4>Portfolio Workforce Mix</h4>
+              <ResponsiveContainer width="100%" height={300}>
+                <PieChart>
+                  <Pie data={analytics.workforceMix} dataKey="value" nameKey="name" innerRadius={68} outerRadius={112}>
+                    {analytics.workforceMix.map((entry) => (
+                      <Cell key={entry.name} fill={entry.color} />
+                    ))}
+                  </Pie>
+                  <Tooltip />
+                  <Legend />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+
+            <div className="chart-wrap">
+              <h4>Diversity Progress by Sector</h4>
+              <ResponsiveContainer width="100%" height={300}>
+                <BarChart data={analytics.sectorRows.slice(0, 10)}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                  <XAxis dataKey="sector" tick={{ fontSize: 11 }} angle={-18} textAnchor="end" height={60} />
+                  <YAxis domain={[0, 100]} />
+                  <Tooltip />
+                  <Legend />
+                  <Bar dataKey="avgFemaleRep" fill="#ec4899" name="Women Workforce %" />
+                  <Bar dataKey="avgFemaleLeadership" fill="#2563eb" name="Women Leadership %" />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </section>
+        ) : null}
+
+        {activeTab === 'Governance' ? (
+          <section className="two-col-grid">
+            <div className="chart-wrap">
+              <h4>Governance Adoption by Sector</h4>
+              <ResponsiveContainer width="100%" height={300}>
+                <BarChart data={analytics.sectorRows.slice(0, 10)}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                  <XAxis dataKey="sector" tick={{ fontSize: 11 }} angle={-18} textAnchor="end" height={60} />
+                  <YAxis domain={[0, 100]} />
+                  <Tooltip />
+                  <Bar dataKey="governanceAdoption" fill="#1d4ed8" radius={[8, 8, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+
+            <div className="chart-wrap">
+              <h4>Board Composition (Portfolio Average)</h4>
+              <ResponsiveContainer width="100%" height={300}>
+                <PieChart>
+                  <Pie data={analytics.boardMix} dataKey="value" nameKey="name" innerRadius={68} outerRadius={112}>
+                    {analytics.boardMix.map((entry) => (
+                      <Cell key={entry.name} fill={entry.color} />
+                    ))}
+                  </Pie>
+                  <Tooltip />
+                  <Legend />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+          </section>
+        ) : null}
+
+        {activeTab === 'Benchmarking' ? (
+          <section className="space-y-4">
+            <div className="two-col-grid">
+              <div className="chart-wrap">
+                <h4>Top ESG Composite Scores</h4>
+                <ResponsiveContainer width="100%" height={320}>
+                  <BarChart data={analytics.topBenchmarkRows}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                    <XAxis dataKey="company" tick={{ fontSize: 11 }} angle={-18} textAnchor="end" height={70} />
+                    <YAxis domain={[0, 100]} />
+                    <Tooltip />
+                    <Bar dataKey="compositeScore" fill="#0f766e" radius={[8, 8, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+
+              <div className="chart-wrap">
+                <h4>Portfolio Risk Tier Distribution</h4>
+                <ResponsiveContainer width="100%" height={320}>
+                  <PieChart>
+                    <Pie data={analytics.riskTierData} dataKey="value" nameKey="name" innerRadius={72} outerRadius={118}>
+                      {analytics.riskTierData.map((entry) => (
+                        <Cell key={entry.name} fill={entry.color} />
+                      ))}
+                    </Pie>
+                    <Tooltip />
+                    <Legend />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            <DataTable
+              columns={[
+                { key: 'company', label: 'Company', sortable: true },
+                { key: 'sector', label: 'Sector', sortable: true },
+                { key: 'compositeScore', label: 'Composite', sortable: true },
+                { key: 'environmentScore', label: 'Env Score', sortable: true },
+                { key: 'socialScore', label: 'Social Score', sortable: true },
+                { key: 'governanceScore', label: 'Gov Score', sortable: true },
+                { key: 'renewableShare', label: 'Renewable %', sortable: true },
+                { key: 'emissionsIntensity', label: 'tCO2e/FTE', sortable: true },
+              ]}
+              rows={analytics.benchmarkRows}
+              pageSize={10}
+              emptyMessage="No benchmark data available."
+            />
+          </section>
+        ) : null}
       </SectionCard>
     </div>
   )

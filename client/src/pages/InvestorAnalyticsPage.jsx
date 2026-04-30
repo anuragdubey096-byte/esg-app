@@ -4,51 +4,122 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
+  Cell,
   Legend,
   Line,
   LineChart,
+  Pie,
+  PieChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
 } from 'recharts'
+import DataTable from '../components/DataTable'
+import KpiCard from '../components/KpiCard'
 import SectionCard from '../components/SectionCard'
 import useDashboardData from '../hooks/useDashboardData'
 import useNewsletterPreview from '../hooks/useNewsletterPreview'
 import useNarrativeSummary from '../hooks/useNarrativeSummary'
+
+const funnelColors = {
+  'Not Started': '#ef4444',
+  'In Progress': '#f59e0b',
+  Submitted: '#0ea5e9',
+  Approved: '#10b981',
+  Rejected: '#f97316',
+}
+
+function toNumber(value) {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : 0
+}
 
 export default function InvestorAnalyticsPage() {
   const { user } = useOutletContext()
   const { summary, loading, error } = useDashboardData(user)
   const narrative = useNarrativeSummary({ user, audience: 'lp', tone: 'board-ready', enabled: Boolean(user) })
   const newsletter = useNewsletterPreview({ user, audience: 'investor', tone: 'board-ready' })
-
   const analytics = summary || {}
 
-  const resourceData = useMemo(() => {
-    const totals = analytics.resource_totals || {}
-    return [
-      { metric: 'Energy', value: Number(totals.energy || 0) },
-      { metric: 'Water', value: Number(totals.water || 0) },
-      { metric: 'Waste', value: Number(totals.waste || 0) },
-    ]
-  }, [analytics.resource_totals])
+  const {
+    coveragePercent,
+    emissionsTrend,
+    emissionsMix,
+    scoreBreakdownData,
+    submissionFunnelData,
+    resourceData,
+    socialData,
+    qualityData,
+    performerRows,
+    underperformingSectors,
+  } = useMemo(() => {
+    const totalCompanies = toNumber(analytics.total_companies)
+    const reportingCompanies = toNumber(analytics.reporting_companies)
+    const coverage = totalCompanies > 0 ? (reportingCompanies / totalCompanies) * 100 : 0
 
-  const emissionsTrend = useMemo(() => {
-    return (analytics.emissions_trend || []).map((point) => ({
-      period: point.period,
-      total_emissions: Number(point.total_emissions || 0),
+    const totals = analytics.emissions_totals || {}
+    const scoreBreakdown = analytics.score_breakdown || {}
+    const resourceTotals = analytics.resource_totals || {}
+    const diversitySafety = analytics.diversity_safety || {}
+    const quality = analytics.data_quality || {}
+    const funnel = analytics.submission_funnel || {}
+
+    const topRows = (analytics.top_performers || []).map((item) => ({
+      id: `top-${item.company_name}`,
+      bucket: 'Top',
+      company: item.company_name,
+      sector: item.sector,
+      score: Number(item.esg_score || 0),
     }))
-  }, [analytics.emissions_trend])
+    const bottomRows = (analytics.bottom_performers || []).map((item) => ({
+      id: `bottom-${item.company_name}`,
+      bucket: 'Watch',
+      company: item.company_name,
+      sector: item.sector,
+      score: Number(item.esg_score || 0),
+    }))
 
-  const socialData = useMemo(() => {
-    const values = analytics.diversity_safety || {}
-    return [
-      { metric: 'Female Representation %', value: Number(values.female_representation_percent || 0) },
-      { metric: 'TRIFR', value: Number(values.trifr || 0) },
-      { metric: 'High Variance Flags', value: Number(values.high_variance_flags || 0) },
-    ]
-  }, [analytics.diversity_safety])
+    return {
+      coveragePercent: Number(coverage.toFixed(1)),
+      emissionsTrend: (analytics.emissions_trend || []).map((point) => ({
+        period: point.period,
+        total_emissions: toNumber(point.total_emissions),
+      })),
+      emissionsMix: [
+        { name: 'Scope 1', value: toNumber(totals.scope_1), color: '#0f766e' },
+        { name: 'Scope 2', value: toNumber(totals.scope_2), color: '#0284c7' },
+        { name: 'Scope 3', value: toNumber(totals.scope_3), color: '#f97316' },
+      ],
+      scoreBreakdownData: [
+        { name: 'Environmental', value: toNumber(scoreBreakdown.E), color: '#16a34a' },
+        { name: 'Social', value: toNumber(scoreBreakdown.S), color: '#0ea5e9' },
+        { name: 'Governance', value: toNumber(scoreBreakdown.G), color: '#1d4ed8' },
+      ],
+      submissionFunnelData: Object.keys(funnelColors).map((key) => ({
+        name: key,
+        value: toNumber(funnel[key]),
+        color: funnelColors[key],
+      })),
+      resourceData: [
+        { metric: 'Energy', value: toNumber(resourceTotals.energy) },
+        { metric: 'Water', value: toNumber(resourceTotals.water) },
+        { metric: 'Waste', value: toNumber(resourceTotals.waste) },
+      ],
+      socialData: [
+        { metric: 'Female Representation %', value: toNumber(diversitySafety.female_representation_percent) },
+        { metric: 'Avg TRIFR', value: toNumber(diversitySafety.trifr) },
+        { metric: 'High Variance Flags', value: toNumber(diversitySafety.high_variance_flags) },
+      ],
+      qualityData: [
+        { metric: 'Completeness', score: toNumber(quality.completeness) },
+        { metric: 'Accuracy', score: toNumber(quality.accuracy) },
+        { metric: 'Confidence', score: toNumber(quality.confidence) },
+      ],
+      performerRows: [...topRows, ...bottomRows].sort((left, right) => right.score - left.score),
+      underperformingSectors: (analytics.underperforming_sectors || []).filter(Boolean),
+    }
+  }, [analytics])
 
   if (loading) {
     return (
@@ -72,7 +143,16 @@ export default function InvestorAnalyticsPage() {
 
   return (
     <div className="page-grid">
-      <SectionCard title="AI Analytics Narrative" subtitle="OpenAI-generated interpretation of portfolio analytics">
+      <section className="kpi-grid">
+        <KpiCard title="Portfolio ESG Score" value={`${toNumber(analytics.portfolio_esg_score).toFixed(1)}/100`} />
+        <KpiCard title="Reporting Coverage" value={`${coveragePercent}%`} trendLabel={`${toNumber(analytics.reporting_companies)}/${toNumber(analytics.total_companies)} companies`} />
+        <KpiCard title="Total Emissions" value={`${toNumber(analytics.emissions_totals?.total).toLocaleString()} tCO2e`} />
+        <KpiCard title="Avg Emissions / Company" value={`${toNumber(analytics.average_ghg_emissions).toLocaleString()} tCO2e`} />
+        <KpiCard title="Governance Adoption" value={`${toNumber(analytics.governance_adoption_percent).toFixed(1)}%`} />
+        <KpiCard title="Female Representation" value={`${toNumber(analytics.average_female_representation).toFixed(1)}%`} />
+      </section>
+
+      <SectionCard title="AI Analytics Narrative" subtitle="Detailed portfolio interpretation generated from live analytics">
         {narrative.loading ? <p>Generating summary...</p> : null}
         {narrative.error ? <p>{narrative.error}</p> : null}
         {!narrative.loading && !narrative.error && narrative.data ? (
@@ -83,7 +163,7 @@ export default function InvestorAnalyticsPage() {
         ) : null}
       </SectionCard>
 
-      <SectionCard title="Newsletter Preview" subtitle="Generate the latest LP newsletter draft from approved portfolio data">
+      <SectionCard title="Newsletter Preview" subtitle="Generate and review the latest LP newsletter">
         <button className="button" type="button" onClick={newsletter.generate} disabled={newsletter.loading}>
           {newsletter.loading ? 'Generating...' : 'Generate Newsletter Preview'}
         </button>
@@ -111,7 +191,59 @@ export default function InvestorAnalyticsPage() {
           </div>
         </SectionCard>
 
-        <SectionCard title="Resource Analytics" subtitle="Water, waste, and energy totals">
+        <SectionCard title="Emissions Mix" subtitle="Scope distribution across portfolio">
+          <div className="chart-wrap">
+            <ResponsiveContainer width="100%" height={300}>
+              <PieChart>
+                <Pie data={emissionsMix} dataKey="value" nameKey="name" innerRadius={68} outerRadius={112}>
+                  {emissionsMix.map((entry) => (
+                    <Cell key={entry.name} fill={entry.color} />
+                  ))}
+                </Pie>
+                <Tooltip />
+                <Legend />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+        </SectionCard>
+      </section>
+
+      <section className="two-col-grid">
+        <SectionCard title="E / S / G Score Split" subtitle="Portfolio score composition">
+          <div className="chart-wrap">
+            <ResponsiveContainer width="100%" height={300}>
+              <PieChart>
+                <Pie data={scoreBreakdownData} dataKey="value" nameKey="name" innerRadius={68} outerRadius={112}>
+                  {scoreBreakdownData.map((entry) => (
+                    <Cell key={entry.name} fill={entry.color} />
+                  ))}
+                </Pie>
+                <Tooltip />
+                <Legend />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+        </SectionCard>
+
+        <SectionCard title="Submission Funnel" subtitle="Current reporting lifecycle distribution">
+          <div className="chart-wrap">
+            <ResponsiveContainer width="100%" height={300}>
+              <PieChart>
+                <Pie data={submissionFunnelData} dataKey="value" nameKey="name" innerRadius={68} outerRadius={112}>
+                  {submissionFunnelData.map((entry) => (
+                    <Cell key={entry.name} fill={entry.color} />
+                  ))}
+                </Pie>
+                <Tooltip />
+                <Legend />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+        </SectionCard>
+      </section>
+
+      <section className="two-col-grid">
+        <SectionCard title="Resource Analytics" subtitle="Energy, water, and waste totals">
           <div className="chart-wrap">
             <ResponsiveContainer width="100%" height={300}>
               <BarChart data={resourceData}>
@@ -125,20 +257,64 @@ export default function InvestorAnalyticsPage() {
             </ResponsiveContainer>
           </div>
         </SectionCard>
+
+        <SectionCard title="Data Quality Index" subtitle="Completeness, accuracy, and confidence">
+          <div className="chart-wrap">
+            <ResponsiveContainer width="100%" height={300}>
+              <BarChart data={qualityData}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="metric" />
+                <YAxis domain={[0, 100]} />
+                <Tooltip />
+                <Bar dataKey="score" fill="#0f766e" radius={[8, 8, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </SectionCard>
       </section>
 
-      <SectionCard title="Social & Safety Metrics" subtitle="Portfolio-level diversity and safety indicators">
-        <div className="chart-wrap">
-          <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={socialData}>
-              <CartesianGrid strokeDasharray="3 3" vertical={false} />
-              <XAxis dataKey="metric" />
-              <YAxis />
-              <Tooltip />
-              <Bar dataKey="value" fill="#7c3aed" radius={[8, 8, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
+      <section className="two-col-grid">
+        <SectionCard title="Social & Safety Indicators" subtitle="Portfolio averages and anomaly pressure">
+          <div className="chart-wrap">
+            <ResponsiveContainer width="100%" height={300}>
+              <BarChart data={socialData}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="metric" />
+                <YAxis />
+                <Tooltip />
+                <Bar dataKey="value" fill="#7c3aed" radius={[8, 8, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </SectionCard>
+
+        <SectionCard title="Underperforming Sectors" subtitle="Lowest-scoring sectors from portfolio benchmark">
+          {underperformingSectors.length ? (
+            <ul className="mini-legend">
+              {underperformingSectors.map((sector) => (
+                <li key={sector}>
+                  <span style={{ background: '#f97316' }} /> {sector}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p>No sector underperformance markers were returned.</p>
+          )}
+        </SectionCard>
+      </section>
+
+      <SectionCard title="Top & Watchlist Companies" subtitle="Highest and lowest ESG scores in the portfolio">
+        <DataTable
+          columns={[
+            { key: 'bucket', label: 'Bucket', sortable: true },
+            { key: 'company', label: 'Company', sortable: true },
+            { key: 'sector', label: 'Sector', sortable: true },
+            { key: 'score', label: 'ESG Score', sortable: true },
+          ]}
+          rows={performerRows}
+          pageSize={8}
+          emptyMessage="No performer data available."
+        />
       </SectionCard>
     </div>
   )
