@@ -2496,22 +2496,61 @@ def _upsert_section_comments(
     return merged
 
 
+def _submission_reporting_year(submission: Submission | None) -> int | None:
+    if not submission:
+        return None
+    payload = parse_submission(submission)
+    payload_year = payload.get('reporting_year')
+    try:
+        parsed_payload_year = int(payload_year)
+        if parsed_payload_year > 0:
+            return parsed_payload_year
+    except (TypeError, ValueError):
+        pass
+    if submission.cycle and submission.cycle.cycle_year:
+        try:
+            parsed_cycle_year = int(submission.cycle.cycle_year)
+            if parsed_cycle_year > 0:
+                return parsed_cycle_year
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
 def _build_prior_submission(submission: Submission | None, db: Session) -> Submission | None:
     if not submission:
         return None
-    current_cycle_year = submission.cycle.cycle_year if submission.cycle else None
-    query = db.query(Submission).filter(
-        Submission.company_id == submission.company_id,
-        Submission.id != submission.id,
-        func.lower(Submission.status) == 'approved',
+
+    current_reporting_year = _submission_reporting_year(submission)
+    candidates = (
+        db.query(Submission)
+        .filter(
+            Submission.company_id == submission.company_id,
+            Submission.id != submission.id,
+            func.lower(Submission.status) == 'approved',
+        )
+        .all()
     )
-    if current_cycle_year is not None:
-        query = query.join(CollectionCycle, Submission.cycle_id == CollectionCycle.id).filter(
-            CollectionCycle.cycle_year < current_cycle_year
-        ).order_by(CollectionCycle.cycle_year.desc(), Submission.id.desc())
-    else:
-        query = query.filter(Submission.id < submission.id).order_by(Submission.id.desc())
-    return query.first()
+    if not candidates:
+        return None
+
+    if current_reporting_year is not None:
+        prior_year_candidates: list[tuple[int, int, Submission]] = []
+        for candidate in candidates:
+            candidate_reporting_year = _submission_reporting_year(candidate)
+            if candidate_reporting_year is None:
+                continue
+            if candidate_reporting_year < current_reporting_year:
+                prior_year_candidates.append((candidate_reporting_year, candidate.id, candidate))
+        if prior_year_candidates:
+            prior_year_candidates.sort(key=lambda item: (item[0], item[1]))
+            return prior_year_candidates[-1][2]
+
+    fallback_candidates = [candidate for candidate in candidates if candidate.id < submission.id]
+    if not fallback_candidates:
+        return None
+    fallback_candidates.sort(key=lambda candidate: candidate.id)
+    return fallback_candidates[-1]
 
 
 def _variance_row_status(variance_percent: float | None) -> str:
@@ -2609,8 +2648,8 @@ def _build_historical_context_payload(company: Company, submission: Submission |
         'company_name': company.name,
         'submission_id': submission.id if submission else None,
         'prior_submission_id': prior_submission.id if prior_submission else None,
-        'current_cycle_year': submission.cycle.cycle_year if submission and submission.cycle else None,
-        'prior_cycle_year': prior_submission.cycle.cycle_year if prior_submission and prior_submission.cycle else None,
+        'current_cycle_year': _submission_reporting_year(submission),
+        'prior_cycle_year': _submission_reporting_year(prior_submission),
         'generated_at': _utc_now_iso(),
         'rows_by_section': comparison.get('rows_by_section') or {},
         'prior_values': comparison.get('prior_values') or {},
