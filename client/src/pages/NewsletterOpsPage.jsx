@@ -47,6 +47,26 @@ export default function NewsletterOpsPage() {
       })),
     [payload],
   )
+  const newsRows = useMemo(
+    () =>
+      (payload?.news_highlights || []).map((item, index) => ({
+        id: index + 1,
+        title: item.title,
+        source: item.source,
+        published_at: item.published_at,
+        url: item.url,
+      })),
+    [payload],
+  )
+  const metricRows = useMemo(
+    () =>
+      (payload?.key_metrics || []).map((item, index) => ({
+        id: index + 1,
+        name: item.name,
+        value: `${item.value} ${item.unit || ''}`.trim(),
+      })),
+    [payload],
+  )
 
   return (
     <div className="page-grid">
@@ -88,6 +108,7 @@ export default function NewsletterOpsPage() {
             <p><strong>{payload.subject_line || 'No subject'}</strong></p>
             <p>{payload.summary || 'No summary available.'}</p>
             <p>Status: {payload.delivery_status || 'generated'}</p>
+            <p>Trend: {payload.trend_summary || 'No trend summary available.'}</p>
             {payload.download_url ? (
               <p><a href={`${BACKEND_URL}${payload.download_url}`} target="_blank" rel="noreferrer">Open Export</a></p>
             ) : null}
@@ -103,6 +124,31 @@ export default function NewsletterOpsPage() {
           rows={highlightRows}
           pageSize={6}
           emptyMessage="No highlights yet."
+        />
+      </SectionCard>
+
+      <SectionCard title="Key Metrics" subtitle="Portfolio metrics included in newsletter">
+        <DataTable
+          columns={[
+            { key: 'name', label: 'Metric', sortable: false },
+            { key: 'value', label: 'Value', sortable: false },
+          ]}
+          rows={metricRows}
+          pageSize={8}
+          emptyMessage="No metrics yet."
+        />
+      </SectionCard>
+
+      <SectionCard title="External ESG News" subtitle="Latest ESG context included in newsletter">
+        <DataTable
+          columns={[
+            { key: 'title', label: 'Headline', sortable: false },
+            { key: 'source', label: 'Source', sortable: false },
+            { key: 'published_at', label: 'Published', sortable: false },
+          ]}
+          rows={newsRows}
+          pageSize={6}
+          emptyMessage="No news items available."
         />
       </SectionCard>
     </div>

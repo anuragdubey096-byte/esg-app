@@ -3129,6 +3129,59 @@ def _build_newsletter_payload(db: Session, audience: str, tone: str) -> dict:
     narrative = _fallback_portfolio_narrative(analytics)
     approved = int((analytics.get('status_counts') or {}).get('Approved', 0))
     companies = int(analytics.get('total_companies') or 0)
+    emissions_trend = list(analytics.get('emissions_trend') or [])
+    latest_trend = emissions_trend[-1] if emissions_trend else {}
+    prior_trend = emissions_trend[-2] if len(emissions_trend) > 1 else {}
+    latest_emissions = float(latest_trend.get('total_emissions') or 0)
+    prior_emissions = float(prior_trend.get('total_emissions') or 0)
+    emissions_delta_pct = 0.0
+    if prior_emissions > 0:
+        emissions_delta_pct = round(((latest_emissions - prior_emissions) / prior_emissions) * 100, 2)
+
+    status_counts = analytics.get('status_counts') or {}
+    data_quality = analytics.get('data_quality') or {}
+    score_breakdown = analytics.get('score_breakdown') or {}
+    external_feed = _build_external_context_feed(limit=8)
+    external_items = list(external_feed.get('items') or [])[:6]
+    live_events = _build_live_activity_events(db, limit=8)
+
+    key_metrics = [
+        {'name': 'Portfolio ESG Score', 'value': round(float(analytics.get('portfolio_esg_score') or 0), 2), 'unit': '/100'},
+        {'name': 'Approved Submissions', 'value': approved, 'unit': 'count'},
+        {'name': 'Reporting Coverage', 'value': round((int(analytics.get('reporting_companies') or 0) / max(companies, 1)) * 100, 2), 'unit': '%'},
+        {'name': 'Total Emissions', 'value': round(float((analytics.get('emissions_totals') or {}).get('total') or 0), 2), 'unit': 'tCO2e'},
+        {'name': 'Data Confidence', 'value': round(float(data_quality.get('confidence') or 0), 2), 'unit': '%'},
+    ]
+
+    benchmark_callouts = [
+        f"E score {float(score_breakdown.get('E') or 0):.1f}, S score {float(score_breakdown.get('S') or 0):.1f}, G score {float(score_breakdown.get('G') or 0):.1f}.",
+        f"Governance adoption at {float(analytics.get('governance_adoption_percent') or 0):.1f}%.",
+        f"Underperforming sectors: {', '.join((analytics.get('underperforming_sectors') or [])[:3]) or 'none flagged'}.",
+    ]
+
+    news_highlights = [
+        {
+            'title': str(item.get('title') or 'ESG update'),
+            'source': str(item.get('source_label') or item.get('source_id') or 'External ESG feed'),
+            'summary': str(item.get('summary') or ''),
+            'published_at': str(item.get('published_at') or ''),
+            'url': str(item.get('url') or ''),
+        }
+        for item in external_items
+    ]
+
+    operations_digest = [
+        f"Submitted: {int(status_counts.get('Submitted') or 0)}",
+        f"Under Review: {int(status_counts.get('Under Review') or 0)}",
+        f"In Progress: {int(status_counts.get('In Progress') or 0)}",
+        f"Not Started: {int(status_counts.get('Not Started') or 0)}",
+    ]
+
+    trend_summary = (
+        f"Latest emissions period {str(latest_trend.get('period') or 'N/A')} at {latest_emissions:.2f} tCO2e "
+        f"({emissions_delta_pct:+.2f}% vs prior period)."
+    )
+
     return {
         'available': True,
         'audience': audience,
@@ -3142,8 +3195,14 @@ def _build_newsletter_payload(db: Session, audience: str, tone: str) -> dict:
         'watchouts': narrative.get('watchouts') or [],
         'recommendations': narrative.get('recommendations') or [],
         'impact_headline': 'Portfolio impact story',
-        'trend_summary': 'Portfolio trend data is available for the selected cycle history.',
-        'benchmark_callouts': [],
+        'trend_summary': trend_summary,
+        'benchmark_callouts': benchmark_callouts,
+        'key_metrics': key_metrics,
+        'operations_digest': operations_digest,
+        'news_highlights': news_highlights,
+        'news_source_count': int(external_feed.get('source_count') or 0),
+        'news_fallback_used': bool(external_feed.get('fallback_used')),
+        'latest_activity': live_events,
         'source_company_count': companies,
         'source_submission_count': int(analytics.get('total_submissions') or 0),
         'fallback_used': True,
@@ -4017,6 +4076,17 @@ def newsletter_export(
         '',
         'Highlights:',
     ] + [f"- {item}" for item in (payload.get('highlights') or [])]
+    body_lines += ['', 'Watchouts:'] + [f"- {item}" for item in (payload.get('watchouts') or [])]
+    body_lines += ['', 'Recommendations:'] + [f"- {item}" for item in (payload.get('recommendations') or [])]
+    body_lines += ['', 'Key Metrics:'] + [
+        f"- {item.get('name')}: {item.get('value')} {item.get('unit')}"
+        for item in (payload.get('key_metrics') or [])
+    ]
+    body_lines += ['', 'Trend Summary:', str(payload.get('trend_summary') or '')]
+    body_lines += ['', 'External ESG News:'] + [
+        f"- {item.get('title')} ({item.get('source')})"
+        for item in (payload.get('news_highlights') or [])
+    ]
     file_path.write_text('\n'.join(body_lines), encoding='utf-8')
     return {
         **payload,
