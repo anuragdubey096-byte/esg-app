@@ -32,9 +32,37 @@ export function normalizeStatus(status) {
   return STATUS_TO_UI[normalized] || toTitleCase(normalized)
 }
 
+function toYear(value) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return null
+  if (numeric <= 0) return null
+  return numeric
+}
+
+export function getSubmissionReportingYear(submission) {
+  if (!submission) return null
+  const payload = parseSubmissionPayload(submission)
+  const payloadYear = toYear(payload?.reporting_year)
+  if (payloadYear) return payloadYear
+  const cycleYear = toYear(submission?.cycle?.cycle_year)
+  if (cycleYear) return cycleYear
+  return null
+}
+
+export function getSortedSubmissions(company) {
+  if (!Array.isArray(company?.submissions) || !company.submissions.length) return []
+  return [...company.submissions].sort((left, right) => {
+    const yearLeft = getSubmissionReportingYear(left) || 0
+    const yearRight = getSubmissionReportingYear(right) || 0
+    if (yearLeft !== yearRight) return yearLeft - yearRight
+    return Number(left?.id || 0) - Number(right?.id || 0)
+  })
+}
+
 export function getLatestSubmission(company) {
-  if (!company?.submissions?.length) return null
-  return company.submissions[company.submissions.length - 1]
+  const sorted = getSortedSubmissions(company)
+  if (!sorted.length) return null
+  return sorted[sorted.length - 1]
 }
 
 export function parseSubmissionPayload(submission) {

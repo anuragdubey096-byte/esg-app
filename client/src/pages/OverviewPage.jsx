@@ -58,7 +58,7 @@ export default function OverviewPage() {
   const isManager = role === 'manager'
   const isCompany = role === 'company'
   const primaryCompany = companies?.[0] || null
-  const primarySubmission = primaryCompany?.submissions?.[primaryCompany.submissions.length - 1] || null
+  const primarySubmission = getLatestSubmission(primaryCompany)
   const primaryCycleId = primarySubmission?.cycle_id || null
   const collaboration = useCollaborationWorkspace({ user, companyId: primaryCompany?.id || null })
   const [fieldKey, setFieldKey] = useState('scope_1_emissions')

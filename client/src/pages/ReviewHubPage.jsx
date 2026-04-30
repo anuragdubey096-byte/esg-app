@@ -3,7 +3,13 @@ import { useOutletContext } from 'react-router-dom'
 import DataTable from '../components/DataTable'
 import SectionCard from '../components/SectionCard'
 import StatusBadge from '../components/StatusBadge'
-import useDashboardData, { getLatestSubmission, parseSubmissionPayload, calculateESGScore, normalizeStatus } from '../hooks/useDashboardData'
+import useDashboardData, {
+  calculateESGScore,
+  getLatestSubmission,
+  getSubmissionReportingYear,
+  normalizeStatus,
+  parseSubmissionPayload,
+} from '../hooks/useDashboardData'
 import { validateSubmissionData } from '../esgValidation'
 import { ESG_FORM_SECTIONS } from '../esgFormConfig'
 import { API_BASE_URL } from '../lib/api'
@@ -102,6 +108,7 @@ export default function ReviewHubPage() {
         esgScore: calculateESGScore(status, payload),
         payload,
         submissionId: latest?.id || null,
+        submissionYear: getSubmissionReportingYear(latest) || null,
         reviewActions: c.review_actions || [],
         validationFlags: c.validation_flags || [],
       }
@@ -117,8 +124,32 @@ export default function ReviewHubPage() {
       esgScore: 0,
       payload: {},
       submissionId: null,
+      submissionYear: null,
       reviewActions: [],
       validationFlags: [],
+    }
+  }, [selectedCompanyId, submissionRows])
+
+  useEffect(() => {
+    if (!submissionRows.length) return
+    let preferredCompanyId = null
+    try {
+      preferredCompanyId = Number(localStorage.getItem('reviewHub.selectedCompanyId') || '')
+    } catch {
+      preferredCompanyId = null
+    }
+
+    if (
+      preferredCompanyId
+      && submissionRows.some((row) => row.id === preferredCompanyId)
+      && Number(selectedCompanyId) !== preferredCompanyId
+    ) {
+      setSelectedCompanyId(preferredCompanyId)
+      return
+    }
+
+    if (!selectedCompanyId) {
+      setSelectedCompanyId(submissionRows[0].id)
     }
   }, [selectedCompanyId, submissionRows])
 
@@ -389,20 +420,6 @@ export default function ReviewHubPage() {
     { key: 'validation', label: 'Validation Status', sortable: true, render: (row) => <StatusBadge value={row.validation} /> },
     { key: 'confidence', label: 'Confidence', sortable: false },
     {
-      key: 'comment',
-      label: 'Comment',
-      render: (row) => (
-        <input
-          className="inline-comment"
-          value={metricCommentsByCell[row.commentKey] || row.comment || ''}
-          onChange={(event) => handleMetricCommentChange(row.commentKey, event.target.value)}
-          aria-label={`${row.metric} comment`}
-          placeholder="Add comment"
-          autoComplete="off"
-        />
-      ),
-    },
-    {
       key: 'validationActions',
       label: 'Pass / Fail',
       render: (row) => (
@@ -428,6 +445,20 @@ export default function ReviewHubPage() {
         ) : <span>-</span>
       ),
     },
+    {
+      key: 'comment',
+      label: 'Comment',
+      render: (row) => (
+        <input
+          className="inline-comment"
+          value={metricCommentsByCell[row.commentKey] || row.comment || ''}
+          onChange={(event) => handleMetricCommentChange(row.commentKey, event.target.value)}
+          aria-label={`${row.metric} comment`}
+          placeholder="Add comment"
+          autoComplete="off"
+        />
+      ),
+    },
   ]
 
   return (
@@ -441,12 +472,34 @@ export default function ReviewHubPage() {
 
           <div className="review-header-controls">
             <StatusBadge value={selectedCompany.status} />
-            <select value={selectedCompanyId || selectedCompany.id || ''} onChange={(event) => setSelectedCompanyId(event.target.value)}>
+            <select
+              value={selectedCompanyId || selectedCompany.id || ''}
+              onChange={(event) => {
+                const nextCompanyId = Number(event.target.value)
+                setSelectedCompanyId(nextCompanyId)
+                try {
+                  localStorage.setItem('reviewHub.selectedCompanyId', String(nextCompanyId))
+                } catch {
+                  // Ignore local storage write failures.
+                }
+              }}
+            >
               {submissionRows.slice(0, 24).map((row) => (
                 <option key={row.id} value={row.id}>{row.companyName}</option>
               ))}
             </select>
           </div>
+        </div>
+
+        <div className="summary-box">
+          <p>
+            Submission year: <strong>{selectedCompany.submissionYear || historicalContext?.current_cycle_year || 'N/A'}</strong>
+            {' '}| Prior approved year:{' '}
+            <strong>{historicalContext?.prior_cycle_year || 'Not available'}</strong>
+          </p>
+          {historicalContext && !historicalContext.prior_submission_id ? (
+            <p className="text-sm text-amber-700">No prior approved submission was found before this selected submission.</p>
+          ) : null}
         </div>
 
         <div className="summary-grid four">

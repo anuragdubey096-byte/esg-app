@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, useRef } from 'react'
-import { useOutletContext } from 'react-router-dom'
+import { useNavigate, useOutletContext } from 'react-router-dom'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts'
 import DataTable from '../components/DataTable'
 import SectionCard from '../components/SectionCard'
@@ -12,6 +12,7 @@ import useDashboardData, {
   getPreferredCycle,
   getProgressFromStatus,
   getRiskLevel,
+  getSubmissionReportingYear,
   normalizeStatus,
   parseSubmissionPayload,
 } from '../hooks/useDashboardData'
@@ -183,6 +184,7 @@ function createPrefilledFormValues(company) {
 
 export default function SubmissionsPage() {
   const { user } = useOutletContext()
+  const navigate = useNavigate()
   const { companies, cycles, loading, error, refresh } = useDashboardData(user)
   const [status, setStatus] = useState('All')
   const [sector, setSector] = useState('All')
@@ -297,6 +299,16 @@ export default function SubmissionsPage() {
     } catch(e) { alert(e.message) }
   }
 
+  const openReviewHub = (companyId) => {
+    if (!companyId) return
+    try {
+      localStorage.setItem('reviewHub.selectedCompanyId', String(companyId))
+    } catch {
+      // Ignore local storage failures and still navigate.
+    }
+    navigate('/review-hub')
+  }
+
   const rows = useMemo(() => {
     const preferredCycle = getPreferredCycle(cycles)
     const deadline = preferredCycle?.submission_deadline || '--'
@@ -321,6 +333,7 @@ export default function SubmissionsPage() {
         sector: company.sector || 'Unassigned',
         geography: company.geography || 'Unknown',
         submissionId: latest?.id,
+        reportingYear: getSubmissionReportingYear(latest) || '--',
         flags: company.validation_flags?.length || 0,
       }
     })
@@ -352,6 +365,7 @@ export default function SubmissionsPage() {
   ]
 
   if (user?.role === 'manager') {
+    columns.push({ key: 'reportingYear', label: 'Reporting Year', sortable: true })
     columns.push({
       key: 'flags', label: 'Anomalies', sortable: true, render: (row) => (
         row.flags > 0 ? <span className="text-red-600 font-bold">{row.flags} Flag(s)</span> : <span className="text-slate-400">None</span>
@@ -379,6 +393,7 @@ export default function SubmissionsPage() {
           {row.submissionId ? (
             <>
               <button className="text-xs text-blue-600 font-bold uppercase tracking-wide hover:underline" onClick={() => handleValidate(row.submissionId)}>Validate</button>
+              <button className="text-xs text-emerald-700 font-bold uppercase tracking-wide hover:underline" onClick={() => openReviewHub(row.id)}>Pass/Fail Review</button>
               <button className="text-xs text-sky-700 font-bold uppercase tracking-wide hover:underline" onClick={() => handleReview(row.submissionId, 'under review', row.status)}>Under Review</button>
               <button className="text-xs text-green-600 font-bold uppercase tracking-wide hover:underline" onClick={() => handleReview(row.submissionId, 'approved', row.status)}>Approve</button>
               <button className="text-xs text-orange-600 font-bold uppercase tracking-wide hover:underline" onClick={() => handleReview(row.submissionId, 'resubmission requested', row.status)}>Resubmit</button>
