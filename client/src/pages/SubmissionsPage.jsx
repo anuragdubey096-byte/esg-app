@@ -567,7 +567,7 @@ export default function SubmissionsPage() {
     return (
       <div className="page-grid">
         <SectionCard title="Submission Workspace" subtitle="Prepare and submit your ESG form with confidence and validation checks.">
-          <div className="filter-bar">
+          <div className="filter-bar workspace-meta">
             <label>
               <span>Company</span>
               <select
@@ -596,8 +596,8 @@ export default function SubmissionsPage() {
           </div>
 
           {selectedCompany ? (
-            <form onSubmit={submitPortfolioESG} className="space-y-4">
-              <div className="rounded-xl border border-slate-200 bg-white p-4">
+            <form onSubmit={submitPortfolioESG} className="workspace-form space-y-4">
+              <div className="rounded-xl border border-slate-200 bg-white p-4 workspace-panel">
                 <h4 className="mb-2 text-base font-semibold text-slate-800">Prior Year Comparison & Variance Guardrails</h4>
                 {historicalLoading ? <p className="text-sm text-slate-500">Loading prior-year baseline...</p> : null}
                 {!historicalLoading && historicalContext ? (
@@ -620,7 +620,7 @@ export default function SubmissionsPage() {
               </div>
 
               {selectedCompany.current_status === 'pre-acquisition' && (
-                <div className="rounded-xl border border-indigo-200 bg-indigo-50 p-4">
+                <div className="rounded-xl border border-indigo-200 bg-indigo-50 p-4 workspace-panel workspace-panel-guide">
                   <h4 className="mb-2 text-base font-semibold text-indigo-800">Target Onboarding Workflow</h4>
                   <ul className="list-disc pl-5 text-sm text-indigo-700 space-y-1">
                     <li>Complete the lightweight Pre-Acquisition ESG Questionnaire below.</li>
@@ -630,7 +630,7 @@ export default function SubmissionsPage() {
                 </div>
               )}
 
-              <div className="rounded-xl border border-slate-200 bg-blue-50/50 p-4">
+              <div className="rounded-xl border border-slate-200 bg-blue-50/50 p-4 workspace-panel workspace-panel-calculator">
                 <h4 className="mb-2 text-base font-semibold text-slate-800">Built-in GHG Calculator</h4>
                 <div className="flex flex-wrap items-end gap-4">
                   <label className="flex-1 min-w-[150px]">
@@ -662,7 +662,7 @@ export default function SubmissionsPage() {
                 </div>
               </div>
 
-              <div className="flex overflow-x-auto border-b border-slate-200 mb-6 pb-2 gap-2">
+              <div className="workspace-tabs flex overflow-x-auto border-b border-slate-200 mb-6 pb-2 gap-2">
                 {ESG_FORM_SECTIONS.map((section) => (
                   <button
                     key={section.key}
@@ -676,12 +676,12 @@ export default function SubmissionsPage() {
               </div>
 
               {ESG_FORM_SECTIONS.filter(s => s.key === activeTab).map((section) => (
-                <div key={section.key} className="rounded-xl border border-slate-200 bg-slate-50/60 p-4">
+                <div key={section.key} className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 workspace-panel workspace-section-panel">
                   <h4 className="mb-1 text-base font-semibold text-slate-800">{section.title}</h4>
                   <p className="mb-4 text-sm text-slate-500">{section.description}</p>
                   <div className="grid gap-3 md:grid-cols-2">
                     {section.fields.map((field) => (
-                      <div key={field.name} className="rounded-lg border border-slate-200 bg-white p-3">
+                      <div key={field.name} className="rounded-lg border border-slate-200 bg-white p-3 workspace-field">
                         <label className="mb-1 block text-sm font-medium text-slate-700" htmlFor={field.name}>
                           {field.label}
                         </label>
@@ -723,7 +723,7 @@ export default function SubmissionsPage() {
                         )}
 
                         {historicalContext ? (
-                          <div className="mt-2 rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-600">
+                          <div className="mt-2 rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-600 workspace-prior">
                             <p>
                               Prior year value:{' '}
                               <strong>
@@ -779,7 +779,7 @@ export default function SubmissionsPage() {
               ))}
 
               {(formValues.whs_policy_in_place === 'Yes' || formValues.esg_policy_in_place === 'Yes' || formValues.cybersecurity_policy_in_place === 'Yes' || formValues.anti_bribery_corruption_policy === 'Yes') && (
-                <div className="rounded-xl border border-slate-200 bg-white p-4 mt-4">
+                <div className="rounded-xl border border-slate-200 bg-white p-4 mt-4 workspace-panel workspace-evidence-panel">
                   <label className="mb-1 block text-sm font-medium text-slate-700">Upload Evidence (Policies/Certificates)</label>
                   <div className="grid gap-3 mt-2 md:grid-cols-[1fr_auto]">
                     <input type="file" id="evidence_file" className="text-sm border border-slate-300 rounded-md p-1 w-full bg-slate-50" />
@@ -800,7 +800,7 @@ export default function SubmissionsPage() {
                 </div>
               )}
 
-              <div className="rounded-xl border border-slate-200 bg-white p-4 mt-4">
+              <div className="rounded-xl border border-slate-200 bg-white p-4 mt-4 workspace-panel">
                 <h4 className="mb-4 text-base font-semibold text-slate-800">Action Plans & Improvement Initiatives</h4>
                 <div className="mb-4">
                   {selectedCompany?.action_plans?.length > 0 ? (
@@ -834,7 +834,7 @@ export default function SubmissionsPage() {
                 </div>
               </div>
 
-              <div className="rounded-xl border border-slate-200 bg-white p-4">
+              <div className="rounded-xl border border-slate-200 bg-white p-4 workspace-panel">
                 <label className="mb-1 block text-sm font-medium text-slate-700" htmlFor="submission_notes">
                   Variance Explanation & Submission Notes
                 </label>
@@ -848,14 +848,14 @@ export default function SubmissionsPage() {
                 />
               </div>
 
-              <div className="rounded-xl border border-slate-200 bg-white p-4">
+              <div className="rounded-xl border border-slate-200 bg-white p-4 workspace-panel">
                 <h4 className="mb-3 text-base font-semibold text-slate-800">Section Comments (Explain Major Changes)</h4>
                 {['environmental', 'social', 'governance'].map((sectionKey) => {
                   const commentField = `section_comment_${sectionKey}`
                   const savedComments = historicalContext?.section_comments?.[sectionKey] || []
                   return (
                     <details key={sectionKey} className="mb-3 rounded-lg border border-slate-200 bg-slate-50 p-3" open={varianceContext.requiredSections.includes(sectionKey)}>
-                      <summary className="cursor-pointer text-sm font-semibold uppercase tracking-wide text-slate-700">{sectionKey}</summary>
+                      <summary className="cursor-pointer text-sm font-semibold uppercase tracking-wide text-slate-700 workspace-comment-summary">{sectionKey}</summary>
                       <textarea
                         id={commentField}
                         name={commentField}
@@ -881,7 +881,7 @@ export default function SubmissionsPage() {
                 })}
               </div>
 
-              <div className="flex flex-wrap items-center gap-3">
+              <div className="flex flex-wrap items-center gap-3 workspace-actions">
                 <button className="button" type="submit" disabled={isSubmitting}>
                   {isSubmitting ? 'Submitting...' : 'Submit ESG Form'}
                 </button>
