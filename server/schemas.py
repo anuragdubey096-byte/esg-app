@@ -435,3 +435,33 @@ class ManagerDashboardSummary(BaseModel):
 class ManagerDashboardResponse(BaseModel):
     companies: List[CompanyDetail]
     summary: ManagerDashboardSummary
+
+
+class CsvParityFileStatus(BaseModel):
+    file_key: str
+    file_name: str
+    present: bool
+    rows: int
+
+
+class CsvParityCompanyMismatch(BaseModel):
+    dataset: str
+    company_code: str
+    company_name: str
+    expected: int
+    live: int
+    delta: int
+
+
+class CsvParityResponse(BaseModel):
+    generated_at: str
+    fixtures_dir: str
+    files: List[CsvParityFileStatus]
+    csv_totals: Dict[str, int]
+    live_totals: Dict[str, int]
+    delta_totals: Dict[str, int]
+    missing_csv_companies_in_live: List[Dict[str, str]]
+    extra_live_companies_not_in_csv: List[Dict[str, str]]
+    per_company_mismatches: List[CsvParityCompanyMismatch]
+    is_full_parity: bool
+    notes: List[str]

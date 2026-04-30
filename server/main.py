@@ -4,6 +4,7 @@ import os
 import re
 import asyncio
 import html
+from collections import Counter
 from threading import RLock
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
@@ -63,6 +64,7 @@ from schemas import (
     ReminderInfo,
     ReportExportResponse,
     ManagerDashboardResponse,
+    CsvParityResponse,
     UserResponse,
 )
 from new_esg_module import router as new_esg_router
@@ -72,6 +74,15 @@ except ImportError:  # pragma: no cover - optional dependency at runtime
     OpenAI = None
 
 BASE_DIR = Path(__file__).resolve().parent
+FIXTURES_DIR = BASE_DIR / 'fixtures'
+CSV_PARITY_FILES = {
+    'companies': 'companies.csv',
+    'cycles': 'cycles.csv',
+    'review_actions': 'review_actions.csv',
+    'validation_flags': 'validation_flags.csv',
+    'submissions_previous': 'esg_submissions_previous_year.csv',
+    'submissions_current': 'esg_submissions_current_year.csv',
+}
 if os.getenv('VERCEL'):
     EXPORT_DIR = Path('/tmp/exports')
 else:
@@ -238,6 +249,185 @@ def find_request_user(db: Session, email: str | None) -> User | None:
     if email:
         return db.query(User).filter(User.email == email).first()
     return None
+
+
+def _load_fixture_rows(file_path: Path) -> list[dict[str, str]]:
+    if not file_path.exists():
+        return []
+    with file_path.open('r', encoding='utf-8-sig', newline='') as handle:
+        reader = csv.DictReader(handle)
+        return [row for row in reader if any(str(value or '').strip() for value in row.values())]
+
+
+def _build_csv_parity_report(db: Session) -> dict[str, Any]:
+    fixture_rows: dict[str, list[dict[str, str]]] = {}
+    files: list[dict[str, Any]] = []
+    for file_key, file_name in CSV_PARITY_FILES.items():
+        file_path = FIXTURES_DIR / file_name
+        rows = _load_fixture_rows(file_path)
+        fixture_rows[file_key] = rows
+        files.append(
+            {
+                'file_key': file_key,
+                'file_name': file_name,
+                'present': file_path.exists(),
+                'rows': len(rows),
+            }
+        )
+
+    csv_companies = fixture_rows.get('companies', [])
+    csv_code_to_name: dict[str, str] = {}
+    for row in csv_companies:
+        code = str(row.get('company_id') or '').strip()
+        name = str(row.get('company_name') or '').strip()
+        if code and name:
+            csv_code_to_name[code] = name
+
+    csv_submission_counts_by_code: Counter[str] = Counter()
+    for key in ('submissions_previous', 'submissions_current'):
+        for row in fixture_rows.get(key, []):
+            code = str(row.get('company_id') or '').strip()
+            if code:
+                csv_submission_counts_by_code[code] += 1
+
+    csv_review_counts_by_code: Counter[str] = Counter()
+    for row in fixture_rows.get('review_actions', []):
+        code = str(row.get('company_id') or '').strip()
+        if code:
+            csv_review_counts_by_code[code] += 1
+
+    csv_flag_counts_by_code: Counter[str] = Counter()
+    for row in fixture_rows.get('validation_flags', []):
+        code = str(row.get('company_id') or '').strip()
+        if code:
+            csv_flag_counts_by_code[code] += 1
+
+    live_companies = db.query(Company).all()
+    live_company_by_code = {str(company.code).strip(): company for company in live_companies if company.code}
+    live_company_by_name = {str(company.name).strip(): company for company in live_companies if company.name}
+
+    missing_csv_companies_in_live: list[dict[str, str]] = []
+    per_company_mismatches: list[dict[str, Any]] = []
+
+    for code, name in sorted(csv_code_to_name.items()):
+        company = live_company_by_code.get(code) or live_company_by_name.get(name)
+        if not company:
+            missing_csv_companies_in_live.append({'company_code': code, 'company_name': name})
+            per_company_mismatches.append(
+                {
+                    'dataset': 'company',
+                    'company_code': code,
+                    'company_name': name,
+                    'expected': 1,
+                    'live': 0,
+                    'delta': -1,
+                }
+            )
+            continue
+
+        expected_submissions = int(csv_submission_counts_by_code.get(code, 0))
+        live_submissions = len(company.submissions or [])
+        if live_submissions != expected_submissions:
+            per_company_mismatches.append(
+                {
+                    'dataset': 'submission',
+                    'company_code': code,
+                    'company_name': name,
+                    'expected': expected_submissions,
+                    'live': live_submissions,
+                    'delta': live_submissions - expected_submissions,
+                }
+            )
+
+        expected_reviews = int(csv_review_counts_by_code.get(code, 0))
+        live_reviews = len(company.review_actions or [])
+        if live_reviews != expected_reviews:
+            per_company_mismatches.append(
+                {
+                    'dataset': 'review_action',
+                    'company_code': code,
+                    'company_name': name,
+                    'expected': expected_reviews,
+                    'live': live_reviews,
+                    'delta': live_reviews - expected_reviews,
+                }
+            )
+
+        expected_flags = int(csv_flag_counts_by_code.get(code, 0))
+        live_flags = len(company.validation_flags or [])
+        if live_flags != expected_flags:
+            per_company_mismatches.append(
+                {
+                    'dataset': 'validation_flag',
+                    'company_code': code,
+                    'company_name': name,
+                    'expected': expected_flags,
+                    'live': live_flags,
+                    'delta': live_flags - expected_flags,
+                }
+            )
+
+    csv_company_names = set(csv_code_to_name.values())
+    csv_company_codes = set(csv_code_to_name.keys())
+    extra_live_companies_not_in_csv = []
+    for company in live_companies:
+        company_name = str(company.name or '').strip()
+        company_code = str(company.code or '').strip()
+        if company_code and company_code in csv_company_codes:
+            continue
+        if company_name in csv_company_names:
+            continue
+        extra_live_companies_not_in_csv.append(
+            {
+                'company_code': company_code,
+                'company_name': company_name,
+            }
+        )
+
+    csv_totals = {
+        'companies': len(fixture_rows.get('companies', [])),
+        'cycles': len(fixture_rows.get('cycles', [])),
+        'review_actions': len(fixture_rows.get('review_actions', [])),
+        'validation_flags': len(fixture_rows.get('validation_flags', [])),
+        'submissions': len(fixture_rows.get('submissions_previous', [])) + len(fixture_rows.get('submissions_current', [])),
+    }
+    live_totals = {
+        'companies': len(live_companies),
+        'cycles': db.query(CollectionCycle).count(),
+        'review_actions': db.query(ReviewAction).count(),
+        'validation_flags': db.query(ValidationFlag).count(),
+        'submissions': db.query(Submission).count(),
+    }
+    delta_totals = {key: int(live_totals.get(key, 0)) - int(csv_totals.get(key, 0)) for key in csv_totals.keys()}
+
+    missing_files = [item['file_name'] for item in files if not item['present']]
+    notes: list[str] = []
+    if missing_files:
+        notes.append(f"Missing fixture files: {', '.join(sorted(missing_files))}.")
+    notes.append('Parity uses company code matching with company-name fallback.')
+    notes.append('Live totals can exceed CSV totals when manual submissions, reviews, or flags are added after import.')
+
+    is_full_parity = (
+        not missing_files
+        and not missing_csv_companies_in_live
+        and not extra_live_companies_not_in_csv
+        and not per_company_mismatches
+        and all(value == 0 for value in delta_totals.values())
+    )
+
+    return {
+        'generated_at': _utc_now_iso(),
+        'fixtures_dir': str(FIXTURES_DIR),
+        'files': files,
+        'csv_totals': csv_totals,
+        'live_totals': live_totals,
+        'delta_totals': delta_totals,
+        'missing_csv_companies_in_live': missing_csv_companies_in_live,
+        'extra_live_companies_not_in_csv': extra_live_companies_not_in_csv,
+        'per_company_mismatches': per_company_mismatches,
+        'is_full_parity': is_full_parity,
+        'notes': notes,
+    }
 
 
 def _provision_company_for_user(db: Session, user: User) -> Company:
@@ -704,6 +894,11 @@ def sso_login(provider: str, payload: SSOLoginRequest | None = None, db: Session
 def list_users(db: Session = Depends(get_db)):
     users = db.query(User).order_by(User.id.asc()).all()
     return [serialize_user(user) for user in users]
+
+
+@app.get('/admin/csv-parity-check', response_model=CsvParityResponse, dependencies=[Depends(require_manager)])
+def csv_parity_check(db: Session = Depends(get_db)):
+    return _build_csv_parity_report(db)
 
 
 @app.post('/companies', response_model=CompanyCreateResponse, dependencies=[Depends(require_manager)])
