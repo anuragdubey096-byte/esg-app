@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import DataTable from '../components/DataTable'
 import SectionCard from '../components/SectionCard'
@@ -85,6 +85,8 @@ export default function ReviewHubPage() {
   const [selectedCompanyId, setSelectedCompanyId] = useState(null)
   const [actionMessage, setActionMessage] = useState('')
   const [metricCommentsByCell, setMetricCommentsByCell] = useState({})
+  const [historicalContext, setHistoricalContext] = useState(null)
+  const [historicalLoading, setHistoricalLoading] = useState(false)
 
   const submissionRows = useMemo(() => {
     return companies.filter(c => getLatestSubmission(c)).map(c => {
@@ -120,6 +122,19 @@ export default function ReviewHubPage() {
     }
   }, [selectedCompanyId, submissionRows])
 
+  const historicalByField = useMemo(() => {
+    const lookup = {}
+    const rowsBySection = historicalContext?.rows_by_section || {}
+    Object.values(rowsBySection).forEach((rows) => {
+      if (!Array.isArray(rows)) return
+      rows.forEach((row) => {
+        if (!row?.field_key) return
+        lookup[row.field_key] = row
+      })
+    })
+    return lookup
+  }, [historicalContext])
+
   const handleMetricCommentChange = (commentKey, value) => {
     if (!commentKey) return
     setMetricCommentsByCell((current) => ({
@@ -127,6 +142,45 @@ export default function ReviewHubPage() {
       [commentKey]: value,
     }))
   }
+
+  useEffect(() => {
+    let cancelled = false
+    const loadHistoricalContext = async () => {
+      if (!selectedCompany?.id || !selectedCompany?.submissionId) {
+        setHistoricalContext(null)
+        return
+      }
+      setHistoricalLoading(true)
+      try {
+        const response = await fetch(
+          `${BACKEND_URL}/historical-context/company/${selectedCompany.id}?submission_id=${selectedCompany.submissionId}`,
+          {
+            headers: {
+              'x-user-role': user?.role || '',
+              'x-user-email': user?.email || '',
+            },
+          },
+        )
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({}))
+          throw new Error(payload.detail || `Historical context failed (${response.status})`)
+        }
+        const payload = await response.json()
+        if (!cancelled) setHistoricalContext(payload)
+      } catch (error) {
+        if (!cancelled) {
+          setHistoricalContext(null)
+          setActionMessage(error.message || 'Unable to load historical context.')
+        }
+      } finally {
+        if (!cancelled) setHistoricalLoading(false)
+      }
+    }
+    loadHistoricalContext()
+    return () => {
+      cancelled = true
+    }
+  }, [selectedCompany?.id, selectedCompany?.submissionId, user?.email, user?.role])
 
   const dataRows = useMemo(() => {
     const payloadForValidation = selectedCompany.payload && typeof selectedCompany.payload === 'object'
@@ -170,6 +224,10 @@ export default function ReviewHubPage() {
           value: normalizeValue(rawValue),
           validation: mostSevereFlag ? toValidationFromSeverity(mostSevereFlag.severity) : 'Pass',
           confidence: normalizeValue(confidence),
+          priorValue: normalizeValue(historicalByField[field.key]?.prior_value),
+          delta: historicalByField[field.key]?.delta ?? 'N/A',
+          variance: historicalByField[field.key]?.variance_percent ?? 'N/A',
+          varianceStatus: historicalByField[field.key]?.status || 'ok',
           comment: '',
         }
       })
@@ -187,6 +245,10 @@ export default function ReviewHubPage() {
         value: normalizeValue(payloadForValidation[fieldName]),
         validation: toValidationFromSeverity(firstFlag.severity),
         confidence: 'NA',
+        priorValue: normalizeValue(historicalByField[fieldName]?.prior_value),
+        delta: historicalByField[fieldName]?.delta ?? 'N/A',
+        variance: historicalByField[fieldName]?.variance_percent ?? 'N/A',
+        varianceStatus: historicalByField[fieldName]?.status || 'ok',
         comment: '',
       })
     })
@@ -201,12 +263,16 @@ export default function ReviewHubPage() {
         value: check.message,
         validation: check.status === 'fail' ? 'Fail' : check.status === 'warning' ? 'Warning' : 'Pass',
         confidence: 'NA',
+        priorValue: 'N/A',
+        delta: 'N/A',
+        variance: 'N/A',
+        varianceStatus: 'ok',
         comment: '',
       }))
     }
 
     return rows
-  }, [selectedCompany])
+  }, [historicalByField, selectedCompany])
 
   const summary = getValidationSummary(dataRows)
 
@@ -303,6 +369,23 @@ export default function ReviewHubPage() {
   const columns = [
     { key: 'metric', label: 'Metric', sortable: true },
     { key: 'value', label: 'Value', sortable: false },
+    { key: 'priorValue', label: 'Prior Year', sortable: false },
+    {
+      key: 'variance',
+      label: 'Variance',
+      sortable: true,
+      render: (row) => (
+        <span
+          style={{
+            color: row.varianceStatus === 'error' ? '#b91c1c' : row.varianceStatus === 'warning' ? '#b45309' : '#166534',
+            fontWeight: 600,
+          }}
+        >
+          {row.variance === 'N/A' ? 'N/A' : `${row.variance}%`}
+        </span>
+      ),
+    },
+    { key: 'delta', label: 'Delta', sortable: true },
     { key: 'validation', label: 'Validation Status', sortable: true, render: (row) => <StatusBadge value={row.validation} /> },
     { key: 'confidence', label: 'Confidence', sortable: false },
     {
@@ -397,6 +480,34 @@ export default function ReviewHubPage() {
             <p>Submission status: Approved</p>
           </article>
         </div>
+
+        <SectionCard title="Company Section Comments" subtitle="Read-only explanations grouped by ESG category">
+          {historicalLoading ? <p>Loading comments...</p> : null}
+          {!historicalLoading && historicalContext ? (
+            <div className="grid gap-3 md:grid-cols-3">
+              {['environmental', 'social', 'governance'].map((sectionKey) => {
+                const comments = historicalContext?.section_comments?.[sectionKey] || []
+                return (
+                  <article key={sectionKey} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-600">{sectionKey}</p>
+                    {comments.length ? (
+                      <ul className="mt-2 space-y-2 text-xs text-slate-700">
+                        {comments.slice(-5).reverse().map((item, index) => (
+                          <li key={`${sectionKey}-${index}`} className="rounded border border-slate-200 bg-white p-2">
+                            <p className="font-semibold text-slate-600">{item.timestamp || 'N/A'}</p>
+                            <p>{item.text || ''}</p>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="mt-2 text-xs text-slate-500">No comments provided.</p>
+                    )}
+                  </article>
+                )
+              })}
+            </div>
+          ) : null}
+        </SectionCard>
 
         <DataTable columns={columns} rows={dataRows} pageSize={7} />
 

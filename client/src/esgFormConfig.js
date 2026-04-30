@@ -377,5 +377,8 @@ export const createInitialFormValues = () => {
   })
 
   values.submission_notes = ''
+  values.section_comment_environmental = ''
+  values.section_comment_social = ''
+  values.section_comment_governance = ''
   return values
 }

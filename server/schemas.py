@@ -111,6 +111,9 @@ class SubmissionCreateRequest(BaseModel):
     female_board_members_percent_confidence: str
 
     submission_notes: Optional[str] = None
+    section_comment_environmental: Optional[str] = None
+    section_comment_social: Optional[str] = None
+    section_comment_governance: Optional[str] = None
 
     @model_validator(mode='after')
     def validate_submission(self):

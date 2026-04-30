@@ -29,6 +29,87 @@ const metricFields = ESG_FORM_SECTIONS.flatMap((section) =>
   section.fields.filter((field) => field.type !== 'text' && field.type !== 'textarea').map((field) => field.name)
 )
 
+const sectionFieldLookup = ESG_FORM_SECTIONS.reduce((accumulator, section) => {
+  section.fields.forEach((field) => {
+    accumulator[field.name] = {
+      sectionKey: section.key,
+      inputType: field.type,
+      label: field.label,
+    }
+  })
+  return accumulator
+}, {})
+
+function toNumber(value) {
+  if (value === null || value === undefined || value === '') return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function computeVarianceContext(formValues, priorValues) {
+  const byField = {}
+  const requiredSections = new Set()
+
+  Object.entries(sectionFieldLookup).forEach(([fieldName, meta]) => {
+    const currentValue = formValues[fieldName]
+    const priorValue = priorValues?.[fieldName]
+    let variancePercent = null
+    let delta = null
+    let status = 'ok'
+    let requiresExplanation = false
+    let changed = false
+
+    if (meta.inputType === 'number') {
+      const currentNum = toNumber(currentValue)
+      const priorNum = toNumber(priorValue)
+      if (currentNum !== null && priorNum !== null) {
+        delta = Number((currentNum - priorNum).toFixed(4))
+        changed = delta !== 0
+        if (priorNum === 0) {
+          if (changed) {
+            status = 'warning'
+            requiresExplanation = true
+          }
+        } else {
+          variancePercent = Number((((currentNum - priorNum) / Math.abs(priorNum)) * 100).toFixed(2))
+          if (Math.abs(variancePercent) > 30) status = 'error'
+          else if (Math.abs(variancePercent) > 18) status = 'warning'
+          if (Math.abs(variancePercent) > 20) requiresExplanation = true
+        }
+      }
+    } else if (meta.inputType === 'select') {
+      const currentText = String(currentValue || '').trim()
+      const priorText = String(priorValue || '').trim()
+      changed = Boolean(currentText || priorText) && currentText !== priorText
+      if (changed) {
+        status = 'error'
+        requiresExplanation = true
+      }
+    }
+
+    if (requiresExplanation) requiredSections.add(meta.sectionKey)
+
+    byField[fieldName] = {
+      fieldName,
+      sectionKey: meta.sectionKey,
+      inputType: meta.inputType,
+      label: meta.label,
+      currentValue,
+      priorValue,
+      delta,
+      variancePercent,
+      status,
+      changed,
+      requiresExplanation,
+    }
+  })
+
+  return {
+    byField,
+    requiredSections: Array.from(requiredSections),
+  }
+}
+
 function getDeadlineState(row) {
   if (row.status === 'Approved') return 'complete'
   if (!row.deadline || row.deadline === '--') {
@@ -56,7 +137,7 @@ function buildSubmissionPayload(formValues) {
   return payload
 }
 
-function validatePortfolioForm(formValues) {
+function validatePortfolioForm(formValues, varianceContext) {
   const errors = []
   metricFields.forEach((fieldName) => {
     const value = formValues[fieldName]
@@ -72,6 +153,15 @@ function validatePortfolioForm(formValues) {
   const validation = validateSubmissionData(formValues)
   validation.checks.forEach((check) => {
     if (check.status === 'fail') errors.push(check.message)
+  })
+
+  const requiredSections = varianceContext?.requiredSections || []
+  requiredSections.forEach((sectionKey) => {
+    const commentField = `section_comment_${sectionKey}`
+    const commentValue = String(formValues?.[commentField] || '').trim()
+    if (!commentValue) {
+      errors.push(`Explanation comment is required for ${sectionKey} section due to prior-year variance/change.`)
+    }
   })
 
   return [...new Set(errors)]
@@ -104,6 +194,8 @@ export default function SubmissionsPage() {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const formValuesRef = useRef(formValues)
   const [activeTab, setActiveTab] = useState(ESG_FORM_SECTIONS.length ? ESG_FORM_SECTIONS[0].key : '')
+  const [historicalContext, setHistoricalContext] = useState(null)
+  const [historicalLoading, setHistoricalLoading] = useState(false)
 
   const investorChartData = useMemo(() => {
     if (user?.role !== 'investor') return [];
@@ -328,6 +420,10 @@ export default function SubmissionsPage() {
 
   const selectedCompany = companies.find((item) => item.id === selectedCompanyId) || null
   const selectedCompanyRow = rows.find((item) => item.id === selectedCompanyId) || null
+  const varianceContext = useMemo(
+    () => computeVarianceContext(formValues, historicalContext?.prior_values || {}),
+    [formValues, historicalContext?.prior_values]
+  )
 
   useEffect(() => {
     formValuesRef.current = formValues
@@ -338,11 +434,55 @@ export default function SubmissionsPage() {
     setFormValues((current) => ({ ...current, [name]: value }))
   }
 
+  useEffect(() => {
+    let cancelled = false
+    const loadHistoricalContext = async () => {
+      if (user?.role !== 'company' || !selectedCompany) {
+        setHistoricalContext(null)
+        return
+      }
+      setHistoricalLoading(true)
+      try {
+        const query = selectedCompanyRow?.submissionId ? `?submission_id=${encodeURIComponent(selectedCompanyRow.submissionId)}` : ''
+        const response = await fetch(`${BACKEND_URL}/historical-context/company/${selectedCompany.id}${query}`, {
+          headers: {
+            'x-user-role': user?.role || '',
+            'x-user-email': user?.email || '',
+          },
+        })
+        if (!response.ok) {
+          const errorPayload = await response.json().catch(() => ({}))
+          throw new Error(errorPayload.detail || `Historical context failed (${response.status})`)
+        }
+        const payload = await response.json()
+        if (cancelled) return
+        setHistoricalContext(payload)
+        setFormValues((current) => ({
+          ...current,
+          section_comment_environmental: String(((payload.section_comments?.environmental || []).slice(-1)[0] || {}).text || current.section_comment_environmental || ''),
+          section_comment_social: String(((payload.section_comments?.social || []).slice(-1)[0] || {}).text || current.section_comment_social || ''),
+          section_comment_governance: String(((payload.section_comments?.governance || []).slice(-1)[0] || {}).text || current.section_comment_governance || ''),
+        }))
+      } catch (contextError) {
+        if (!cancelled) {
+          setHistoricalContext(null)
+          setFormMessage(contextError.message || 'Unable to load prior-year context.')
+        }
+      } finally {
+        if (!cancelled) setHistoricalLoading(false)
+      }
+    }
+    loadHistoricalContext()
+    return () => {
+      cancelled = true
+    }
+  }, [selectedCompany?.id, selectedCompanyRow?.submissionId, user?.email, user?.role])
+
   const submitPortfolioESG = async (event) => {
     event.preventDefault()
     if (!selectedCompany) return
 
-    const errors = validatePortfolioForm(formValues)
+    const errors = validatePortfolioForm(formValues, varianceContext)
     if (errors.length) {
       setFormMessage(errors[0])
       return
@@ -442,6 +582,27 @@ export default function SubmissionsPage() {
 
           {selectedCompany ? (
             <form onSubmit={submitPortfolioESG} className="space-y-4">
+              <div className="rounded-xl border border-slate-200 bg-white p-4">
+                <h4 className="mb-2 text-base font-semibold text-slate-800">Prior Year Comparison & Variance Guardrails</h4>
+                {historicalLoading ? <p className="text-sm text-slate-500">Loading prior-year baseline...</p> : null}
+                {!historicalLoading && historicalContext ? (
+                  <>
+                    <p className="text-sm text-slate-600">
+                      Current cycle: {historicalContext.current_cycle_year || 'N/A'} | Prior approved cycle: {historicalContext.prior_cycle_year || 'N/A'}
+                    </p>
+                    <p className="text-sm text-slate-600">
+                      Rules: Error {`>`}30%, Warning {`>`}18%, and explanation required for variance {`>`}20% or any dropdown/Yes-No change.
+                    </p>
+                    {varianceContext.requiredSections.length > 0 ? (
+                      <p className="text-sm font-semibold text-red-700">
+                        Explanation required for sections: {varianceContext.requiredSections.join(', ')}
+                      </p>
+                    ) : (
+                      <p className="text-sm font-semibold text-emerald-700">No blocking variance explanations currently required.</p>
+                    )}
+                  </>
+                ) : null}
+              </div>
 
               {selectedCompany.current_status === 'pre-acquisition' && (
                 <div className="rounded-xl border border-indigo-200 bg-indigo-50 p-4">
@@ -546,6 +707,37 @@ export default function SubmissionsPage() {
                           />
                         )}
 
+                        {historicalContext ? (
+                          <div className="mt-2 rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-600">
+                            <p>
+                              Prior year value:{' '}
+                              <strong>
+                                {varianceContext.byField[field.name]?.priorValue === null || varianceContext.byField[field.name]?.priorValue === undefined || varianceContext.byField[field.name]?.priorValue === ''
+                                  ? 'N/A'
+                                  : String(varianceContext.byField[field.name]?.priorValue)}
+                              </strong>
+                            </p>
+                            {varianceContext.byField[field.name]?.changed ? (
+                              <p
+                                style={{
+                                  color:
+                                    varianceContext.byField[field.name]?.status === 'error'
+                                      ? '#b91c1c'
+                                      : varianceContext.byField[field.name]?.status === 'warning'
+                                        ? '#b45309'
+                                        : '#166534',
+                                  fontWeight: 600,
+                                }}
+                              >
+                                {field.type === 'number'
+                                  ? `Variance ${varianceContext.byField[field.name]?.variancePercent ?? 'N/A'}% | Delta ${varianceContext.byField[field.name]?.delta ?? 'N/A'}`
+                                  : 'Changed from prior year value'}
+                                {varianceContext.byField[field.name]?.requiresExplanation ? ' - Explanation required' : ''}
+                              </p>
+                            ) : null}
+                          </div>
+                        ) : null}
+
                         {field.type !== 'text' && field.type !== 'textarea' ? (
                           <div className="mt-2">
                             <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500" htmlFor={`${field.name}_confidence`}>
@@ -639,6 +831,39 @@ export default function SubmissionsPage() {
                   className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
                   placeholder="Required if any metric varies by >30% year-on-year. Add any additional assumptions here."
                 />
+              </div>
+
+              <div className="rounded-xl border border-slate-200 bg-white p-4">
+                <h4 className="mb-3 text-base font-semibold text-slate-800">Section Comments (Explain Major Changes)</h4>
+                {['environmental', 'social', 'governance'].map((sectionKey) => {
+                  const commentField = `section_comment_${sectionKey}`
+                  const savedComments = historicalContext?.section_comments?.[sectionKey] || []
+                  return (
+                    <details key={sectionKey} className="mb-3 rounded-lg border border-slate-200 bg-slate-50 p-3" open={varianceContext.requiredSections.includes(sectionKey)}>
+                      <summary className="cursor-pointer text-sm font-semibold uppercase tracking-wide text-slate-700">{sectionKey}</summary>
+                      <textarea
+                        id={commentField}
+                        name={commentField}
+                        value={formValues[commentField]}
+                        onChange={handleFieldChange}
+                        className="mt-2 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                        placeholder={`Add ${sectionKey} explanation (required when flagged by variance rules).`}
+                      />
+                      {savedComments.length ? (
+                        <div className="mt-2 text-xs text-slate-600">
+                          <p className="font-semibold text-slate-700">Saved comment history</p>
+                          <ul className="space-y-1">
+                            {savedComments.slice(-5).reverse().map((item, index) => (
+                              <li key={`${sectionKey}-${index}`}>
+                                <span className="font-semibold">{item.timestamp || 'N/A'}:</span> {item.text || ''}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      ) : null}
+                    </details>
+                  )
+                })}
               </div>
 
               <div className="flex flex-wrap items-center gap-3">

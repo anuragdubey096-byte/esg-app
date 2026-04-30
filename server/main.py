@@ -837,9 +837,38 @@ def add_submission(company_id: int, submission: SubmissionCreateRequest, db: Ses
         if not has_active_unlock(db, latest_for_cycle.id, company_id, target_cycle.id):
             raise HTTPException(status_code=423, detail='This cycle is closed. Request a manager unlock.')
 
+    incoming_payload = submission.model_dump()
+    baseline_submission = latest_for_cycle
+    if baseline_submission is None:
+        baseline_submission = (
+            db.query(Submission)
+            .filter(Submission.company_id == company_id)
+            .order_by(Submission.id.desc())
+            .first()
+        )
+
+    prior_submission = _build_prior_submission(baseline_submission, db) if baseline_submission else None
+    prior_payload = parse_submission(prior_submission)
+
+    existing_payload = parse_submission(latest_for_cycle) if latest_for_cycle else {}
+    merged_payload = _upsert_section_comments(existing_payload, incoming_payload, actor_role='company')
+    comparison = _build_submission_comparison(merged_payload, prior_payload)
+    required_sections = set(comparison.get('required_sections') or [])
+    missing_sections = []
+    comments = _extract_section_comments(merged_payload)
+    for section in sorted(required_sections):
+        latest_comment = str((comments.get(section) or [{}])[-1].get('text') or '').strip() if comments.get(section) else ''
+        if not latest_comment:
+            missing_sections.append(section)
+    if missing_sections:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Variance explanation required for sections: {', '.join(missing_sections)}",
+        )
+
     if latest_for_cycle and normalize_submission_status(latest_for_cycle.status) == 'resubmission requested':
         enforce_transition(latest_for_cycle.status, 'submitted')
-        latest_for_cycle.esg_data = json.dumps(submission.model_dump())
+        latest_for_cycle.esg_data = json.dumps(merged_payload)
         latest_for_cycle.status = 'submitted'
         db.commit()
         db.refresh(latest_for_cycle)
@@ -848,7 +877,7 @@ def add_submission(company_id: int, submission: SubmissionCreateRequest, db: Ses
     submission_record = Submission(
         company_id=company_id,
         cycle_id=target_cycle.id,
-        esg_data=json.dumps(submission.model_dump()),
+        esg_data=json.dumps(merged_payload),
         status='submitted',
     )
     db.add(submission_record)
@@ -892,6 +921,44 @@ def company_dashboard(
         return [provisioned_company]
 
     return companies
+
+
+@app.get('/historical-context/company/{company_id}')
+def company_historical_context(
+    company_id: int,
+    submission_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
+    if role not in {'manager', 'company'}:
+        raise HTTPException(status_code=403, detail='Historical context is restricted to managers and company users')
+
+    company = db.query(Company).filter(Company.id == company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail='Company not found')
+
+    if role == 'company':
+        request_user = find_request_user(db, email)
+        if not request_user or request_user.id != company.user_id:
+            raise HTTPException(status_code=403, detail='Company users can only access their own historical context')
+
+    if submission_id is not None:
+        submission = (
+            db.query(Submission)
+            .filter(Submission.id == submission_id, Submission.company_id == company_id)
+            .first()
+        )
+    else:
+        submission = (
+            db.query(Submission)
+            .filter(Submission.company_id == company_id)
+            .order_by(Submission.id.desc())
+            .first()
+        )
+
+    prior_submission = _build_prior_submission(submission, db) if submission else None
+    return _build_historical_context_payload(company, submission, prior_submission)
 
 @app.patch('/submissions/{submission_id}/status', response_model=SubmissionInfo, dependencies=[Depends(require_manager)])
 def update_submission_status(
@@ -2297,6 +2364,261 @@ COLLAB_SECTION_FIELDS = {
         ('nox_sox_emissions', 'NOx / SOx Emissions', 'tonnes', 'Air Quality', 'number', False, 'Combined NOx and SOx emissions.'),
     ],
 }
+
+HISTORICAL_SECTION_FIELDS = {
+    'environmental': [
+        ('scope_1_emissions', 'Scope 1 emissions', 'number'),
+        ('scope_2_location_based', 'Scope 2 emissions (location-based)', 'number'),
+        ('scope_2_market_based', 'Scope 2 emissions (market-based)', 'number'),
+        ('scope_3_emissions', 'Scope 3 emissions', 'number'),
+        ('total_ghg_emissions', 'Total GHG emissions', 'number'),
+        ('reduction_target_percent', 'Reduction target', 'number'),
+        ('reduction_target_year', 'Reduction target year', 'number'),
+        ('reduction_strategy_description', 'Reduction strategy description', 'text'),
+        ('total_energy_consumption', 'Total energy consumption', 'number'),
+        ('renewable_energy_consumption', 'Renewable energy consumption', 'number'),
+        ('total_water_withdrawal', 'Total water withdrawal', 'number'),
+        ('water_recycled_reused', 'Water recycled or reused', 'number'),
+        ('total_waste_generated', 'Total waste generated', 'number'),
+        ('waste_diverted_from_landfill', 'Waste diverted from landfill', 'number'),
+        ('hazardous_waste_generated', 'Hazardous waste generated', 'number'),
+        ('air_quality_control_measures', 'Air quality control measures in place', 'select'),
+        ('nox_sox_emissions', 'NOx / SOx emissions', 'number'),
+    ],
+    'social': [
+        ('whs_policy_in_place', 'WHS policy in place', 'select'),
+        ('whs_policy_document_reference', 'WHS policy document reference', 'text'),
+        ('trifr', 'TRIFR', 'number'),
+        ('total_fatalities', 'Total fatalities', 'number'),
+        ('total_lost_time_injuries', 'Total lost time injuries', 'number'),
+        ('total_incidents_reported', 'Total incidents reported', 'number'),
+        ('total_employees_fte', 'Total employees (FTE)', 'number'),
+        ('employee_turnover_rate', 'Employee turnover rate', 'number'),
+        ('female_representation_percent', 'Female representation', 'number'),
+        ('female_leadership_representation_percent', 'Female representation in leadership', 'number'),
+        ('community_investment_spend', 'Community investment or spend', 'number'),
+    ],
+    'governance': [
+        ('esg_policy_in_place', 'ESG policy in place', 'select'),
+        ('esg_policy_document_reference', 'ESG policy document reference', 'text'),
+        ('board_level_esg_oversight', 'Board-level ESG oversight', 'select'),
+        ('esg_kpis_linked_to_remuneration', 'ESG KPIs linked to remuneration', 'select'),
+        ('cybersecurity_policy_in_place', 'Cybersecurity policy in place', 'select'),
+        ('cybersecurity_policy_document_reference', 'Cybersecurity policy document reference', 'text'),
+        ('cyber_incidents_in_reporting_period', 'Cyber incidents in reporting period', 'number'),
+        ('anti_bribery_corruption_policy', 'Anti-bribery and corruption policy', 'select'),
+        ('confirmed_cases_of_corruption', 'Confirmed cases of corruption', 'number'),
+        ('total_board_members', 'Total board members', 'number'),
+        ('independent_board_members_percent', 'Independent board members', 'number'),
+        ('female_board_members_percent', 'Female board members', 'number'),
+    ],
+}
+
+SECTION_ORDER = ['environmental', 'social', 'governance']
+
+
+def _safe_float(value: Any) -> float | None:
+    if value is None or value == '':
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _section_comment_field(section: str) -> str:
+    return f'section_comment_{section}'
+
+
+def _extract_section_comments(payload: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    defaults = {section: [] for section in SECTION_ORDER}
+    if not isinstance(payload, dict):
+        return defaults
+    existing = payload.get('__section_comments')
+    if isinstance(existing, dict):
+        for section in SECTION_ORDER:
+            raw_items = existing.get(section) or []
+            if isinstance(raw_items, list):
+                cleaned = []
+                for item in raw_items:
+                    if not isinstance(item, dict):
+                        continue
+                    text = str(item.get('text') or '').strip()
+                    if not text:
+                        continue
+                    cleaned.append({
+                        'text': text,
+                        'timestamp': str(item.get('timestamp') or _utc_now_iso()),
+                        'author_role': str(item.get('author_role') or 'company'),
+                    })
+                defaults[section] = cleaned[-25:]
+
+    for section in SECTION_ORDER:
+        legacy_text = str(payload.get(_section_comment_field(section)) or '').strip()
+        if legacy_text and not defaults[section]:
+            defaults[section] = [{
+                'text': legacy_text,
+                'timestamp': _utc_now_iso(),
+                'author_role': 'company',
+            }]
+    return defaults
+
+
+def _upsert_section_comments(
+    existing_payload: dict[str, Any],
+    incoming_payload: dict[str, Any],
+    actor_role: str = 'company',
+) -> dict[str, Any]:
+    merged = dict(existing_payload or {})
+    comments = _extract_section_comments(merged)
+
+    for section in SECTION_ORDER:
+        field_name = _section_comment_field(section)
+        incoming_text = str(incoming_payload.get(field_name) or '').strip()
+        if not incoming_text:
+            continue
+        section_comments = list(comments.get(section) or [])
+        latest = section_comments[-1] if section_comments else None
+        if latest and str(latest.get('text') or '').strip() == incoming_text:
+            continue
+        section_comments.append({
+            'text': incoming_text,
+            'timestamp': _utc_now_iso(),
+            'author_role': actor_role,
+        })
+        comments[section] = section_comments[-25:]
+
+    merged['__section_comments'] = comments
+    for section in SECTION_ORDER:
+        field_name = _section_comment_field(section)
+        latest_items = comments.get(section) or []
+        merged[field_name] = str((latest_items[-1] or {}).get('text') or incoming_payload.get(field_name) or '').strip()
+    return merged
+
+
+def _build_prior_submission(submission: Submission | None, db: Session) -> Submission | None:
+    if not submission:
+        return None
+    current_cycle_year = submission.cycle.cycle_year if submission.cycle else None
+    query = db.query(Submission).filter(
+        Submission.company_id == submission.company_id,
+        Submission.id != submission.id,
+        func.lower(Submission.status) == 'approved',
+    )
+    if current_cycle_year is not None:
+        query = query.join(CollectionCycle, Submission.cycle_id == CollectionCycle.id).filter(
+            CollectionCycle.cycle_year < current_cycle_year
+        ).order_by(CollectionCycle.cycle_year.desc(), Submission.id.desc())
+    else:
+        query = query.filter(Submission.id < submission.id).order_by(Submission.id.desc())
+    return query.first()
+
+
+def _variance_row_status(variance_percent: float | None) -> str:
+    if variance_percent is None:
+        return 'ok'
+    absolute = abs(variance_percent)
+    if absolute > 30:
+        return 'error'
+    if absolute > 18:
+        return 'warning'
+    return 'ok'
+
+
+def _build_submission_comparison(current_payload: dict[str, Any], prior_payload: dict[str, Any]) -> dict[str, Any]:
+    rows_by_section: dict[str, list[dict[str, Any]]] = {section: [] for section in SECTION_ORDER}
+    required_sections: set[str] = set()
+    prior_values: dict[str, Any] = {}
+
+    for section in SECTION_ORDER:
+        for field_key, field_label, input_type in HISTORICAL_SECTION_FIELDS.get(section, []):
+            curr = current_payload.get(field_key)
+            prev = prior_payload.get(field_key)
+            prior_values[field_key] = prev
+            delta = None
+            variance_percent = None
+            changed = False
+            requires_explanation = False
+            status = 'ok'
+
+            if input_type == 'number':
+                curr_num = _safe_float(curr)
+                prev_num = _safe_float(prev)
+                if curr_num is not None and prev_num is not None:
+                    delta = curr_num - prev_num
+                    if prev_num == 0:
+                        variance_percent = None
+                        changed = abs(delta) > 0
+                        if changed:
+                            requires_explanation = True
+                            status = 'warning'
+                    else:
+                        variance_percent = round((delta / abs(prev_num)) * 100, 2)
+                        changed = abs(delta) > 0
+                        status = _variance_row_status(variance_percent)
+                        if abs(variance_percent) > 20:
+                            requires_explanation = True
+                else:
+                    changed = curr_num is not None and prev_num is None
+            else:
+                curr_text = str(curr or '').strip()
+                prev_text = str(prev or '').strip()
+                changed = bool(prev_text or curr_text) and curr_text != prev_text
+                if input_type == 'select' and changed:
+                    requires_explanation = True
+                    status = 'error'
+
+            if requires_explanation:
+                required_sections.add(section)
+
+            rows_by_section[section].append({
+                'section': section,
+                'field_key': field_key,
+                'field_label': field_label,
+                'input_type': input_type,
+                'current_value': curr,
+                'prior_value': prev,
+                'delta': delta,
+                'variance_percent': variance_percent,
+                'status': status,
+                'changed': changed,
+                'requires_explanation': requires_explanation,
+            })
+
+    return {
+        'rows_by_section': rows_by_section,
+        'required_sections': sorted(required_sections),
+        'prior_values': prior_values,
+    }
+
+
+def _build_historical_context_payload(company: Company, submission: Submission | None, prior_submission: Submission | None) -> dict[str, Any]:
+    current_payload = parse_submission(submission)
+    prior_payload = parse_submission(prior_submission)
+    comments = _extract_section_comments(current_payload)
+    comparison = _build_submission_comparison(current_payload, prior_payload)
+    required_sections = set(comparison.get('required_sections') or [])
+    missing_sections = []
+    for section in sorted(required_sections):
+        latest_comment = str((comments.get(section) or [{}])[-1].get('text') or '').strip() if comments.get(section) else ''
+        if not latest_comment:
+            missing_sections.append(section)
+
+    return {
+        'company_id': company.id,
+        'company_name': company.name,
+        'submission_id': submission.id if submission else None,
+        'prior_submission_id': prior_submission.id if prior_submission else None,
+        'current_cycle_year': submission.cycle.cycle_year if submission and submission.cycle else None,
+        'prior_cycle_year': prior_submission.cycle.cycle_year if prior_submission and prior_submission.cycle else None,
+        'generated_at': _utc_now_iso(),
+        'rows_by_section': comparison.get('rows_by_section') or {},
+        'prior_values': comparison.get('prior_values') or {},
+        'required_sections': sorted(required_sections),
+        'missing_explanation_sections': missing_sections,
+        'blocked': bool(missing_sections),
+        'section_comments': comments,
+    }
 
 
 def _build_submission_collab_fields(payload: dict, section: str) -> list[dict]:
