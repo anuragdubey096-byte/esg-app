@@ -1307,13 +1307,28 @@ def agent_chat(
     tools_used: list[str] = []
     max_rounds = 5
     for _ in range(max_rounds):
-        response = client.chat.completions.create(
-            model=OPENAI_MODEL,
-            messages=conversation,
-            tools=tools,
-            tool_choice="auto",
-            temperature=0.1,
-        )
+        try:
+            response = client.chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=conversation,
+                tools=tools,
+                tool_choice="auto",
+                temperature=0.1,
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            error_text = str(exc or "").strip()
+            lowered = error_text.lower()
+            if "insufficient_quota" in lowered or "rate limit" in lowered or "429" in lowered:
+                raise HTTPException(
+                    status_code=429,
+                    detail="Agent model quota/rate limit reached. Please try again shortly.",
+                )
+            raise HTTPException(
+                status_code=503,
+                detail="Agent model is temporarily unavailable. Please try again shortly.",
+            )
         choice = (response.choices or [None])[0]
         if not choice or not choice.message:
             raise HTTPException(status_code=502, detail="No response from language model")
