@@ -225,6 +225,18 @@ export default function SubmissionsPage() {
   const [carbonResult, setCarbonResult] = useState(null)
   const [carbonLoading, setCarbonLoading] = useState(false)
   const [carbonError, setCarbonError] = useState('')
+  const [helpContentByField, setHelpContentByField] = useState({})
+  const [declarationStatus, setDeclarationStatus] = useState({ active: false })
+  const [declarationName, setDeclarationName] = useState(user?.name || '')
+  const [declarationAck, setDeclarationAck] = useState(false)
+  const [onboardingState, setOnboardingState] = useState(null)
+  const [onboardingLoading, setOnboardingLoading] = useState(false)
+
+  const authHeaders = useMemo(() => ({
+    'x-user-role': user?.role || '',
+    'x-user-email': user?.email || '',
+    ...(user?.sessionToken ? { 'x-session-token': user.sessionToken } : {}),
+  }), [user?.email, user?.role, user?.sessionToken])
 
   const investorChartData = useMemo(() => {
     if (user?.role !== 'investor') return [];
@@ -242,17 +254,13 @@ export default function SubmissionsPage() {
 
   const managerHeaders = useMemo(() => ({
     'Content-Type': 'application/json',
-    'x-user-role': user?.role || '',
-    'x-user-email': user?.email || '',
-  }), [user?.email, user?.role])
+    ...authHeaders,
+  }), [authHeaders])
 
   const managerPost = async (path, method = 'POST', body = null) => {
     const response = await fetch(`${BACKEND_URL}${path}`, {
       method,
-      headers: body ? managerHeaders : {
-        'x-user-role': user?.role || '',
-        'x-user-email': user?.email || '',
-      },
+      headers: body ? managerHeaders : authHeaders,
       ...(body ? { body: JSON.stringify(body) } : {}),
     })
     if (!response.ok) {
@@ -406,10 +414,7 @@ export default function SubmissionsPage() {
               try {
                 const res = await fetch(`${BACKEND_URL}/company/${row.id}/onboarding/complete`, {
                   method: 'POST',
-                  headers: {
-                    'x-user-role': user?.role || '',
-                    'x-user-email': user?.email || '',
-                  }
+                  headers: authHeaders,
                 });
                 if (!res.ok) throw new Error('Failed to complete onboarding');
                 alert('Company onboarded successfully!');
@@ -462,6 +467,11 @@ export default function SubmissionsPage() {
 
   const selectedCompany = companies.find((item) => item.id === selectedCompanyId) || null
   const selectedCompanyRow = rows.find((item) => item.id === selectedCompanyId) || null
+  const selectedSubmission = useMemo(() => (
+    selectedCompany ? getLatestSubmission(selectedCompany) : null
+  ), [selectedCompany])
+  const selectedSubmissionId = selectedSubmission?.id || null
+  const selectedCycleId = selectedSubmission?.cycle_id || null
   const varianceContext = useMemo(
     () => computeVarianceContext(formValues, historicalContext?.prior_values || {}),
     [formValues, historicalContext?.prior_values]
@@ -470,6 +480,10 @@ export default function SubmissionsPage() {
   useEffect(() => {
     formValuesRef.current = formValues
   }, [formValues])
+
+  useEffect(() => {
+    setDeclarationName(user?.name || '')
+  }, [user?.name])
 
   const handleFieldChange = (event) => {
     const { name, value } = event.target
@@ -521,6 +535,37 @@ export default function SubmissionsPage() {
 
   useEffect(() => {
     let cancelled = false
+    const loadHelpContent = async () => {
+      if (user?.role !== 'company') {
+        setHelpContentByField({})
+        return
+      }
+      try {
+        const query = selectedCycleId ? `?cycle_id=${encodeURIComponent(selectedCycleId)}` : ''
+        const response = await fetch(`${BACKEND_URL}/help-content${query}`, {
+          headers: authHeaders,
+        })
+        if (!response.ok) return
+        const payload = await response.json()
+        if (cancelled) return
+        const mapped = {}
+        for (const item of payload?.items || []) {
+          if (!item?.field_key) continue
+          mapped[item.field_key] = item
+        }
+        setHelpContentByField(mapped)
+      } catch {
+        if (!cancelled) setHelpContentByField({})
+      }
+    }
+    loadHelpContent()
+    return () => {
+      cancelled = true
+    }
+  }, [authHeaders, selectedCycleId, user?.role])
+
+  useEffect(() => {
+    let cancelled = false
     const loadHistoricalContext = async () => {
       if (user?.role !== 'company' || !selectedCompany) {
         setHistoricalContext(null)
@@ -530,10 +575,7 @@ export default function SubmissionsPage() {
       try {
         const query = selectedCompanyRow?.submissionId ? `?submission_id=${encodeURIComponent(selectedCompanyRow.submissionId)}` : ''
         const response = await fetch(`${BACKEND_URL}/historical-context/company/${selectedCompany.id}${query}`, {
-          headers: {
-            'x-user-role': user?.role || '',
-            'x-user-email': user?.email || '',
-          },
+          headers: authHeaders,
         })
         if (!response.ok) {
           const errorPayload = await response.json().catch(() => ({}))
@@ -561,7 +603,117 @@ export default function SubmissionsPage() {
     return () => {
       cancelled = true
     }
-  }, [selectedCompany?.id, selectedCompanyRow?.submissionId, user?.email, user?.role])
+  }, [authHeaders, selectedCompany?.id, selectedCompanyRow?.submissionId, user?.role])
+
+  useEffect(() => {
+    let cancelled = false
+    const loadDeclaration = async () => {
+      if (user?.role !== 'company' || !selectedSubmissionId) {
+        setDeclarationStatus({ active: false })
+        return
+      }
+      try {
+        const response = await fetch(`${BACKEND_URL}/submissions/${selectedSubmissionId}/declaration`, {
+          headers: authHeaders,
+        })
+        if (!response.ok) throw new Error('Unable to load declaration status')
+        const payload = await response.json()
+        if (!cancelled) setDeclarationStatus(payload || { active: false })
+      } catch {
+        if (!cancelled) setDeclarationStatus({ active: false })
+      }
+    }
+    loadDeclaration()
+    return () => {
+      cancelled = true
+    }
+  }, [authHeaders, selectedSubmissionId, user?.role])
+
+  useEffect(() => {
+    let cancelled = false
+    const loadOnboarding = async () => {
+      if (user?.role !== 'company' || !selectedCompany?.id) {
+        setOnboardingState(null)
+        return
+      }
+      setOnboardingLoading(true)
+      try {
+        const response = await fetch(`${BACKEND_URL}/companies/${selectedCompany.id}/onboarding`, {
+          headers: authHeaders,
+        })
+        if (!response.ok) throw new Error('Unable to load onboarding state')
+        const payload = await response.json()
+        if (!cancelled) setOnboardingState(payload)
+      } catch {
+        if (!cancelled) setOnboardingState(null)
+      } finally {
+        if (!cancelled) setOnboardingLoading(false)
+      }
+    }
+    loadOnboarding()
+    return () => {
+      cancelled = true
+    }
+  }, [authHeaders, selectedCompany?.id, user?.role])
+
+  const markOnboardingStepComplete = async (stepKey) => {
+    if (!selectedCompany?.id || !stepKey) return
+    try {
+      const response = await fetch(`${BACKEND_URL}/companies/${selectedCompany.id}/onboarding/steps/${encodeURIComponent(stepKey)}/complete`, {
+        method: 'POST',
+        headers: authHeaders,
+      })
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}))
+        throw new Error(payload.detail || 'Unable to update onboarding step')
+      }
+      const payload = await response.json()
+      setOnboardingState(payload)
+      setFormMessage(`Onboarding step "${stepKey}" marked complete.`)
+      await refresh()
+    } catch (stepError) {
+      setFormMessage(stepError.message || 'Unable to update onboarding step')
+    }
+  }
+
+  const declareSubmission = async () => {
+    if (!selectedSubmissionId) {
+      setFormMessage('Save the submission first, then add declaration.')
+      return
+    }
+    if (!declarationName.trim()) {
+      setFormMessage('Signatory name is required for declaration.')
+      return
+    }
+    if (!declarationAck) {
+      setFormMessage('Please acknowledge declaration before continuing.')
+      return
+    }
+
+    try {
+      const response = await fetch(`${BACKEND_URL}/submissions/${selectedSubmissionId}/declaration`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...authHeaders,
+        },
+        body: JSON.stringify({
+          signatory_name: declarationName.trim(),
+          signatory_role: 'company_signatory',
+          acknowledged: true,
+        }),
+      })
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}))
+        throw new Error(payload.detail || 'Declaration failed')
+      }
+      const payload = await response.json()
+      setDeclarationStatus(payload)
+      setFormMessage('Declaration captured. You can proceed to manager review.')
+    } catch (declareError) {
+      setFormMessage(declareError.message || 'Declaration failed')
+    }
+  }
 
   const submitPortfolioESG = async (event) => {
     event.preventDefault()
@@ -578,7 +730,10 @@ export default function SubmissionsPage() {
     try {
       const response = await fetch(`${BACKEND_URL}/company/${selectedCompany.id}/submissions`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...authHeaders,
+        },
         body: JSON.stringify(buildSubmissionPayload(formValues)),
       })
 
@@ -588,6 +743,8 @@ export default function SubmissionsPage() {
       }
 
       setFormMessage(`ESG submission saved for ${selectedCompany.name}.`)
+      setDeclarationStatus({ active: false })
+      setDeclarationAck(false)
       await refresh()
     } catch (submitError) {
       setFormMessage(submitError.message)
@@ -603,7 +760,10 @@ export default function SubmissionsPage() {
       try {
         await fetch(`${BACKEND_URL}/company/${selectedCompany.id}/submissions`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...authHeaders,
+          },
           body: JSON.stringify(buildSubmissionPayload(formValuesRef.current)),
         })
         console.log('Auto-saved at', new Date().toLocaleTimeString())
@@ -611,7 +771,7 @@ export default function SubmissionsPage() {
     }, 300000) // 5 minutes in milliseconds
 
     return () => clearInterval(autoSaveInterval)
-  }, [selectedCompany, user?.role])
+  }, [authHeaders, selectedCompany, user?.role])
 
   if (loading) {
     return (
@@ -692,11 +852,34 @@ export default function SubmissionsPage() {
               {selectedCompany.current_status === 'pre-acquisition' && (
                 <div className="rounded-xl border border-indigo-200 bg-indigo-50 p-4 workspace-panel workspace-panel-guide">
                   <h4 className="mb-2 text-base font-semibold text-indigo-800">Target Onboarding Workflow</h4>
-                  <ul className="list-disc pl-5 text-sm text-indigo-700 space-y-1">
-                    <li>Complete the lightweight Pre-Acquisition ESG Questionnaire below.</li>
-                    <li>Upload initial compliance evidence (Policies & Certificates).</li>
-                    <li>Submit for ESG Manager review to finalize acquisition onboarding.</li>
-                  </ul>
+                  {onboardingLoading ? (
+                    <p className="text-sm text-indigo-700">Loading onboarding steps...</p>
+                  ) : (
+                    <>
+                      <p className="mb-3 text-sm text-indigo-700">
+                        Progress: <strong>{onboardingState?.progress_percent ?? 0}%</strong>
+                      </p>
+                      <div className="grid gap-2 md:grid-cols-2">
+                        {Object.entries(onboardingState?.steps || {}).map(([stepKey, meta]) => (
+                          <div key={stepKey} className="rounded-lg border border-indigo-100 bg-white p-3">
+                            <p className="text-xs font-semibold uppercase tracking-wide text-indigo-700">{stepKey.replace(/_/g, ' ')}</p>
+                            <p className="text-xs text-slate-500">
+                              {meta?.completed ? `Completed at ${meta?.completed_at || 'N/A'}` : 'Pending'}
+                            </p>
+                            {!meta?.completed ? (
+                              <button
+                                type="button"
+                                className="mt-2 text-xs font-semibold text-indigo-700 hover:underline"
+                                onClick={() => markOnboardingStepComplete(stepKey)}
+                              >
+                                Mark complete
+                              </button>
+                            ) : null}
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )}
                 </div>
               )}
 
@@ -835,7 +1018,9 @@ export default function SubmissionsPage() {
                         <label className="mb-1 block text-sm font-medium text-slate-700" htmlFor={field.name}>
                           {field.label}
                         </label>
-                        <p className="mb-2 text-xs text-slate-500">{field.help}</p>
+                        <p className="mb-2 text-xs text-slate-500">
+                          {helpContentByField[field.name]?.body || field.help}
+                        </p>
 
                         {field.type === 'textarea' ? (
                           <textarea
@@ -1029,6 +1214,44 @@ export default function SubmissionsPage() {
                     </details>
                   )
                 })}
+              </div>
+
+              <div className="rounded-xl border border-slate-200 bg-white p-4 workspace-panel">
+                <h4 className="mb-2 text-base font-semibold text-slate-800">Submission Declaration</h4>
+                <p className="mb-3 text-sm text-slate-600">
+                  Required before manager can move submission to under review or approved.
+                </p>
+                <div className="grid gap-3 md:grid-cols-[2fr_1fr]">
+                  <label>
+                    <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">Signatory name</span>
+                    <input
+                      type="text"
+                      value={declarationName}
+                      onChange={(event) => setDeclarationName(event.target.value)}
+                      placeholder="Enter full name"
+                    />
+                  </label>
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Status</p>
+                    <p className={`text-sm font-semibold ${declarationStatus?.active ? 'text-emerald-700' : 'text-amber-700'}`}>
+                      {declarationStatus?.active ? 'Declared' : 'Pending declaration'}
+                    </p>
+                  </div>
+                </div>
+                <label className="mt-3 flex items-start gap-2 text-sm text-slate-600">
+                  <input
+                    type="checkbox"
+                    checked={declarationAck}
+                    onChange={(event) => setDeclarationAck(event.target.checked)}
+                    className="mt-1"
+                  />
+                  <span>I confirm this ESG submission is accurate and complete to the best of my knowledge.</span>
+                </label>
+                <div className="mt-3">
+                  <button type="button" className="button bg-emerald-600 text-white" onClick={declareSubmission}>
+                    Save Declaration
+                  </button>
+                </div>
               </div>
 
               <div className="flex flex-wrap items-center gap-3 workspace-actions">

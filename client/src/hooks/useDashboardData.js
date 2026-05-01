@@ -183,6 +183,7 @@ export default function useDashboardData(user) {
         headers: {
           'x-user-role': user?.role || '',
           'x-user-email': user?.email || '',
+          ...(user?.sessionToken ? { 'x-session-token': user.sessionToken } : {}),
         }
       })
       if (!dashboardResponse.ok) {
@@ -209,6 +210,7 @@ export default function useDashboardData(user) {
           headers: {
             'x-user-role': user?.role || '',
             'x-user-email': user?.email || '',
+            ...(user?.sessionToken ? { 'x-session-token': user.sessionToken } : {}),
           }
         })
         if (cycleResponse.ok) {

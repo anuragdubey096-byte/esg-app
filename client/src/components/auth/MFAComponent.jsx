@@ -9,8 +9,8 @@ export default function MFAComponent({ onVerify, onBack, loading }) {
   const handleSubmit = (event) => {
     event.preventDefault()
     const trimmed = code.trim()
-    if (!/^\d{6}$/.test(trimmed)) {
-      setError('Please enter a valid 6-digit code.')
+    if (!/^[A-Za-z0-9-]{6,12}$/.test(trimmed)) {
+      setError('Enter a valid authenticator code or backup code.')
       return
     }
     setError('')
@@ -20,7 +20,7 @@ export default function MFAComponent({ onVerify, onBack, loading }) {
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
       <div className="rounded-xl border border-cyan-100 bg-cyan-50/80 px-3 py-2 text-sm text-cyan-700">
-        Enter the code sent to your email.
+        Enter a 6-digit authenticator code or an unused backup code.
       </div>
 
       <InputField
@@ -28,7 +28,7 @@ export default function MFAComponent({ onVerify, onBack, loading }) {
         label="Verification code"
         value={code}
         onChange={(event) => setCode(event.target.value)}
-        placeholder="123456"
+        placeholder="123456 or ABC-DEF"
         error={error}
       />
 

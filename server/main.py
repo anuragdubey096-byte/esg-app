@@ -4,6 +4,8 @@ import os
 import re
 import asyncio
 import html
+import secrets
+import hashlib
 from collections import Counter
 from threading import RLock
 from datetime import datetime, timedelta, timezone
@@ -14,7 +16,7 @@ from urllib import request as urlrequest
 from urllib.error import URLError, HTTPError
 from xml.etree import ElementTree
 
-from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Header, Query, Body, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Header, Query, Body, WebSocket, WebSocketDisconnect, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, text
@@ -35,6 +37,19 @@ from models import (
     SubmissionUnlock,
     ReminderLog,
     NarrativeRecord,
+    UserPermission,
+    FeatureFlag,
+    AuditEvent,
+    SubmissionDeclaration,
+    ContextHelpContent,
+    CycleCloneLog,
+    OnboardingState,
+    UserSecuritySetting,
+    SessionPolicy,
+    IPAllowlist,
+    UserSession,
+    AccountLockout,
+    AuthEvent,
 )
 from schemas import (
     ActionPlanCreateRequest,
@@ -72,6 +87,11 @@ try:
     from openai import OpenAI
 except ImportError:  # pragma: no cover - optional dependency at runtime
     OpenAI = None
+
+try:
+    import pyotp
+except ImportError:  # pragma: no cover
+    pyotp = None
 
 BASE_DIR = Path(__file__).resolve().parent
 FIXTURES_DIR = BASE_DIR / 'fixtures'
@@ -141,6 +161,21 @@ NEWS_FEED_CACHE: dict[str, Any] = {
     'source_count': 0,
     'fallback_used': True,
 }
+PHASE1_FEATURE_FLAGS = {
+    'feature_25_audit_trail_viewer': True,
+    'feature_26_declaration_workflow': True,
+    'feature_31_contextual_help': True,
+    'feature_40_cycle_cloning': True,
+    'feature_42_onboarding_workflow': True,
+    'feature_44_mfa_sso': True,
+    'feature_45_session_ip_restriction': True,
+}
+ONBOARDING_STEP_ORDER = [
+    'profile_setup',
+    'data_readiness',
+    'submission_orientation',
+    'document_checklist',
+]
 
 app = FastAPI(title='ESG Data App')
 app.include_router(new_esg_router, prefix="/api/v2")
@@ -250,6 +285,227 @@ def get_user_role(x_user_role: str = Header(None)):
 
 def get_user_email(x_user_email: str | None = Header(default=None)) -> str | None:
     return x_user_email.strip().lower() if x_user_email else None
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _ensure_feature_flags_seed(db: Session):
+    for key, enabled in PHASE1_FEATURE_FLAGS.items():
+        existing = db.query(FeatureFlag).filter(FeatureFlag.key == key).first()
+        if existing:
+            continue
+        db.add(FeatureFlag(key=key, enabled=enabled, description='Phase 1 foundation feature flag'))
+    db.commit()
+
+
+def is_feature_enabled(db: Session, key: str, default: bool = False) -> bool:
+    flag = db.query(FeatureFlag).filter(FeatureFlag.key == key).first()
+    if not flag:
+        return default
+    return bool(flag.enabled)
+
+
+def _empty_permissions() -> dict[str, Any]:
+    return {
+        'can_manage_security': False,
+        'can_view_portfolio_audit': False,
+        'can_clone_cycles': False,
+        'read_only_audit_scope': [],
+    }
+
+
+def get_user_permissions(db: Session, role: str, email: str | None) -> dict[str, Any]:
+    if role != 'manager':
+        return _empty_permissions()
+    request_user = find_request_user(db, email)
+    if not request_user:
+        return _empty_permissions()
+
+    perms = db.query(UserPermission).filter(UserPermission.user_id == request_user.id).first()
+    if not perms:
+        default_scope = ['*']
+        perms = UserPermission(
+            user_id=request_user.id,
+            can_manage_security=True,
+            can_view_portfolio_audit=True,
+            can_clone_cycles=True,
+            read_only_audit_scope=json.dumps(default_scope),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(perms)
+        db.commit()
+        db.refresh(perms)
+
+    scope = parse_json_or_default(perms.read_only_audit_scope, [])
+    return {
+        'can_manage_security': bool(perms.can_manage_security),
+        'can_view_portfolio_audit': bool(perms.can_view_portfolio_audit),
+        'can_clone_cycles': bool(perms.can_clone_cycles),
+        'read_only_audit_scope': scope if isinstance(scope, list) else [],
+    }
+
+
+def require_security_admin(db: Session, role: str, email: str | None):
+    if role != 'manager':
+        raise HTTPException(status_code=403, detail='Security controls are restricted to managers')
+    perms = get_user_permissions(db, role, email)
+    if not perms.get('can_manage_security'):
+        raise HTTPException(status_code=403, detail='Security permissions are required')
+
+
+def require_clone_permission(db: Session, role: str, email: str | None):
+    if role != 'manager':
+        raise HTTPException(status_code=403, detail='Cycle cloning is restricted to managers')
+    perms = get_user_permissions(db, role, email)
+    if not perms.get('can_clone_cycles'):
+        raise HTTPException(status_code=403, detail='Cycle cloning permission is required')
+
+
+def _serialize_value(value: Any) -> str:
+    if value is None:
+        return ''
+    if isinstance(value, (dict, list)):
+        try:
+            return json.dumps(value, sort_keys=True)
+        except Exception:
+            return str(value)
+    return str(value)
+
+
+def log_audit_event(
+    db: Session,
+    *,
+    event_type: str,
+    actor_role: str | None,
+    actor_email: str | None,
+    actor_user_id: int | None = None,
+    company_id: int | None = None,
+    submission_id: int | None = None,
+    cycle_id: int | None = None,
+    field_name: str | None = None,
+    old_value: Any = None,
+    new_value: Any = None,
+    source: str = 'ui',
+    metadata: dict[str, Any] | None = None,
+):
+    db.add(
+        AuditEvent(
+            event_type=event_type,
+            actor_user_id=actor_user_id,
+            actor_email=actor_email,
+            actor_role=actor_role,
+            company_id=company_id,
+            submission_id=submission_id,
+            cycle_id=cycle_id,
+            field_name=field_name,
+            old_value=_serialize_value(old_value),
+            new_value=_serialize_value(new_value),
+            source=source,
+            metadata_json=json.dumps(metadata or {}),
+            created_at=datetime.utcnow(),
+        )
+    )
+
+
+def _declaration_statement() -> str:
+    return 'I confirm this ESG submission is accurate and complete to the best of my knowledge.'
+
+
+def _hash_backup_code(code: str) -> str:
+    return hashlib.sha256(code.encode('utf-8')).hexdigest()
+
+
+def _generate_backup_codes() -> list[str]:
+    codes = []
+    for _ in range(8):
+        raw = secrets.token_hex(3).upper()
+        codes.append(f'{raw[:3]}-{raw[3:]}')
+    return codes
+
+
+def _normalize_backup_code(value: str) -> str:
+    return re.sub(r'[^A-Za-z0-9]', '', value or '').upper()
+
+
+def _get_ip_from_request(request: Request) -> str:
+    forwarded = request.headers.get('x-forwarded-for', '')
+    candidate = forwarded.split(',')[0].strip() if forwarded else ''
+    if candidate:
+        return candidate
+    client_host = request.client.host if request.client else ''
+    return client_host or 'unknown'
+
+
+def _get_session_policy(db: Session, role: str) -> SessionPolicy:
+    normalized = normalize_role(role)
+    policy = db.query(SessionPolicy).filter(SessionPolicy.role == normalized).first()
+    if policy:
+        return policy
+
+    default_timeout = 240 if normalized == 'manager' else (480 if normalized == 'company' else 1440)
+    policy = SessionPolicy(
+        role=normalized,
+        timeout_minutes=default_timeout,
+        warn_before_minutes=5,
+        max_failed_logins=5,
+        lockout_minutes=30,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+    db.add(policy)
+    db.commit()
+    db.refresh(policy)
+    return policy
+
+
+def _check_ip_allowlist(db: Session, ip_address: str):
+    allowlist = db.query(IPAllowlist).filter(IPAllowlist.enabled.is_(True)).all()
+    if not allowlist:
+        return
+    allowed_values = {str(item.ip_address).strip() for item in allowlist}
+    if ip_address not in allowed_values:
+        raise HTTPException(status_code=403, detail='IP address is not allowed')
+
+
+def _upsert_user_lockout(db: Session, user_id: int) -> AccountLockout:
+    lockout = db.query(AccountLockout).filter(AccountLockout.user_id == user_id).first()
+    if lockout:
+        return lockout
+    lockout = AccountLockout(
+        user_id=user_id,
+        failed_attempts=0,
+        locked_until=None,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+    db.add(lockout)
+    db.commit()
+    db.refresh(lockout)
+    return lockout
+
+
+def _is_submission_declared(db: Session, submission_id: int) -> bool:
+    declaration = (
+        db.query(SubmissionDeclaration)
+        .filter(SubmissionDeclaration.submission_id == submission_id, SubmissionDeclaration.active.is_(True))
+        .first()
+    )
+    return bool(declaration)
+
+
+def _revoke_submission_declaration(db: Session, submission_id: int):
+    declaration = (
+        db.query(SubmissionDeclaration)
+        .filter(SubmissionDeclaration.submission_id == submission_id, SubmissionDeclaration.active.is_(True))
+        .first()
+    )
+    if not declaration:
+        return
+    declaration.active = False
+    declaration.revoked_at = datetime.utcnow()
 
 def require_manager(role: str = Depends(get_user_role)):
     if role != 'manager':
@@ -855,6 +1111,7 @@ def startup_event():
         ensure_submission_cycle_column(db)
         Base.metadata.create_all(bind=engine)
         seed_sample_data(db)
+        _ensure_feature_flags_seed(db)
         migrate_legacy_user_roles(db)
         fix_cycle_statuses_and_active_conflicts(db)
         ensure_submission_cycle_backfill(db)
@@ -863,11 +1120,78 @@ def startup_event():
         db.close()
 
 @app.post('/login', response_model=UserResponse)
-def login(request: LoginRequest, db: Session = Depends(get_db)):
+def login(
+    request: LoginRequest,
+    response: Response,
+    http_request: Request,
+    db: Session = Depends(get_db),
+):
+    ip_address = _get_ip_from_request(http_request)
+    if is_feature_enabled(db, 'feature_45_session_ip_restriction', default=True):
+        _check_ip_allowlist(db, ip_address)
+
     normalized_email = request.email.strip().lower()
     user = db.query(User).filter(func.lower(User.email) == normalized_email).first()
+    if user:
+        policy = _get_session_policy(db, normalize_role(user.role))
+        lockout = _upsert_user_lockout(db, user.id)
+        if lockout.locked_until and lockout.locked_until > datetime.utcnow():
+            raise HTTPException(status_code=423, detail='Account temporarily locked due to failed login attempts')
+    else:
+        policy = _get_session_policy(db, 'company')
+        lockout = None
+
     if not user or user.password != request.password:
+        if user and lockout:
+            lockout.failed_attempts = int(lockout.failed_attempts or 0) + 1
+            if lockout.failed_attempts >= int(policy.max_failed_logins or 5):
+                lockout.locked_until = datetime.utcnow() + timedelta(minutes=int(policy.lockout_minutes or 30))
+                lockout.failed_attempts = 0
+            lockout.updated_at = datetime.utcnow()
+            db.add(
+                AuthEvent(
+                    user_id=user.id,
+                    email=user.email,
+                    event_type='login_failed',
+                    ip_address=ip_address,
+                    details_json=json.dumps({'reason': 'invalid_credentials'}),
+                    created_at=datetime.utcnow(),
+                )
+            )
+            db.commit()
         raise HTTPException(status_code=401, detail='Invalid email or password')
+
+    if lockout:
+        lockout.failed_attempts = 0
+        lockout.locked_until = None
+        lockout.updated_at = datetime.utcnow()
+
+    session_token = secrets.token_urlsafe(36)
+    expires_at = datetime.utcnow() + timedelta(minutes=int(policy.timeout_minutes or 480))
+    db.add(
+        UserSession(
+            user_id=user.id,
+            session_token=session_token,
+            ip_address=ip_address,
+            user_agent=http_request.headers.get('user-agent', ''),
+            expires_at=expires_at,
+            active=True,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+    )
+    db.add(
+        AuthEvent(
+            user_id=user.id,
+            email=user.email,
+            event_type='login_success',
+            ip_address=ip_address,
+            details_json=json.dumps({'role': normalize_role(user.role)}),
+            created_at=datetime.utcnow(),
+        )
+    )
+    db.commit()
+    response.headers['x-session-token'] = session_token
     return serialize_user(user)
 
 
@@ -881,14 +1205,23 @@ def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db
 
 
 @app.post('/auth/sso/{provider}', response_model=UserResponse)
-def sso_login(provider: str, payload: SSOLoginRequest | None = None, db: Session = Depends(get_db)):
+def sso_login(
+    provider: str,
+    payload: SSOLoginRequest | None = None,
+    response: Response = None,
+    http_request: Request = None,
+    db: Session = Depends(get_db),
+):
     normalized_provider = provider.strip().lower()
-    allowed_providers = {'google', 'microsoft'}
+    allowed_providers = {'google', 'microsoft', 'azure'}
     if normalized_provider not in allowed_providers:
         raise HTTPException(status_code=400, detail='Unsupported SSO provider')
 
+    if normalized_provider == 'azure' and not is_feature_enabled(db, 'feature_44_mfa_sso', default=True):
+        raise HTTPException(status_code=403, detail='Azure SSO is disabled')
+
     email_hint = (payload.email_hint if payload else None) or ''
-    provider_default_email = 'manager@example.com' if normalized_provider == 'google' else 'investor@example.com'
+    provider_default_email = 'manager@example.com' if normalized_provider in {'google', 'azure'} else 'investor@example.com'
     target_email = email_hint.strip().lower() or provider_default_email
 
     user = db.query(User).filter(User.email == target_email).first()
@@ -902,19 +1235,618 @@ def sso_login(provider: str, payload: SSOLoginRequest | None = None, db: Session
             name='SSO User',
             email=provider_default_email,
             password='password123',
-            role=UserRole.MANAGER if normalized_provider == 'google' else UserRole.INVESTOR,
+            role=UserRole.MANAGER if normalized_provider in {'google', 'azure'} else UserRole.INVESTOR,
         )
         db.add(user)
         db.commit()
         db.refresh(user)
 
+    ip_address = _get_ip_from_request(http_request) if http_request else 'unknown'
+    if is_feature_enabled(db, 'feature_45_session_ip_restriction', default=True):
+        _check_ip_allowlist(db, ip_address)
+    policy = _get_session_policy(db, normalize_role(user.role))
+    session_token = secrets.token_urlsafe(36)
+    db.add(
+        UserSession(
+            user_id=user.id,
+            session_token=session_token,
+            ip_address=ip_address,
+            user_agent=http_request.headers.get('user-agent', '') if http_request else '',
+            expires_at=datetime.utcnow() + timedelta(minutes=int(policy.timeout_minutes or 480)),
+            active=True,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+    )
+    db.add(
+        AuthEvent(
+            user_id=user.id,
+            email=user.email,
+            event_type='sso_login_success',
+            ip_address=ip_address,
+            details_json=json.dumps({'provider': normalized_provider}),
+            created_at=datetime.utcnow(),
+        )
+    )
+    db.commit()
+    if response:
+        response.headers['x-session-token'] = session_token
+
     return serialize_user(user)
+
+
+@app.post('/auth/sso/saml/azure/start')
+def azure_saml_start(db: Session = Depends(get_db)):
+    if not is_feature_enabled(db, 'feature_44_mfa_sso', default=True):
+        raise HTTPException(status_code=403, detail='SSO is disabled')
+    state = secrets.token_urlsafe(24)
+    return {
+        'provider': 'azure',
+        'state': state,
+        'sso_url': os.getenv('AZURE_SAML_SSO_URL', ''),
+        'message': 'Redirect user to Azure SAML endpoint with returned state.',
+    }
+
+
+@app.post('/auth/sso/saml/azure/callback', response_model=UserResponse)
+def azure_saml_callback(
+    payload: dict[str, Any] = Body(default_factory=dict),
+    response: Response = None,
+    http_request: Request = None,
+    db: Session = Depends(get_db),
+):
+    if not is_feature_enabled(db, 'feature_44_mfa_sso', default=True):
+        raise HTTPException(status_code=403, detail='SSO is disabled')
+    email_value = str(payload.get('email') or payload.get('email_hint') or '').strip().lower()
+    if not email_value:
+        raise HTTPException(status_code=422, detail='email is required')
+
+    user = db.query(User).filter(User.email == email_value).first()
+    if not user:
+        user = User(
+            name=str(payload.get('name') or 'Azure SSO User'),
+            email=email_value,
+            password='password123',
+            role=to_user_role_enum(str(payload.get('role') or 'manager')),
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+    ip_address = _get_ip_from_request(http_request) if http_request else 'unknown'
+    if is_feature_enabled(db, 'feature_45_session_ip_restriction', default=True):
+        _check_ip_allowlist(db, ip_address)
+
+    policy = _get_session_policy(db, normalize_role(user.role))
+    session_token = secrets.token_urlsafe(36)
+    db.add(
+        UserSession(
+            user_id=user.id,
+            session_token=session_token,
+            ip_address=ip_address,
+            user_agent=http_request.headers.get('user-agent', '') if http_request else '',
+            expires_at=datetime.utcnow() + timedelta(minutes=int(policy.timeout_minutes or 480)),
+            active=True,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+    )
+    db.add(
+        AuthEvent(
+            user_id=user.id,
+            email=user.email,
+            event_type='azure_saml_callback_success',
+            ip_address=ip_address,
+            details_json=json.dumps({'provider': 'azure'}),
+            created_at=datetime.utcnow(),
+        )
+    )
+    db.commit()
+    if response:
+        response.headers['x-session-token'] = session_token
+    return serialize_user(user)
+
+
+@app.post('/auth/mfa/setup')
+def mfa_setup(
+    payload: dict[str, Any] = Body(default_factory=dict),
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
+    if not is_feature_enabled(db, 'feature_44_mfa_sso', default=True):
+        raise HTTPException(status_code=403, detail='MFA is disabled')
+    if pyotp is None:
+        raise HTTPException(status_code=503, detail='pyotp dependency is unavailable')
+    request_user = find_request_user(db, email)
+    if not request_user:
+        raise HTTPException(status_code=404, detail='User not found')
+    if normalize_role(request_user.role) != role:
+        raise HTTPException(status_code=403, detail='Role mismatch')
+
+    secret = pyotp.random_base32()
+    backup_codes = _generate_backup_codes()
+    setting = db.query(UserSecuritySetting).filter(UserSecuritySetting.user_id == request_user.id).first()
+    if not setting:
+        setting = UserSecuritySetting(
+            user_id=request_user.id,
+            mfa_enabled=False,
+            mfa_secret=secret,
+            mfa_backup_codes_json=json.dumps([_hash_backup_code(_normalize_backup_code(code)) for code in backup_codes]),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(setting)
+    else:
+        setting.mfa_secret = secret
+        setting.mfa_enabled = False
+        setting.mfa_backup_codes_json = json.dumps([_hash_backup_code(_normalize_backup_code(code)) for code in backup_codes])
+        setting.updated_at = datetime.utcnow()
+
+    issuer_name = str(payload.get('issuer_name') or 'ESG Platform')
+    totp = pyotp.TOTP(secret)
+    provisioning_uri = totp.provisioning_uri(name=request_user.email, issuer_name=issuer_name)
+    db.add(
+        AuthEvent(
+            user_id=request_user.id,
+            email=request_user.email,
+            event_type='mfa_setup_started',
+            ip_address='unknown',
+            details_json=json.dumps({'issuer_name': issuer_name}),
+            created_at=datetime.utcnow(),
+        )
+    )
+    db.commit()
+    return {
+        'mfa_enabled': False,
+        'secret': secret,
+        'provisioning_uri': provisioning_uri,
+        'backup_codes': backup_codes,
+    }
+
+
+@app.post('/auth/mfa/verify')
+def mfa_verify(
+    payload: dict[str, Any] = Body(default_factory=dict),
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
+    if not is_feature_enabled(db, 'feature_44_mfa_sso', default=True):
+        raise HTTPException(status_code=403, detail='MFA is disabled')
+    if pyotp is None:
+        raise HTTPException(status_code=503, detail='pyotp dependency is unavailable')
+    request_user = find_request_user(db, email)
+    if not request_user:
+        raise HTTPException(status_code=404, detail='User not found')
+    if normalize_role(request_user.role) != role:
+        raise HTTPException(status_code=403, detail='Role mismatch')
+
+    code = str(payload.get('code') or '').strip()
+    if not code:
+        raise HTTPException(status_code=422, detail='MFA code is required')
+
+    setting = db.query(UserSecuritySetting).filter(UserSecuritySetting.user_id == request_user.id).first()
+    if not setting or not setting.mfa_secret:
+        raise HTTPException(status_code=404, detail='MFA setup not found')
+
+    totp = pyotp.TOTP(setting.mfa_secret)
+    verified = bool(totp.verify(code, valid_window=1))
+    if not verified:
+        backup_hashes = parse_json_or_default(setting.mfa_backup_codes_json, [])
+        normalized_backup_code = _normalize_backup_code(code)
+        code_hash = _hash_backup_code(normalized_backup_code)
+        if isinstance(backup_hashes, list) and normalized_backup_code and code_hash in backup_hashes:
+            verified = True
+            backup_hashes = [item for item in backup_hashes if item != code_hash]
+            setting.mfa_backup_codes_json = json.dumps(backup_hashes)
+
+    if not verified:
+        raise HTTPException(status_code=401, detail='Invalid MFA code')
+
+    setting.mfa_enabled = True
+    setting.updated_at = datetime.utcnow()
+    db.add(
+        AuthEvent(
+            user_id=request_user.id,
+            email=request_user.email,
+            event_type='mfa_verified',
+            ip_address='unknown',
+            details_json='{}',
+            created_at=datetime.utcnow(),
+        )
+    )
+    db.commit()
+    return {'mfa_enabled': True, 'verified': True}
+
+
+@app.post('/auth/mfa/backup-codes/regenerate')
+def regenerate_backup_codes(
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
+    if not is_feature_enabled(db, 'feature_44_mfa_sso', default=True):
+        raise HTTPException(status_code=403, detail='MFA is disabled')
+    request_user = find_request_user(db, email)
+    if not request_user:
+        raise HTTPException(status_code=404, detail='User not found')
+    if normalize_role(request_user.role) != role:
+        raise HTTPException(status_code=403, detail='Role mismatch')
+
+    setting = db.query(UserSecuritySetting).filter(UserSecuritySetting.user_id == request_user.id).first()
+    if not setting:
+        raise HTTPException(status_code=404, detail='MFA settings not found')
+
+    backup_codes = _generate_backup_codes()
+    setting.mfa_backup_codes_json = json.dumps([_hash_backup_code(_normalize_backup_code(code)) for code in backup_codes])
+    setting.updated_at = datetime.utcnow()
+    db.commit()
+    return {'backup_codes': backup_codes}
+
+
+@app.get('/auth/mfa/status')
+def mfa_status(
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
+    if not is_feature_enabled(db, 'feature_44_mfa_sso', default=True):
+        return {'required': False, 'enabled': False}
+    request_user = find_request_user(db, email)
+    if not request_user:
+        return {'required': False, 'enabled': False}
+    setting = db.query(UserSecuritySetting).filter(UserSecuritySetting.user_id == request_user.id).first()
+    enabled = bool(setting and setting.mfa_enabled)
+    required = role == 'manager'
+    return {'required': required, 'enabled': enabled}
+
+
+@app.get('/auth/session/policy')
+def auth_session_policy(
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+):
+    policy = _get_session_policy(db, role)
+    return {
+        'role': normalize_role(role),
+        'timeout_minutes': int(policy.timeout_minutes),
+        'warn_before_minutes': int(policy.warn_before_minutes),
+        'max_failed_logins': int(policy.max_failed_logins),
+        'lockout_minutes': int(policy.lockout_minutes),
+    }
+
+
+@app.post('/auth/session/extend')
+def extend_auth_session(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    token = request.headers.get('x-session-token', '').strip()
+    if not token:
+        raise HTTPException(status_code=401, detail='Missing session token')
+    session = db.query(UserSession).filter(UserSession.session_token == token, UserSession.active.is_(True)).first()
+    if not session:
+        raise HTTPException(status_code=404, detail='Session not found')
+
+    user = db.query(User).filter(User.id == session.user_id).first()
+    role = normalize_role(user.role) if user else 'company'
+    policy = _get_session_policy(db, role)
+    session.expires_at = datetime.utcnow() + timedelta(minutes=int(policy.timeout_minutes))
+    session.updated_at = datetime.utcnow()
+    db.commit()
+    return {'extended': True, 'expires_at': session.expires_at.isoformat()}
+
+
+@app.post('/admin/sessions/{user_id}/expire', dependencies=[Depends(require_manager)])
+def force_expire_sessions(
+    user_id: int,
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
+    require_security_admin(db, role, email)
+    updated = (
+        db.query(UserSession)
+        .filter(UserSession.user_id == user_id, UserSession.active.is_(True))
+        .update({'active': False, 'updated_at': datetime.utcnow()}, synchronize_session=False)
+    )
+    db.commit()
+    return {'expired_sessions': int(updated)}
+
+
+@app.get('/admin/security/session-policies', dependencies=[Depends(require_manager)])
+def list_session_policies(
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
+    require_security_admin(db, role, email)
+    rows = db.query(SessionPolicy).order_by(SessionPolicy.role.asc()).all()
+    return [
+        {
+            'role': row.role,
+            'timeout_minutes': row.timeout_minutes,
+            'warn_before_minutes': row.warn_before_minutes,
+            'max_failed_logins': row.max_failed_logins,
+            'lockout_minutes': row.lockout_minutes,
+        }
+        for row in rows
+    ]
+
+
+@app.put('/admin/security/session-policies/{target_role}', dependencies=[Depends(require_manager)])
+def upsert_session_policy(
+    target_role: str,
+    payload: dict[str, Any] = Body(default_factory=dict),
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
+    require_security_admin(db, role, email)
+    normalized_target = normalize_role(target_role)
+    if normalized_target not in {'manager', 'company', 'investor'}:
+        raise HTTPException(status_code=400, detail='Unsupported target role')
+    row = db.query(SessionPolicy).filter(SessionPolicy.role == normalized_target).first()
+    if not row:
+        row = SessionPolicy(
+            role=normalized_target,
+            timeout_minutes=240 if normalized_target == 'manager' else (480 if normalized_target == 'company' else 1440),
+            warn_before_minutes=5,
+            max_failed_logins=5,
+            lockout_minutes=30,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(row)
+    if 'timeout_minutes' in payload:
+        row.timeout_minutes = max(10, int(payload.get('timeout_minutes') or row.timeout_minutes))
+    if 'warn_before_minutes' in payload:
+        row.warn_before_minutes = max(1, int(payload.get('warn_before_minutes') or row.warn_before_minutes))
+    if 'max_failed_logins' in payload:
+        row.max_failed_logins = max(1, int(payload.get('max_failed_logins') or row.max_failed_logins))
+    if 'lockout_minutes' in payload:
+        row.lockout_minutes = max(1, int(payload.get('lockout_minutes') or row.lockout_minutes))
+    row.updated_at = datetime.utcnow()
+    db.commit()
+    return {
+        'role': row.role,
+        'timeout_minutes': row.timeout_minutes,
+        'warn_before_minutes': row.warn_before_minutes,
+        'max_failed_logins': row.max_failed_logins,
+        'lockout_minutes': row.lockout_minutes,
+    }
+
+
+@app.get('/admin/security/ip-allowlist', dependencies=[Depends(require_manager)])
+def list_ip_allowlist(
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
+    require_security_admin(db, role, email)
+    rows = db.query(IPAllowlist).order_by(IPAllowlist.id.asc()).all()
+    return [
+        {
+            'id': row.id,
+            'ip_address': row.ip_address,
+            'enabled': bool(row.enabled),
+            'note': row.note,
+        }
+        for row in rows
+    ]
+
+
+@app.post('/admin/security/ip-allowlist', dependencies=[Depends(require_manager)])
+def add_ip_allowlist(
+    payload: dict[str, Any] = Body(default_factory=dict),
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
+    require_security_admin(db, role, email)
+    ip_address = str(payload.get('ip_address') or '').strip()
+    if not ip_address:
+        raise HTTPException(status_code=422, detail='ip_address is required')
+    existing = db.query(IPAllowlist).filter(IPAllowlist.ip_address == ip_address).first()
+    if existing:
+        existing.enabled = bool(payload.get('enabled', True))
+        existing.note = str(payload.get('note') or existing.note or '')
+        existing.updated_at = datetime.utcnow()
+        db.commit()
+        return {'id': existing.id, 'updated': True}
+    request_user = find_request_user(db, email)
+    row = IPAllowlist(
+        ip_address=ip_address,
+        enabled=bool(payload.get('enabled', True)),
+        note=str(payload.get('note') or ''),
+        created_by_user_id=request_user.id if request_user else None,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return {'id': row.id, 'created': True}
+
+
+@app.delete('/admin/security/ip-allowlist/{entry_id}', dependencies=[Depends(require_manager)])
+def delete_ip_allowlist(
+    entry_id: int,
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
+    require_security_admin(db, role, email)
+    row = db.query(IPAllowlist).filter(IPAllowlist.id == entry_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail='Allowlist entry not found')
+    db.delete(row)
+    db.commit()
+    return {'deleted': True, 'id': entry_id}
+
+
+@app.get('/permissions/me')
+def my_permissions(
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
+    return get_user_permissions(db, role, email)
+
+
+@app.get('/permissions')
+def list_permissions(
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+):
+    if role != 'manager':
+        raise HTTPException(status_code=403, detail='Permissions are restricted to managers')
+    rows = db.query(UserPermission).all()
+    return [
+        {
+            'user_id': row.user_id,
+            'can_manage_security': bool(row.can_manage_security),
+            'can_view_portfolio_audit': bool(row.can_view_portfolio_audit),
+            'can_clone_cycles': bool(row.can_clone_cycles),
+            'read_only_audit_scope': parse_json_or_default(row.read_only_audit_scope, []),
+        }
+        for row in rows
+    ]
+
+
+@app.put('/permissions/{user_id}', dependencies=[Depends(require_manager)])
+def upsert_permissions(
+    user_id: int,
+    payload: dict[str, Any] = Body(default_factory=dict),
+    db: Session = Depends(get_db),
+):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail='User not found')
+    perms = db.query(UserPermission).filter(UserPermission.user_id == user_id).first()
+    if not perms:
+        perms = UserPermission(
+            user_id=user_id,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(perms)
+
+    perms.can_manage_security = bool(payload.get('can_manage_security', perms.can_manage_security))
+    perms.can_view_portfolio_audit = bool(payload.get('can_view_portfolio_audit', perms.can_view_portfolio_audit))
+    perms.can_clone_cycles = bool(payload.get('can_clone_cycles', perms.can_clone_cycles))
+    scope = payload.get('read_only_audit_scope', parse_json_or_default(perms.read_only_audit_scope, []))
+    if not isinstance(scope, list):
+        raise HTTPException(status_code=422, detail='read_only_audit_scope must be an array')
+    perms.read_only_audit_scope = json.dumps(scope)
+    perms.updated_at = datetime.utcnow()
+    db.commit()
+    return {'updated': True, 'user_id': user_id}
 
 
 @app.get('/users', response_model=List[UserResponse], dependencies=[Depends(require_manager)])
 def list_users(db: Session = Depends(get_db)):
     users = db.query(User).order_by(User.id.asc()).all()
     return [serialize_user(user) for user in users]
+
+
+@app.get('/help-content')
+def list_help_content(
+    cycle_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+):
+    if not is_feature_enabled(db, 'feature_31_contextual_help', default=True):
+        return {'items': [], 'cycle_id': cycle_id}
+    if role not in {'manager', 'company', 'investor'}:
+        raise HTTPException(status_code=403, detail='Unsupported role')
+    target_cycle = db.query(CollectionCycle).filter(CollectionCycle.id == cycle_id).first() if cycle_id else get_active_cycle(db) or get_latest_cycle(db)
+    if not target_cycle:
+        return {'items': [], 'cycle_id': None}
+    rows = (
+        db.query(ContextHelpContent)
+        .filter(
+            ContextHelpContent.cycle_id == target_cycle.id,
+            ContextHelpContent.is_active.is_(True),
+        )
+        .order_by(ContextHelpContent.field_key.asc(), ContextHelpContent.version.desc())
+        .all()
+    )
+    dedup: dict[str, ContextHelpContent] = {}
+    for row in rows:
+        if row.field_key in dedup:
+            continue
+        dedup[row.field_key] = row
+    return {
+        'cycle_id': target_cycle.id,
+        'items': [
+            {
+                'field_key': row.field_key,
+                'title': row.title or row.field_key.replace('_', ' ').title(),
+                'body': row.body,
+                'version': row.version,
+                'updated_at': row.updated_at.isoformat() if row.updated_at else None,
+            }
+            for row in dedup.values()
+        ],
+    }
+
+
+@app.put('/admin/help-content/{cycle_id}/{field_key}', dependencies=[Depends(require_manager)])
+def upsert_help_content(
+    cycle_id: int,
+    field_key: str,
+    payload: dict[str, Any] = Body(default_factory=dict),
+    db: Session = Depends(get_db),
+    email: str | None = Depends(get_user_email),
+):
+    if not is_feature_enabled(db, 'feature_31_contextual_help', default=True):
+        raise HTTPException(status_code=403, detail='Contextual help is disabled')
+    cycle = db.query(CollectionCycle).filter(CollectionCycle.id == cycle_id).first()
+    if not cycle:
+        raise HTTPException(status_code=404, detail='Cycle not found')
+    normalized_field_key = str(field_key or '').strip()
+    if not normalized_field_key:
+        raise HTTPException(status_code=422, detail='field_key is required')
+    body = str(payload.get('body') or '').strip()
+    if not body:
+        raise HTTPException(status_code=422, detail='body is required')
+    title = str(payload.get('title') or normalized_field_key.replace('_', ' ').title())
+
+    request_user = find_request_user(db, email)
+    latest = (
+        db.query(ContextHelpContent)
+        .filter(ContextHelpContent.cycle_id == cycle_id, ContextHelpContent.field_key == normalized_field_key)
+        .order_by(ContextHelpContent.version.desc())
+        .first()
+    )
+    next_version = int(latest.version + 1) if latest else 1
+    db.add(
+        ContextHelpContent(
+            cycle_id=cycle_id,
+            field_key=normalized_field_key,
+            title=title,
+            body=body,
+            version=next_version,
+            is_active=True,
+            updated_by_user_id=request_user.id if request_user else None,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+    )
+    log_audit_event(
+        db,
+        event_type='help_content_upserted',
+        actor_role='manager',
+        actor_email=email,
+        actor_user_id=request_user.id if request_user else None,
+        cycle_id=cycle_id,
+        field_name=normalized_field_key,
+        new_value={'title': title, 'version': next_version},
+    )
+    db.commit()
+    return {'cycle_id': cycle_id, 'field_key': normalized_field_key, 'version': next_version, 'updated': True}
 
 
 @app.get('/admin/csv-parity-check', response_model=CsvParityResponse, dependencies=[Depends(require_manager)])
@@ -958,7 +1890,11 @@ def create_company(payload: CompanyCreateRequest, db: Session = Depends(get_db))
 
 
 @app.post('/cycles', response_model=CycleInfo, dependencies=[Depends(require_manager)])
-def create_cycle(payload: CycleCreateRequest, db: Session = Depends(get_db)):
+def create_cycle(
+    payload: CycleCreateRequest,
+    db: Session = Depends(get_db),
+    email: str | None = Depends(get_user_email),
+):
     existing_cycle = db.query(CollectionCycle).filter(CollectionCycle.cycle_year == payload.cycle_year).first()
     if existing_cycle:
         raise HTTPException(status_code=400, detail='A cycle for this year already exists')
@@ -992,6 +1928,16 @@ def create_cycle(payload: CycleCreateRequest, db: Session = Depends(get_db)):
         status='active' if payload.activate_on_create else 'draft',
     )
     db.add(cycle)
+    request_user = find_request_user(db, email)
+    log_audit_event(
+        db,
+        event_type='cycle_created',
+        actor_role='manager',
+        actor_email=email,
+        actor_user_id=request_user.id if request_user else None,
+        cycle_id=None,
+        new_value={'cycle_year': payload.cycle_year, 'status': cycle.status},
+    )
     db.commit()
     db.refresh(cycle)
     return serialize_cycle(cycle)
@@ -1003,7 +1949,12 @@ def list_cycles(db: Session = Depends(get_db)):
     return [serialize_cycle(cycle) for cycle in cycles]
 
 @app.patch('/cycles/{cycle_id}/status', response_model=CycleInfo, dependencies=[Depends(require_manager)])
-def update_cycle_status(cycle_id: int, payload: CycleStatusUpdateRequest, db: Session = Depends(get_db)):
+def update_cycle_status(
+    cycle_id: int,
+    payload: CycleStatusUpdateRequest,
+    db: Session = Depends(get_db),
+    email: str | None = Depends(get_user_email),
+):
     cycle = db.query(CollectionCycle).filter(CollectionCycle.id == cycle_id).first()
     if not cycle:
         raise HTTPException(status_code=404, detail='Cycle not found')
@@ -1015,26 +1966,294 @@ def update_cycle_status(cycle_id: int, payload: CycleStatusUpdateRequest, db: Se
             if active_cycle.id != cycle.id:
                 active_cycle.status = 'draft'
 
+    old_status = cycle.status
     cycle.status = next_status
+    request_user = find_request_user(db, email)
+    log_audit_event(
+        db,
+        event_type='cycle_status_updated',
+        actor_role='manager',
+        actor_email=email,
+        actor_user_id=request_user.id if request_user else None,
+        cycle_id=cycle.id,
+        field_name='status',
+        old_value=old_status,
+        new_value=next_status,
+    )
     db.commit()
     db.refresh(cycle)
     return serialize_cycle(cycle)
 
 
+@app.post('/cycles/{cycle_id}/clone', dependencies=[Depends(require_manager)])
+def clone_cycle(
+    cycle_id: int,
+    payload: dict[str, Any] = Body(default_factory=dict),
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
+    if not is_feature_enabled(db, 'feature_40_cycle_cloning', default=True):
+        raise HTTPException(status_code=403, detail='Cycle cloning is disabled')
+    require_clone_permission(db, role, email)
+    source = db.query(CollectionCycle).filter(CollectionCycle.id == cycle_id).first()
+    if not source:
+        raise HTTPException(status_code=404, detail='Source cycle not found')
+
+    target_year = int(payload.get('target_year') or (int(source.cycle_year) + 1))
+    existing = db.query(CollectionCycle).filter(CollectionCycle.cycle_year == target_year).first()
+    if existing:
+        raise HTTPException(status_code=400, detail='Target cycle year already exists')
+
+    cloned_open_date = payload.get('submission_open_date') or source.submission_open_date
+    cloned_deadline = payload.get('submission_deadline') or source.submission_deadline
+    cloned_extension = payload.get('extension_date') if 'extension_date' in payload else source.extension_date
+
+    actor = find_request_user(db, email)
+    cloned = CollectionCycle(
+        cycle_year=target_year,
+        submission_open_date=cloned_open_date,
+        submission_deadline=cloned_deadline,
+        extension_date=cloned_extension,
+        reminder_schedule=source.reminder_schedule,
+        template_config=source.template_config,
+        prefill_summary=source.prefill_summary,
+        status='draft',
+        created_by_user_id=actor.id if actor else None,
+    )
+    db.add(cloned)
+    db.commit()
+    db.refresh(cloned)
+
+    db.add(
+        CycleCloneLog(
+            source_cycle_id=source.id,
+            target_cycle_id=cloned.id,
+            cloned_by_user_id=actor.id if actor else None,
+            clone_options_json=json.dumps({'target_year': target_year}),
+            created_at=datetime.utcnow(),
+        )
+    )
+    log_audit_event(
+        db,
+        event_type='cycle_cloned',
+        actor_role=role,
+        actor_email=email,
+        actor_user_id=actor.id if actor else None,
+        cycle_id=cloned.id,
+        old_value={'source_cycle_id': source.id},
+        new_value={'target_cycle_id': cloned.id, 'target_year': target_year},
+        metadata={'source_cycle_year': source.cycle_year},
+    )
+    db.commit()
+    return serialize_cycle(cloned)
+
+
+def _default_onboarding_steps() -> dict[str, Any]:
+    return {key: {'completed': False, 'completed_at': None} for key in ONBOARDING_STEP_ORDER}
+
+
+def _normalize_onboarding_state(state: OnboardingState | None) -> dict[str, Any]:
+    if not state:
+        return {'steps': _default_onboarding_steps(), 'progress_percent': 0, 'completed': False}
+    steps = parse_json_or_default(state.steps_json, _default_onboarding_steps())
+    if not isinstance(steps, dict):
+        steps = _default_onboarding_steps()
+    completed_count = sum(1 for key in ONBOARDING_STEP_ORDER if bool((steps.get(key) or {}).get('completed')))
+    total = max(len(ONBOARDING_STEP_ORDER), 1)
+    progress_percent = int(round((completed_count / total) * 100))
+    return {
+        'steps': steps,
+        'progress_percent': progress_percent,
+        'completed': completed_count == total,
+    }
+
+
+def _upsert_onboarding_state(db: Session, company_id: int, updated_by_user_id: int | None = None) -> OnboardingState:
+    state = db.query(OnboardingState).filter(OnboardingState.company_id == company_id).first()
+    if state:
+        return state
+    state = OnboardingState(
+        company_id=company_id,
+        steps_json=json.dumps(_default_onboarding_steps()),
+        progress_percent=0,
+        completed=False,
+        updated_by_user_id=updated_by_user_id,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+    db.add(state)
+    db.commit()
+    db.refresh(state)
+    return state
+
+
+@app.get('/companies/{company_id}/onboarding')
+def get_onboarding_state(
+    company_id: int,
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
+    company = db.query(Company).filter(Company.id == company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail='Company not found')
+    if role == 'company':
+        request_user = find_request_user(db, email)
+        if not request_user or request_user.id != company.user_id:
+            raise HTTPException(status_code=403, detail='Company users can only access their own onboarding state')
+
+    request_user = find_request_user(db, email)
+    state = _upsert_onboarding_state(
+        db,
+        company_id=company_id,
+        updated_by_user_id=request_user.id if request_user else None,
+    )
+    normalized = _normalize_onboarding_state(state)
+    return {'company_id': company_id, **normalized}
+
+
+@app.get('/companies/onboarding/overview', dependencies=[Depends(require_manager)])
+def onboarding_overview(
+    db: Session = Depends(get_db),
+):
+    companies = db.query(Company).order_by(Company.name.asc()).all()
+    items: list[dict[str, Any]] = []
+    for company in companies:
+        state = db.query(OnboardingState).filter(OnboardingState.company_id == company.id).first()
+        normalized = _normalize_onboarding_state(state)
+        items.append(
+            {
+                'company_id': company.id,
+                'company_name': company.name,
+                'company_status': company.current_status,
+                'progress_percent': normalized['progress_percent'],
+                'completed': normalized['completed'],
+                'steps': normalized['steps'],
+            }
+        )
+    return {'items': items, 'count': len(items)}
+
+
+@app.post('/companies/{company_id}/onboarding/steps/{step_key}/complete')
+def complete_onboarding_step(
+    company_id: int,
+    step_key: str,
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
+    if step_key not in ONBOARDING_STEP_ORDER:
+        raise HTTPException(status_code=400, detail='Invalid onboarding step')
+    company = db.query(Company).filter(Company.id == company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail='Company not found')
+    request_user = find_request_user(db, email)
+    if role == 'company' and (not request_user or request_user.id != company.user_id):
+        raise HTTPException(status_code=403, detail='Company users can only complete their own onboarding steps')
+    if role not in {'manager', 'company'}:
+        raise HTTPException(status_code=403, detail='Unsupported role for onboarding step completion')
+
+    state = _upsert_onboarding_state(db, company_id=company_id, updated_by_user_id=request_user.id if request_user else None)
+    steps = parse_json_or_default(state.steps_json, _default_onboarding_steps())
+    if not isinstance(steps, dict):
+        steps = _default_onboarding_steps()
+    if step_key not in steps:
+        steps[step_key] = {'completed': False, 'completed_at': None}
+    steps[step_key]['completed'] = True
+    steps[step_key]['completed_at'] = _utc_now_iso()
+    state.steps_json = json.dumps(steps)
+    normalized = _normalize_onboarding_state(state)
+    state.progress_percent = normalized['progress_percent']
+    state.completed = normalized['completed']
+    state.updated_by_user_id = request_user.id if request_user else None
+    state.updated_at = datetime.utcnow()
+    if state.completed:
+        company.current_status = 'active'
+
+    log_audit_event(
+        db,
+        event_type='onboarding_step_completed',
+        actor_role=role,
+        actor_email=email,
+        actor_user_id=request_user.id if request_user else None,
+        company_id=company_id,
+        field_name='onboarding_step',
+        new_value={'step': step_key},
+    )
+    db.commit()
+    return {'company_id': company_id, **normalized}
+
+
+@app.post('/companies/{company_id}/onboarding/retrigger', dependencies=[Depends(require_manager)])
+def retrigger_onboarding(
+    company_id: int,
+    db: Session = Depends(get_db),
+    email: str | None = Depends(get_user_email),
+):
+    company = db.query(Company).filter(Company.id == company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail='Company not found')
+    request_user = find_request_user(db, email)
+    state = _upsert_onboarding_state(db, company_id=company_id, updated_by_user_id=request_user.id if request_user else None)
+    state.steps_json = json.dumps(_default_onboarding_steps())
+    state.progress_percent = 0
+    state.completed = False
+    state.updated_by_user_id = request_user.id if request_user else None
+    state.updated_at = datetime.utcnow()
+    company.current_status = 'pre-acquisition'
+    log_audit_event(
+        db,
+        event_type='onboarding_retriggered',
+        actor_role='manager',
+        actor_email=email,
+        actor_user_id=request_user.id if request_user else None,
+        company_id=company_id,
+    )
+    db.commit()
+    return {'message': 'Onboarding reset successfully.', 'company_id': company_id}
+
+
 @app.post('/company/{company_id}/onboarding/complete', dependencies=[Depends(require_manager)])
-def complete_onboarding(company_id: int, db: Session = Depends(get_db)):
+def complete_onboarding(company_id: int, db: Session = Depends(get_db), email: str | None = Depends(get_user_email)):
     company = db.query(Company).filter(Company.id == company_id).first()
     if not company:
         raise HTTPException(status_code=404, detail='Company not found')
     company.current_status = 'active'
+    request_user = find_request_user(db, email)
+    state = _upsert_onboarding_state(db, company_id=company_id, updated_by_user_id=request_user.id if request_user else None)
+    complete_steps = {
+        key: {'completed': True, 'completed_at': _utc_now_iso()}
+        for key in ONBOARDING_STEP_ORDER
+    }
+    state.steps_json = json.dumps(complete_steps)
+    state.progress_percent = 100
+    state.completed = True
+    state.updated_by_user_id = request_user.id if request_user else None
+    state.updated_at = datetime.utcnow()
+    log_audit_event(
+        db,
+        event_type='onboarding_completed',
+        actor_role='manager',
+        actor_email=email,
+        actor_user_id=request_user.id if request_user else None,
+        company_id=company_id,
+    )
     db.commit()
     return {"message": "Onboarding complete. Company is now active in the portfolio."}
 
 @app.post('/company/{company_id}/submissions', response_model=SubmissionInfo)
-def add_submission(company_id: int, submission: SubmissionCreateRequest, db: Session = Depends(get_db)):
+def add_submission(
+    company_id: int,
+    submission: SubmissionCreateRequest,
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
     company = db.query(Company).filter(Company.id == company_id).first()
     if not company:
         raise HTTPException(status_code=404, detail='Company not found')
+    request_user = find_request_user(db, email)
 
     target_cycle = resolve_submission_cycle(db)
     if not target_cycle:
@@ -1084,8 +2303,24 @@ def add_submission(company_id: int, submission: SubmissionCreateRequest, db: Ses
 
     if latest_for_cycle and normalize_submission_status(latest_for_cycle.status) == 'resubmission requested':
         enforce_transition(latest_for_cycle.status, 'submitted')
+        previous_payload = parse_submission(latest_for_cycle)
         latest_for_cycle.esg_data = json.dumps(merged_payload)
         latest_for_cycle.status = 'submitted'
+        if is_feature_enabled(db, 'feature_26_declaration_workflow', default=True):
+            _revoke_submission_declaration(db, latest_for_cycle.id)
+        log_audit_event(
+            db,
+            event_type='submission_resubmitted',
+            actor_role=role,
+            actor_email=email,
+            actor_user_id=request_user.id if request_user else None,
+            company_id=company_id,
+            submission_id=latest_for_cycle.id,
+            cycle_id=latest_for_cycle.cycle_id,
+            old_value=previous_payload,
+            new_value=merged_payload,
+            source='ui',
+        )
         db.commit()
         db.refresh(latest_for_cycle)
         return latest_for_cycle
@@ -1097,8 +2332,33 @@ def add_submission(company_id: int, submission: SubmissionCreateRequest, db: Ses
         status='submitted',
     )
     db.add(submission_record)
+    log_audit_event(
+        db,
+        event_type='submission_created',
+        actor_role=role,
+        actor_email=email,
+        actor_user_id=request_user.id if request_user else None,
+        company_id=company_id,
+        submission_id=None,
+        cycle_id=target_cycle.id,
+        old_value={},
+        new_value=merged_payload,
+        source='ui',
+    )
     db.commit()
     db.refresh(submission_record)
+    log_audit_event(
+        db,
+        event_type='submission_created_postcommit',
+        actor_role=role,
+        actor_email=email,
+        actor_user_id=request_user.id if request_user else None,
+        company_id=company_id,
+        submission_id=submission_record.id,
+        cycle_id=submission_record.cycle_id,
+        source='ui',
+    )
+    db.commit()
     _log_live_event(
         event_type='submission_submitted',
         title='Submission submitted',
@@ -1137,6 +2397,182 @@ def company_dashboard(
         return [provisioned_company]
 
     return companies
+
+
+@app.post('/submissions/{submission_id}/declaration')
+def declare_submission(
+    submission_id: int,
+    payload: dict[str, Any] = Body(default_factory=dict),
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
+    if not is_feature_enabled(db, 'feature_26_declaration_workflow', default=True):
+        raise HTTPException(status_code=403, detail='Declaration workflow is disabled')
+    submission = db.query(Submission).filter(Submission.id == submission_id).first()
+    if not submission:
+        raise HTTPException(status_code=404, detail='Submission not found')
+    company = db.query(Company).filter(Company.id == submission.company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail='Company not found')
+    request_user = find_request_user(db, email)
+    if role == 'company':
+        if not request_user or request_user.id != company.user_id:
+            raise HTTPException(status_code=403, detail='Company users can only declare their own submissions')
+    elif role != 'manager':
+        raise HTTPException(status_code=403, detail='Unsupported role for declaration')
+
+    signatory_name = str(payload.get('signatory_name') or (request_user.name if request_user else '')).strip()
+    if not signatory_name:
+        raise HTTPException(status_code=422, detail='signatory_name is required')
+    ack = bool(payload.get('acknowledged', False))
+    if not ack:
+        raise HTTPException(status_code=422, detail='Declaration acknowledgement is required')
+
+    existing = db.query(SubmissionDeclaration).filter(SubmissionDeclaration.submission_id == submission_id).first()
+    if existing:
+        existing.signatory_name = signatory_name
+        existing.signatory_role = str(payload.get('signatory_role') or role)
+        existing.statement_version = str(payload.get('statement_version') or 'v1')
+        existing.declared_at = datetime.utcnow()
+        existing.revoked_at = None
+        existing.active = True
+        existing.metadata_json = json.dumps({'statement': _declaration_statement()})
+    else:
+        db.add(
+            SubmissionDeclaration(
+                submission_id=submission_id,
+                company_id=submission.company_id,
+                signatory_name=signatory_name,
+                signatory_role=str(payload.get('signatory_role') or role),
+                statement_version=str(payload.get('statement_version') or 'v1'),
+                declared_at=datetime.utcnow(),
+                active=True,
+                metadata_json=json.dumps({'statement': _declaration_statement()}),
+            )
+        )
+    log_audit_event(
+        db,
+        event_type='submission_declared',
+        actor_role=role,
+        actor_email=email,
+        actor_user_id=request_user.id if request_user else None,
+        company_id=submission.company_id,
+        submission_id=submission_id,
+        cycle_id=submission.cycle_id,
+        field_name='declaration',
+        new_value={'signatory_name': signatory_name},
+        metadata={'statement': _declaration_statement()},
+    )
+    db.commit()
+    return {
+        'submission_id': submission_id,
+        'company_id': submission.company_id,
+        'active': True,
+        'signatory_name': signatory_name,
+        'statement': _declaration_statement(),
+    }
+
+
+@app.get('/submissions/{submission_id}/declaration')
+def get_submission_declaration(
+    submission_id: int,
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
+    submission = db.query(Submission).filter(Submission.id == submission_id).first()
+    if not submission:
+        raise HTTPException(status_code=404, detail='Submission not found')
+    company = db.query(Company).filter(Company.id == submission.company_id).first()
+    if role == 'company':
+        request_user = find_request_user(db, email)
+        if not request_user or not company or request_user.id != company.user_id:
+            raise HTTPException(status_code=403, detail='Company users can only view their own declarations')
+
+    declaration = db.query(SubmissionDeclaration).filter(SubmissionDeclaration.submission_id == submission_id).first()
+    if not declaration:
+        return {'submission_id': submission_id, 'active': False}
+    return {
+        'submission_id': submission_id,
+        'company_id': declaration.company_id,
+        'active': bool(declaration.active),
+        'signatory_name': declaration.signatory_name,
+        'signatory_role': declaration.signatory_role,
+        'statement_version': declaration.statement_version,
+        'declared_at': declaration.declared_at.isoformat() if declaration.declared_at else None,
+        'revoked_at': declaration.revoked_at.isoformat() if declaration.revoked_at else None,
+    }
+
+
+@app.get('/audit/events')
+def audit_events(
+    company_id: int | None = Query(default=None),
+    submission_id: int | None = Query(default=None),
+    field_name: str | None = Query(default=None),
+    event_type: str | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=1000),
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
+    if not is_feature_enabled(db, 'feature_25_audit_trail_viewer', default=True):
+        raise HTTPException(status_code=403, detail='Audit trail is disabled')
+
+    query = db.query(AuditEvent)
+    if company_id is not None:
+        query = query.filter(AuditEvent.company_id == company_id)
+    if submission_id is not None:
+        query = query.filter(AuditEvent.submission_id == submission_id)
+    if field_name:
+        query = query.filter(AuditEvent.field_name == field_name)
+    if event_type:
+        query = query.filter(AuditEvent.event_type == event_type)
+
+    if role == 'company':
+        request_user = find_request_user(db, email)
+        if not request_user:
+            raise HTTPException(status_code=403, detail='Company access denied')
+        owned_company = db.query(Company).filter(Company.user_id == request_user.id).first()
+        if not owned_company:
+            return {'items': [], 'count': 0}
+        query = query.filter(AuditEvent.company_id == owned_company.id)
+    elif role == 'manager':
+        perms = get_user_permissions(db, role, email)
+        if not perms.get('can_view_portfolio_audit'):
+            raise HTTPException(status_code=403, detail='Audit permissions are required')
+        scope = perms.get('read_only_audit_scope') or []
+        if isinstance(scope, list) and scope and '*' not in scope:
+            allowed_company_ids = {int(item) for item in scope if str(item).isdigit()}
+            if allowed_company_ids:
+                query = query.filter(AuditEvent.company_id.in_(list(allowed_company_ids)))
+            else:
+                return {'items': [], 'count': 0}
+    else:
+        raise HTTPException(status_code=403, detail='Audit trail is restricted to manager/company roles')
+
+    rows = query.order_by(AuditEvent.id.desc()).limit(limit).all()
+    return {
+        'count': len(rows),
+        'items': [
+            {
+                'id': row.id,
+                'event_type': row.event_type,
+                'actor_email': row.actor_email,
+                'actor_role': row.actor_role,
+                'company_id': row.company_id,
+                'submission_id': row.submission_id,
+                'cycle_id': row.cycle_id,
+                'field_name': row.field_name,
+                'old_value': row.old_value,
+                'new_value': row.new_value,
+                'source': row.source,
+                'metadata': parse_json_or_default(row.metadata_json, {}),
+                'created_at': row.created_at.isoformat() if row.created_at else None,
+            }
+            for row in rows
+        ],
+    }
 
 
 @app.get('/historical-context/company/{company_id}')
@@ -1180,7 +2616,9 @@ def company_historical_context(
 def update_submission_status(
     submission_id: int,
     payload: SubmissionStatusUpdateRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
 ):
     next_status = normalize_submission_status(payload.status)
     if next_status not in ALLOWED_REVIEW_STATUSES:
@@ -1189,9 +2627,30 @@ def update_submission_status(
     submission = db.query(Submission).filter(Submission.id == submission_id).first()
     if not submission:
         raise HTTPException(status_code=404, detail='Submission not found')
+    if (
+        is_feature_enabled(db, 'feature_26_declaration_workflow', default=True)
+        and next_status in {'submitted', 'under review', 'approved'}
+        and not _is_submission_declared(db, submission_id)
+    ):
+        raise HTTPException(status_code=422, detail='Active declaration is required before review status transitions')
 
+    old_status = submission.status
     enforce_transition(submission.status, next_status)
     submission.status = next_status
+    request_user = find_request_user(db, email)
+    log_audit_event(
+        db,
+        event_type='submission_status_updated',
+        actor_role=role,
+        actor_email=email,
+        actor_user_id=request_user.id if request_user else None,
+        company_id=submission.company_id,
+        submission_id=submission.id,
+        cycle_id=submission.cycle_id,
+        field_name='status',
+        old_value=old_status,
+        new_value=next_status,
+    )
     db.commit()
     db.refresh(submission)
     return submission
@@ -1396,7 +2855,13 @@ def upload_evidence(company_id: int, file: UploadFile = File(...), db: Session =
     return {"filename": file.filename, "message": "Evidence uploaded successfully"}
 
 @app.post('/submissions/{submission_id}/review', dependencies=[Depends(require_manager)])
-def review_submission(submission_id: int, payload: ReviewSubmissionRequest, db: Session = Depends(get_db)):
+def review_submission(
+    submission_id: int,
+    payload: ReviewSubmissionRequest,
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
     submission = db.query(Submission).filter(Submission.id == submission_id).first()
     if not submission:
         raise HTTPException(status_code=404, detail='Submission not found')
@@ -1404,7 +2869,14 @@ def review_submission(submission_id: int, payload: ReviewSubmissionRequest, db: 
     next_status = normalize_submission_status(payload.review_status)
     if next_status not in ALLOWED_REVIEW_STATUSES:
         raise HTTPException(status_code=400, detail='Invalid review status')
+    if (
+        is_feature_enabled(db, 'feature_26_declaration_workflow', default=True)
+        and next_status in {'under review', 'approved'}
+        and not _is_submission_declared(db, submission_id)
+    ):
+        raise HTTPException(status_code=422, detail='Active declaration is required before review')
 
+    old_status = submission.status
     enforce_transition(submission.status, next_status)
     submission.status = next_status
     reporting_year = submission.cycle.cycle_year if submission.cycle else datetime.utcnow().year
@@ -1416,12 +2888,32 @@ def review_submission(submission_id: int, payload: ReviewSubmissionRequest, db: 
         review_comment=payload.review_comment,
     )
     db.add(review_action)
+    request_user = find_request_user(db, email)
+    log_audit_event(
+        db,
+        event_type='submission_reviewed',
+        actor_role=role,
+        actor_email=email,
+        actor_user_id=request_user.id if request_user else None,
+        company_id=submission.company_id,
+        submission_id=submission.id,
+        cycle_id=submission.cycle_id,
+        field_name='review_status',
+        old_value=old_status,
+        new_value=next_status,
+        metadata={'review_comment': payload.review_comment},
+    )
     db.commit()
     db.refresh(submission)
     return {"message": "Review logged successfully", "status": submission.status}
 
 @app.post('/submissions/{submission_id}/validate', dependencies=[Depends(require_manager)])
-def validate_submission(submission_id: int, db: Session = Depends(get_db)):
+def validate_submission(
+    submission_id: int,
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
     submission = db.query(Submission).filter(Submission.id == submission_id).first()
     if not submission:
         raise HTTPException(status_code=404, detail='Submission not found')
@@ -1573,6 +3065,18 @@ def validate_submission(submission_id: int, db: Session = Depends(get_db)):
                     ))
                     flags_created += 1
 
+    request_user = find_request_user(db, email)
+    log_audit_event(
+        db,
+        event_type='submission_validated',
+        actor_role=role,
+        actor_email=email,
+        actor_user_id=request_user.id if request_user else None,
+        company_id=submission.company_id,
+        submission_id=submission.id,
+        cycle_id=submission.cycle_id,
+        metadata={'flags_created': flags_created},
+    )
     db.commit()
     return {"message": f"Validation complete. {flags_created} anomalies flagged.", "flagged": flags_created > 0}
 
@@ -1582,6 +3086,8 @@ def set_validation_decision(
     submission_id: int,
     payload: ValidationDecisionRequest,
     db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
 ):
     submission = db.query(Submission).filter(Submission.id == submission_id).first()
     if not submission:
@@ -1633,6 +3139,19 @@ def set_validation_decision(
             )
         )
 
+    request_user = find_request_user(db, email)
+    log_audit_event(
+        db,
+        event_type='validation_decision_set',
+        actor_role=role,
+        actor_email=email,
+        actor_user_id=request_user.id if request_user else None,
+        company_id=submission.company_id,
+        submission_id=submission.id,
+        cycle_id=submission.cycle_id,
+        field_name=field_name,
+        new_value=decision,
+    )
     db.commit()
     return {
         'message': f'Validation decision recorded as {decision.upper()}.',
@@ -1896,6 +3415,18 @@ def unlock_submission(
         active=True,
     )
     db.add(unlock)
+    request_user = find_request_user(db, user_email)
+    log_audit_event(
+        db,
+        event_type='submission_unlocked',
+        actor_role='manager',
+        actor_email=user_email,
+        actor_user_id=request_user.id if request_user else None,
+        company_id=submission.company_id,
+        submission_id=submission.id,
+        cycle_id=submission.cycle_id,
+        metadata={'reason': payload.reason, 'expiry_hours': payload.expiry_hours},
+    )
     db.commit()
     db.refresh(unlock)
     company = db.query(Company).filter(Company.id == submission.company_id).first()
@@ -1956,6 +3487,17 @@ def send_reminder(
         delivery_status='logged',
     )
     db.add(reminder)
+    request_user = find_request_user(db, user_email)
+    log_audit_event(
+        db,
+        event_type='reminder_sent',
+        actor_role='manager',
+        actor_email=user_email,
+        actor_user_id=request_user.id if request_user else None,
+        company_id=company.id,
+        cycle_id=cycle.id,
+        new_value={'channel': payload.channel, 'message': payload.message},
+    )
     db.commit()
     db.refresh(reminder)
     _log_live_event(

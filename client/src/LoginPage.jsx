@@ -22,7 +22,25 @@ export default function LoginPage({ onLogin }) {
       }
 
       const user = await response.json()
-      return { user, mfaRequired: email.toLowerCase().includes('+mfa') }
+      const sessionToken = response.headers.get('x-session-token') || ''
+      const authenticatedUser = { ...user, sessionToken }
+
+      const mfaStatusResponse = await fetch(`${backendUrl}/auth/mfa/status`, {
+        headers: {
+          'x-user-role': authenticatedUser.role || '',
+          'x-user-email': authenticatedUser.email || '',
+          ...(sessionToken ? { 'x-session-token': sessionToken } : {}),
+        },
+      })
+      const mfaStatus = mfaStatusResponse.ok
+        ? await mfaStatusResponse.json().catch(() => ({ required: false, enabled: false }))
+        : { required: false, enabled: false }
+
+      return {
+        user: authenticatedUser,
+        mfaRequired: Boolean(mfaStatus?.required),
+        mfaEnabled: Boolean(mfaStatus?.enabled),
+      }
     } catch (error) {
       const isNetworkError = error?.name === 'TypeError' || String(error?.message || '').includes('Failed to fetch')
       if (isNetworkError) {
@@ -60,6 +78,44 @@ export default function LoginPage({ onLogin }) {
       throw new Error(errorData.detail || `Unable to sign in with ${provider}.`)
     }
 
+    const user = await response.json()
+    const sessionToken = response.headers.get('x-session-token') || ''
+    return { ...user, sessionToken }
+  }
+
+  const setupMfa = async (user) => {
+    const response = await fetch(`${backendUrl}/auth/mfa/setup`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-user-role': user?.role || '',
+        'x-user-email': user?.email || '',
+        ...(user?.sessionToken ? { 'x-session-token': user.sessionToken } : {}),
+      },
+      body: JSON.stringify({ issuer_name: 'ESG Platform' }),
+    })
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}))
+      throw new Error(errorData.detail || 'Unable to initialize MFA setup.')
+    }
+    return response.json()
+  }
+
+  const verifyMfa = async (user, code) => {
+    const response = await fetch(`${backendUrl}/auth/mfa/verify`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-user-role': user?.role || '',
+        'x-user-email': user?.email || '',
+        ...(user?.sessionToken ? { 'x-session-token': user.sessionToken } : {}),
+      },
+      body: JSON.stringify({ code }),
+    })
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}))
+      throw new Error(errorData.detail || 'MFA verification failed.')
+    }
     return response.json()
   }
 
@@ -69,6 +125,8 @@ export default function LoginPage({ onLogin }) {
         authenticate={authenticate}
         onForgotPassword={forgotPassword}
         onSsoSignIn={ssoSignIn}
+        onMfaSetup={setupMfa}
+        onMfaVerify={verifyMfa}
         onAuthenticated={onLogin}
       />
     </LoginLayout>

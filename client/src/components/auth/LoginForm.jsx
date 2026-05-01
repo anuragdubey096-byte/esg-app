@@ -27,7 +27,7 @@ function validateEmailOnly(email) {
   return ''
 }
 
-export default function LoginForm({ authenticate, onForgotPassword, onSsoSignIn, onAuthenticated }) {
+export default function LoginForm({ authenticate, onForgotPassword, onSsoSignIn, onMfaSetup, onMfaVerify, onAuthenticated }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [errors, setErrors] = useState({})
@@ -39,6 +39,7 @@ export default function LoginForm({ authenticate, onForgotPassword, onSsoSignIn,
   const [mfaLoading, setMfaLoading] = useState(false)
   const [step, setStep] = useState('credentials')
   const [pendingUser, setPendingUser] = useState(null)
+  const [mfaSetupData, setMfaSetupData] = useState(null)
 
   const handleSubmit = async (event) => {
     event.preventDefault()
@@ -56,6 +57,12 @@ export default function LoginForm({ authenticate, onForgotPassword, onSsoSignIn,
 
       if (result.mfaRequired) {
         setPendingUser(result.user)
+        if (!result.mfaEnabled && onMfaSetup) {
+          const setupPayload = await onMfaSetup(result.user)
+          setMfaSetupData(setupPayload)
+        } else {
+          setMfaSetupData(null)
+        }
         setStep('mfa')
       } else {
         onAuthenticated(result.user)
@@ -72,8 +79,8 @@ export default function LoginForm({ authenticate, onForgotPassword, onSsoSignIn,
     setAuthError('')
     setInfoMessage('')
     try {
-      await new Promise((resolve) => setTimeout(resolve, 800))
-      if (code !== '123456') throw new Error('Invalid verification code')
+      if (!pendingUser) throw new Error('No pending user session.')
+      await onMfaVerify(pendingUser, code)
       onAuthenticated(pendingUser)
     } catch (error) {
       setAuthError(error.message || 'Invalid verification code')
@@ -201,6 +208,14 @@ export default function LoginForm({ authenticate, onForgotPassword, onSsoSignIn,
             >
               {ssoProviderLoading === 'microsoft' ? 'Connecting to Microsoft...' : 'Continue with Microsoft'}
             </button>
+            <button
+              type="button"
+              onClick={() => handleSsoClick('azure')}
+              disabled={Boolean(ssoProviderLoading) || isSubmitting || isForgotSubmitting}
+              className="w-full rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition hover:-translate-y-[1px] hover:border-cyan-300 hover:bg-cyan-50/50"
+            >
+              {ssoProviderLoading === 'azure' ? 'Connecting to Azure AD...' : 'Continue with Azure AD'}
+            </button>
           </div>
         </>
       ) : (
@@ -210,8 +225,17 @@ export default function LoginForm({ authenticate, onForgotPassword, onSsoSignIn,
               Extra Security
             </p>
             <h2 className="text-2xl font-semibold text-slate-900">Multi-factor authentication</h2>
-            <p className="text-sm text-slate-500">Enter the code sent to your email</p>
+            <p className="text-sm text-slate-500">Enter your authenticator code (or backup code).</p>
           </div>
+          {mfaSetupData?.secret ? (
+            <div className="mb-4 rounded-xl border border-cyan-100 bg-cyan-50/80 p-3 text-sm text-cyan-800">
+              <p className="font-semibold">MFA setup initialized</p>
+              <p className="mt-1">Secret: <code>{mfaSetupData.secret}</code></p>
+              {mfaSetupData?.backup_codes?.length ? (
+                <p className="mt-1">Backup codes: {mfaSetupData.backup_codes.join(', ')}</p>
+              ) : null}
+            </div>
+          ) : null}
           {authError ? (
             <p className="mb-4 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700">
               {authError}
@@ -222,6 +246,7 @@ export default function LoginForm({ authenticate, onForgotPassword, onSsoSignIn,
             onBack={() => {
               setStep('credentials')
               setPendingUser(null)
+              setMfaSetupData(null)
               setAuthError('')
             }}
             loading={mfaLoading}

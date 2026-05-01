@@ -210,3 +210,174 @@ class NarrativeRecord(Base):
     edited_at = Column(String, nullable=True)
     updated_at = Column(String, nullable=False)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class UserPermission(Base):
+    __tablename__ = 'user_permissions'
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False, unique=True, index=True)
+    can_manage_security = Column(Boolean, nullable=False, default=False)
+    can_view_portfolio_audit = Column(Boolean, nullable=False, default=False)
+    can_clone_cycles = Column(Boolean, nullable=False, default=False)
+    read_only_audit_scope = Column(Text, nullable=False, default='[]')
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class FeatureFlag(Base):
+    __tablename__ = 'feature_flags'
+
+    id = Column(Integer, primary_key=True, index=True)
+    key = Column(String, nullable=False, unique=True, index=True)
+    enabled = Column(Boolean, nullable=False, default=False)
+    description = Column(Text, nullable=True)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class AuditEvent(Base):
+    __tablename__ = 'audit_events'
+
+    id = Column(Integer, primary_key=True, index=True)
+    event_type = Column(String, nullable=False, index=True)
+    actor_user_id = Column(Integer, ForeignKey('users.id'), nullable=True)
+    actor_email = Column(String, nullable=True, index=True)
+    actor_role = Column(String, nullable=True)
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=True, index=True)
+    submission_id = Column(Integer, ForeignKey('submissions.id'), nullable=True, index=True)
+    cycle_id = Column(Integer, ForeignKey('collection_cycles.id'), nullable=True, index=True)
+    field_name = Column(String, nullable=True)
+    old_value = Column(Text, nullable=True)
+    new_value = Column(Text, nullable=True)
+    source = Column(String, nullable=False, default='ui')
+    metadata_json = Column(Text, nullable=False, default='{}')
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+
+class SubmissionDeclaration(Base):
+    __tablename__ = 'submission_declarations'
+
+    id = Column(Integer, primary_key=True, index=True)
+    submission_id = Column(Integer, ForeignKey('submissions.id'), nullable=False, unique=True, index=True)
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=False, index=True)
+    signatory_name = Column(String, nullable=False)
+    signatory_role = Column(String, nullable=False, default='company_signatory')
+    statement_version = Column(String, nullable=False, default='v1')
+    declared_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    revoked_at = Column(DateTime, nullable=True)
+    active = Column(Boolean, nullable=False, default=True, index=True)
+    metadata_json = Column(Text, nullable=False, default='{}')
+
+
+class ContextHelpContent(Base):
+    __tablename__ = 'context_help_content'
+
+    id = Column(Integer, primary_key=True, index=True)
+    cycle_id = Column(Integer, ForeignKey('collection_cycles.id'), nullable=False, index=True)
+    field_key = Column(String, nullable=False, index=True)
+    title = Column(String, nullable=True)
+    body = Column(Text, nullable=False)
+    version = Column(Integer, nullable=False, default=1)
+    is_active = Column(Boolean, nullable=False, default=True)
+    updated_by_user_id = Column(Integer, ForeignKey('users.id'), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class CycleCloneLog(Base):
+    __tablename__ = 'cycle_clone_logs'
+
+    id = Column(Integer, primary_key=True, index=True)
+    source_cycle_id = Column(Integer, ForeignKey('collection_cycles.id'), nullable=False, index=True)
+    target_cycle_id = Column(Integer, ForeignKey('collection_cycles.id'), nullable=False, index=True)
+    cloned_by_user_id = Column(Integer, ForeignKey('users.id'), nullable=True)
+    clone_options_json = Column(Text, nullable=False, default='{}')
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class OnboardingState(Base):
+    __tablename__ = 'onboarding_states'
+
+    id = Column(Integer, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=False, unique=True, index=True)
+    steps_json = Column(Text, nullable=False, default='{}')
+    progress_percent = Column(Integer, nullable=False, default=0)
+    completed = Column(Boolean, nullable=False, default=False, index=True)
+    updated_by_user_id = Column(Integer, ForeignKey('users.id'), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class UserSecuritySetting(Base):
+    __tablename__ = 'user_security_settings'
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False, unique=True, index=True)
+    mfa_enabled = Column(Boolean, nullable=False, default=False)
+    mfa_secret = Column(String, nullable=True)
+    mfa_backup_codes_json = Column(Text, nullable=False, default='[]')
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class SessionPolicy(Base):
+    __tablename__ = 'session_policies'
+
+    id = Column(Integer, primary_key=True, index=True)
+    role = Column(String, nullable=False, unique=True, index=True)
+    timeout_minutes = Column(Integer, nullable=False, default=480)
+    warn_before_minutes = Column(Integer, nullable=False, default=5)
+    max_failed_logins = Column(Integer, nullable=False, default=5)
+    lockout_minutes = Column(Integer, nullable=False, default=30)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class IPAllowlist(Base):
+    __tablename__ = 'ip_allowlists'
+
+    id = Column(Integer, primary_key=True, index=True)
+    ip_address = Column(String, nullable=False, unique=True, index=True)
+    enabled = Column(Boolean, nullable=False, default=True)
+    note = Column(String, nullable=True)
+    created_by_user_id = Column(Integer, ForeignKey('users.id'), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class UserSession(Base):
+    __tablename__ = 'user_sessions'
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
+    session_token = Column(String, nullable=False, unique=True, index=True)
+    ip_address = Column(String, nullable=True)
+    user_agent = Column(Text, nullable=True)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    active = Column(Boolean, nullable=False, default=True, index=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class AccountLockout(Base):
+    __tablename__ = 'account_lockouts'
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False, unique=True, index=True)
+    failed_attempts = Column(Integer, nullable=False, default=0)
+    locked_until = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class AuthEvent(Base):
+    __tablename__ = 'auth_events'
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=True, index=True)
+    email = Column(String, nullable=True, index=True)
+    event_type = Column(String, nullable=False, index=True)
+    ip_address = Column(String, nullable=True)
+    details_json = Column(Text, nullable=False, default='{}')
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)

@@ -67,6 +67,24 @@ def run_self_test():
         cycles = list_cycles.json() if list_cycles.status_code == 200 else []
         check('GET /cycles manager', list_cycles.status_code == 200 and any(item.get('cycle_year') == cycle_year for item in cycles), list_cycles.text)
 
+        permissions_me = client.get('/permissions/me', headers=manager_headers)
+        permissions_payload = permissions_me.json() if permissions_me.status_code == 200 else {}
+        check(
+            'GET /permissions/me',
+            permissions_me.status_code == 200 and 'can_manage_security' in permissions_payload,
+            permissions_me.text,
+        )
+
+        session_policies = client.get('/admin/security/session-policies', headers=manager_headers)
+        check('GET /admin/security/session-policies', session_policies.status_code == 200, session_policies.text)
+
+        update_policy = client.put(
+            '/admin/security/session-policies/manager',
+            json={'timeout_minutes': 120, 'warn_before_minutes': 5, 'max_failed_logins': 5, 'lockout_minutes': 15},
+            headers=manager_headers,
+        )
+        check('PUT /admin/security/session-policies/{role}', update_policy.status_code == 200, update_policy.text)
+
         company_email = f'qa_{stamp}@example.com'
         company_name = f'QA Company {stamp}'
         create_company = client.post('/companies', json={
@@ -176,6 +194,17 @@ def run_self_test():
         submission_id = submission.get('id')
         check('active cycle accepts submission', initial_submit.status_code == 200 and submission.get('status') == 'submitted', initial_submit.text)
 
+        declaration_response = client.post(
+            f'/submissions/{submission_id}/declaration',
+            json={'signatory_name': 'QA Signatory', 'acknowledged': True},
+            headers={'x-user-role': 'company', 'x-user-email': company_email},
+        )
+        check(
+            'POST /submissions/{id}/declaration',
+            declaration_response.status_code == 200 and declaration_response.json().get('active') is True,
+            declaration_response.text,
+        )
+
         to_under_review = client.patch(f'/submissions/{submission_id}/status', json={'status': 'under review'}, headers=manager_headers)
         check('submitted -> under review', to_under_review.status_code == 200 and to_under_review.json().get('status') == 'under review', to_under_review.text)
 
@@ -199,6 +228,27 @@ def run_self_test():
             'resubmission requested -> submitted',
             resubmit.status_code == 200 and resubmitted.get('id') == submission_id and resubmitted.get('status') == 'submitted',
             resubmit.text,
+        )
+
+        declaration_after_resubmit = client.get(
+            f'/submissions/{submission_id}/declaration',
+            headers={'x-user-role': 'company', 'x-user-email': company_email},
+        )
+        check(
+            'resubmission clears declaration',
+            declaration_after_resubmit.status_code == 200 and declaration_after_resubmit.json().get('active') is False,
+            declaration_after_resubmit.text,
+        )
+
+        redeclare_response = client.post(
+            f'/submissions/{submission_id}/declaration',
+            json={'signatory_name': 'QA Signatory', 'acknowledged': True},
+            headers={'x-user-role': 'company', 'x-user-email': company_email},
+        )
+        check(
+            'declaration restored after resubmission',
+            redeclare_response.status_code == 200 and redeclare_response.json().get('active') is True,
+            redeclare_response.text,
         )
 
         close_cycle = client.patch(f"/cycles/{cycle['id']}/status", json={'status': 'closed'}, headers=manager_headers)
@@ -231,6 +281,28 @@ def run_self_test():
             headers=investor_headers,
         )
         check('reminder blocked for investor', reminder_forbidden.status_code == 403, reminder_forbidden.text)
+
+        help_upsert = client.put(
+            f"/admin/help-content/{cycle['id']}/scope_1_emissions",
+            json={'title': 'Scope 1 Guidance', 'body': 'Provide direct emissions in tCO2e.'},
+            headers=manager_headers,
+        )
+        check('PUT /admin/help-content/{cycle}/{field}', help_upsert.status_code == 200, help_upsert.text)
+
+        help_list = client.get(f"/help-content?cycle_id={cycle['id']}", headers=manager_headers)
+        help_items = help_list.json().get('items', []) if help_list.status_code == 200 else []
+        check(
+            'GET /help-content',
+            help_list.status_code == 200 and any(item.get('field_key') == 'scope_1_emissions' for item in help_items),
+            help_list.text,
+        )
+
+        onboarding_overview = client.get('/companies/onboarding/overview', headers=manager_headers)
+        check(
+            'GET /companies/onboarding/overview',
+            onboarding_overview.status_code == 200 and isinstance(onboarding_overview.json().get('items'), list),
+            onboarding_overview.text,
+        )
 
         validate_response = client.post(f'/submissions/{submission_id}/validate', headers=manager_headers)
         check('POST /submissions/{id}/validate', validate_response.status_code == 200 and 'flagged' in validate_response.json(), validate_response.text)
