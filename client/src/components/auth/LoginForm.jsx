@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import Button from './Button'
 import InputField from './InputField'
-import MFAComponent from './MFAComponent'
 import PasswordField from './PasswordField'
 
 function validateCredentials({ email, password }) {
@@ -27,7 +26,7 @@ function validateEmailOnly(email) {
   return ''
 }
 
-export default function LoginForm({ authenticate, onForgotPassword, onSsoSignIn, onMfaSetup, onMfaVerify, onAuthenticated }) {
+export default function LoginForm({ authenticate, onForgotPassword, onSsoSignIn, onAuthenticated }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [errors, setErrors] = useState({})
@@ -36,10 +35,6 @@ export default function LoginForm({ authenticate, onForgotPassword, onSsoSignIn,
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [isForgotSubmitting, setIsForgotSubmitting] = useState(false)
   const [ssoProviderLoading, setSsoProviderLoading] = useState('')
-  const [mfaLoading, setMfaLoading] = useState(false)
-  const [step, setStep] = useState('credentials')
-  const [pendingUser, setPendingUser] = useState(null)
-  const [mfaSetupData, setMfaSetupData] = useState(null)
 
   const handleSubmit = async (event) => {
     event.preventDefault()
@@ -54,38 +49,11 @@ export default function LoginForm({ authenticate, onForgotPassword, onSsoSignIn,
     try {
       const result = await authenticate({ email: email.trim(), password })
       if (!result?.user) throw new Error('Invalid email or password')
-
-      if (result.mfaRequired) {
-        setPendingUser(result.user)
-        if (!result.mfaEnabled && onMfaSetup) {
-          const setupPayload = await onMfaSetup(result.user)
-          setMfaSetupData(setupPayload)
-        } else {
-          setMfaSetupData(null)
-        }
-        setStep('mfa')
-      } else {
-        onAuthenticated(result.user)
-      }
+      onAuthenticated(result.user)
     } catch (error) {
       setAuthError(error.message || 'Invalid email or password')
     } finally {
       setIsSubmitting(false)
-    }
-  }
-
-  const handleMfaVerify = async (code) => {
-    setMfaLoading(true)
-    setAuthError('')
-    setInfoMessage('')
-    try {
-      if (!pendingUser) throw new Error('No pending user session.')
-      await onMfaVerify(pendingUser, code)
-      onAuthenticated(pendingUser)
-    } catch (error) {
-      setAuthError(error.message || 'Invalid verification code')
-    } finally {
-      setMfaLoading(false)
     }
   }
 
@@ -126,8 +94,7 @@ export default function LoginForm({ authenticate, onForgotPassword, onSsoSignIn,
 
   return (
     <div className="rounded-3xl border border-slate-200/80 bg-white p-6 shadow-[0_20px_45px_rgba(15,23,42,0.12)] md:p-8">
-      {step === 'credentials' ? (
-        <>
+      <>
           <div className="mb-6 space-y-2">
             <p className="inline-flex items-center rounded-full border border-cyan-100 bg-cyan-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.11em] text-cyan-700">
               Secure Sign In
@@ -217,42 +184,7 @@ export default function LoginForm({ authenticate, onForgotPassword, onSsoSignIn,
               {ssoProviderLoading === 'azure' ? 'Connecting to Azure AD...' : 'Continue with Azure AD'}
             </button>
           </div>
-        </>
-      ) : (
-        <>
-          <div className="mb-6 space-y-2">
-            <p className="inline-flex items-center rounded-full border border-cyan-100 bg-cyan-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.11em] text-cyan-700">
-              Extra Security
-            </p>
-            <h2 className="text-2xl font-semibold text-slate-900">Multi-factor authentication</h2>
-            <p className="text-sm text-slate-500">Enter your authenticator code (or backup code).</p>
-          </div>
-          {mfaSetupData?.secret ? (
-            <div className="mb-4 rounded-xl border border-cyan-100 bg-cyan-50/80 p-3 text-sm text-cyan-800">
-              <p className="font-semibold">MFA setup initialized</p>
-              <p className="mt-1">Secret: <code>{mfaSetupData.secret}</code></p>
-              {mfaSetupData?.backup_codes?.length ? (
-                <p className="mt-1">Backup codes: {mfaSetupData.backup_codes.join(', ')}</p>
-              ) : null}
-            </div>
-          ) : null}
-          {authError ? (
-            <p className="mb-4 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700">
-              {authError}
-            </p>
-          ) : null}
-          <MFAComponent
-            onVerify={handleMfaVerify}
-            onBack={() => {
-              setStep('credentials')
-              setPendingUser(null)
-              setMfaSetupData(null)
-              setAuthError('')
-            }}
-            loading={mfaLoading}
-          />
-        </>
-      )}
+      </>
 
       <footer className="mt-7 text-center text-xs text-slate-500">
         <a href="#" className="font-medium hover:text-slate-700">Privacy Policy</a>
