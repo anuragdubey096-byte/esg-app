@@ -164,8 +164,11 @@ const operationsMetrics = [
     unit: 'events',
     valueType: 'integer',
     selectValue: (payload) => {
-      if (!Array.isArray(payload)) return null
-      return payload.filter((item) => String(item?.event_type || '').toLowerCase() === 'reminder_sent').length
+      const rows = Array.isArray(payload)
+        ? payload
+        : (Array.isArray(payload?.items) ? payload.items : (Array.isArray(payload?.events) ? payload.events : []))
+      if (!rows.length) return 0
+      return rows.filter((item) => String(item?.event_type || '').toLowerCase() === 'reminder_sent').length
     },
   },
   {
