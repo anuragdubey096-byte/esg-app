@@ -118,12 +118,15 @@ export default function LoginForm({ authenticate, onForgotPassword, onSsoSignIn,
   }
 
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-soft md:p-8">
+    <div className="rounded-3xl border border-slate-200/80 bg-white p-6 shadow-[0_20px_45px_rgba(15,23,42,0.12)] md:p-8">
       {step === 'credentials' ? (
         <>
-          <div className="mb-6 space-y-1">
-            <h2 className="text-2xl font-semibold text-slate-900">Welcome back</h2>
-            <p className="text-sm text-slate-500">Sign in to your account</p>
+          <div className="mb-6 space-y-2">
+            <p className="inline-flex items-center rounded-full border border-cyan-100 bg-cyan-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.11em] text-cyan-700">
+              Secure Sign In
+            </p>
+            <h2 className="text-2xl font-semibold text-slate-900 md:text-[1.75rem]">Welcome back</h2>
+            <p className="text-sm text-slate-500">Sign in to continue your ESG reporting workflow.</p>
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -152,20 +155,20 @@ export default function LoginForm({ authenticate, onForgotPassword, onSsoSignIn,
                 type="button"
                 onClick={handleForgotPassword}
                 disabled={isForgotSubmitting || isSubmitting || Boolean(ssoProviderLoading)}
-                className="text-sm font-medium text-brand-700 hover:text-brand-600 disabled:cursor-not-allowed disabled:opacity-70"
+                className="text-sm font-semibold text-cyan-700 hover:text-cyan-600 disabled:cursor-not-allowed disabled:opacity-70"
               >
                 {isForgotSubmitting ? 'Sending reset link...' : 'Forgot password?'}
               </button>
             </div>
 
             {authError ? (
-              <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700">
+              <p className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700">
                 {authError}
               </p>
             ) : null}
 
             {infoMessage ? (
-              <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-700">
+              <p className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-700">
                 {infoMessage}
               </p>
             ) : null}
@@ -177,7 +180,7 @@ export default function LoginForm({ authenticate, onForgotPassword, onSsoSignIn,
 
           <div className="my-5 flex items-center gap-3">
             <div className="h-px flex-1 bg-slate-200" />
-            <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">OR</span>
+            <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">OR CONTINUE WITH</span>
             <div className="h-px flex-1 bg-slate-200" />
           </div>
 
@@ -186,7 +189,7 @@ export default function LoginForm({ authenticate, onForgotPassword, onSsoSignIn,
               type="button"
               onClick={() => handleSsoClick('google')}
               disabled={Boolean(ssoProviderLoading) || isSubmitting || isForgotSubmitting}
-              className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+              className="w-full rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition hover:-translate-y-[1px] hover:border-cyan-300 hover:bg-cyan-50/50"
             >
               {ssoProviderLoading === 'google' ? 'Connecting to Google...' : 'Continue with Google'}
             </button>
@@ -194,7 +197,7 @@ export default function LoginForm({ authenticate, onForgotPassword, onSsoSignIn,
               type="button"
               onClick={() => handleSsoClick('microsoft')}
               disabled={Boolean(ssoProviderLoading) || isSubmitting || isForgotSubmitting}
-              className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+              className="w-full rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition hover:-translate-y-[1px] hover:border-cyan-300 hover:bg-cyan-50/50"
             >
               {ssoProviderLoading === 'microsoft' ? 'Connecting to Microsoft...' : 'Continue with Microsoft'}
             </button>
@@ -202,12 +205,15 @@ export default function LoginForm({ authenticate, onForgotPassword, onSsoSignIn,
         </>
       ) : (
         <>
-          <div className="mb-6 space-y-1">
+          <div className="mb-6 space-y-2">
+            <p className="inline-flex items-center rounded-full border border-cyan-100 bg-cyan-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.11em] text-cyan-700">
+              Extra Security
+            </p>
             <h2 className="text-2xl font-semibold text-slate-900">Multi-factor authentication</h2>
             <p className="text-sm text-slate-500">Enter the code sent to your email</p>
           </div>
           {authError ? (
-            <p className="mb-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700">
+            <p className="mb-4 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700">
               {authError}
             </p>
           ) : null}
@@ -223,10 +229,10 @@ export default function LoginForm({ authenticate, onForgotPassword, onSsoSignIn,
         </>
       )}
 
-      <footer className="mt-6 text-center text-xs text-slate-500">
-        <a href="#" className="hover:text-slate-700">Privacy Policy</a>
+      <footer className="mt-7 text-center text-xs text-slate-500">
+        <a href="#" className="font-medium hover:text-slate-700">Privacy Policy</a>
         <span className="mx-2">|</span>
-        <a href="#" className="hover:text-slate-700">Terms of Service</a>
+        <a href="#" className="font-medium hover:text-slate-700">Terms of Service</a>
       </footer>
     </div>
   )

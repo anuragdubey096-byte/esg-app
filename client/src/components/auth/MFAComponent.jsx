@@ -19,7 +19,7 @@ export default function MFAComponent({ onVerify, onBack, loading }) {
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
-      <div className="rounded-lg border border-emerald-100 bg-emerald-50/70 px-3 py-2 text-sm text-emerald-700">
+      <div className="rounded-xl border border-cyan-100 bg-cyan-50/80 px-3 py-2 text-sm text-cyan-700">
         Enter the code sent to your email.
       </div>
 
@@ -41,7 +41,7 @@ export default function MFAComponent({ onVerify, onBack, loading }) {
       <button
         type="button"
         onClick={onBack}
-        className="text-sm font-medium text-slate-500 underline underline-offset-4 hover:text-slate-700"
+        className="text-sm font-semibold text-slate-500 underline underline-offset-4 hover:text-slate-700"
       >
         Back to sign in
       </button>
