@@ -1548,3 +1548,153 @@ p {
     align-items: flex-start;
   }
 }
+
+/* ==========================================
+   Final Theme Override (ESG360-inspired)
+   CSS-only visual refresh, no logic changes
+========================================== */
+body {
+  color: #0b1b33;
+  background:
+    radial-gradient(circle at 6% -4%, rgba(14, 165, 233, 0.2), transparent 36%),
+    radial-gradient(circle at 100% 0%, rgba(15, 118, 110, 0.16), transparent 34%),
+    linear-gradient(164deg, #f7fbff 0%, #edf4ff 52%, #f7fbff 100%) !important;
+}
+
+.top-navbar {
+  background: rgba(255, 255, 255, 0.86) !important;
+  backdrop-filter: blur(16px);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.25) !important;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.08);
+}
+
+.sidebar {
+  border-right: 1px solid rgba(148, 163, 184, 0.25) !important;
+  background:
+    radial-gradient(circle at 10% 4%, rgba(56, 189, 248, 0.22), transparent 30%),
+    linear-gradient(180deg, #081a35 0%, #0f274a 48%, #12315a 100%) !important;
+  box-shadow: 14px 0 34px rgba(15, 23, 42, 0.24);
+}
+
+.sidebar-title,
+.sidebar-link,
+.sidebar-icon {
+  color: #dbeafe !important;
+}
+
+.sidebar-icon {
+  background: rgba(255, 255, 255, 0.12) !important;
+}
+
+.sidebar-link.active,
+.sidebar-link:hover {
+  color: #ffffff !important;
+  background: linear-gradient(120deg, rgba(14, 165, 233, 0.3), rgba(59, 130, 246, 0.34)) !important;
+}
+
+.brand-logo {
+  background: linear-gradient(140deg, #0891b2, #2563eb) !important;
+  box-shadow: 0 16px 32px rgba(37, 99, 235, 0.25);
+}
+
+.section-card {
+  border: 1px solid rgba(148, 163, 184, 0.22) !important;
+  border-radius: 18px !important;
+  background:
+    linear-gradient(150deg, rgba(255, 255, 255, 0.95), rgba(245, 250, 255, 0.97)) !important;
+  box-shadow: 0 18px 36px rgba(15, 23, 42, 0.1) !important;
+}
+
+.kpi-card {
+  border: 1px solid #d4e3f5 !important;
+  border-radius: 16px !important;
+  background:
+    radial-gradient(circle at 88% 0%, rgba(59, 130, 246, 0.14), transparent 34%),
+    linear-gradient(174deg, #ffffff, #f3f8ff) !important;
+  box-shadow: 0 12px 26px rgba(15, 23, 42, 0.08) !important;
+}
+
+.summary-box,
+.compare-card,
+.alert-card,
+.table-shell,
+.filter-bar,
+.report-form {
+  border-color: #d3e1f2 !important;
+  border-radius: 14px !important;
+  background: linear-gradient(155deg, #ffffff, #f6faff) !important;
+}
+
+.data-table thead th {
+  background: #eff5ff !important;
+  color: #334155 !important;
+}
+
+.data-table tbody tr:hover {
+  background: #f2f7ff !important;
+}
+
+.search-wrap,
+.profile-pill {
+  border-color: #d2e1f3 !important;
+  border-radius: 12px !important;
+  background: rgba(255, 255, 255, 0.94) !important;
+}
+
+.icon-button {
+  background: linear-gradient(140deg, #eaf1ff, #dce8fb) !important;
+  color: #334155 !important;
+}
+
+.filter-bar :where(select, input),
+.report-form :where(select, input),
+.inline-comment {
+  border-color: #c7d8eb !important;
+  border-radius: 10px !important;
+  background: #ffffff !important;
+}
+
+.filter-bar :where(select, input):focus,
+.report-form :where(select, input):focus,
+.inline-comment:focus {
+  border-color: #7aa6df !important;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.14) !important;
+}
+
+.button,
+.logout-button,
+.login-form button {
+  border-radius: 12px !important;
+  background: linear-gradient(130deg, #0f766e, #2563eb) !important;
+  box-shadow: 0 12px 24px rgba(37, 99, 235, 0.24) !important;
+}
+
+.button.warning {
+  background: linear-gradient(130deg, #ea580c, #f59e0b) !important;
+}
+
+.button.good {
+  background: linear-gradient(130deg, #16a34a, #22c55e) !important;
+}
+
+.news-premium-item {
+  border-radius: 16px !important;
+  border-color: #c9dcf1 !important;
+  box-shadow: 0 16px 30px rgba(15, 23, 42, 0.09) !important;
+}
+
+.news-premium-item.featured {
+  border-color: #b5d1ec !important;
+  box-shadow: 0 22px 42px rgba(15, 23, 42, 0.14) !important;
+}
+
+@media (max-width: 960px) {
+  .section-card {
+    border-radius: 14px !important;
+  }
+
+  .sidebar,
+  .sidebar.collapsed {
+    background: linear-gradient(180deg, #081a35 0%, #12305a 100%) !important;
+  }
+}
