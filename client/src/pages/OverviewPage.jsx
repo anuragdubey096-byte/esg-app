@@ -6,6 +6,7 @@ import SectionCard from '../components/SectionCard'
 import StatusBadge from '../components/StatusBadge'
 import useCollaborationWorkspace from '../hooks/useCollaborationWorkspace'
 import useDashboardData, { getLatestSubmission, normalizeStatus } from '../hooks/useDashboardData'
+import useExternalContextFeed from '../hooks/useExternalContextFeed'
 import useLiveActivity from '../hooks/useLiveActivity'
 import useNarrativeLifecycle from '../hooks/useNarrativeLifecycle'
 import useNarrativeSummary from '../hooks/useNarrativeSummary'
@@ -48,11 +49,42 @@ function buildFallbackSummary(companies) {
   }
 }
 
+function normalizeSectorLabel(value) {
+  const cleaned = String(value || '').trim()
+  return cleaned || ''
+}
+
+function buildSectorNewsOptions(companies, summary) {
+  const sectors = new Set()
+  ;(companies || []).forEach((company) => {
+    const sector = normalizeSectorLabel(company?.sector)
+    if (sector) sectors.add(sector)
+  })
+  ;(summary?.underperforming_sectors || []).forEach((sector) => {
+    const cleaned = normalizeSectorLabel(sector)
+    if (cleaned) sectors.add(cleaned)
+  })
+  return ['All Sectors', ...Array.from(sectors).sort((left, right) => left.localeCompare(right))]
+}
+
+function formatNewsPublishedAt(value) {
+  if (!value) return 'Just now'
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return 'Recently updated'
+  return parsed.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  })
+}
+
 export default function OverviewPage() {
   const { user } = useOutletContext()
   const { companies, summary, loading, error } = useDashboardData(user)
   const narrative = useNarrativeSummary({ user, audience: 'lp', tone: 'board-ready', enabled: Boolean(user) })
   const liveActivity = useLiveActivity({ user, limit: 8, enabled: Boolean(user) })
+  const externalNews = useExternalContextFeed({ user, limit: 12, enabled: Boolean(user) })
   const narrativeOps = useNarrativeLifecycle({ user })
   const role = String(user?.role || '').toLowerCase()
   const isManager = role === 'manager'
@@ -65,6 +97,7 @@ export default function OverviewPage() {
   const [fieldValue, setFieldValue] = useState('')
   const [editHeadline, setEditHeadline] = useState('')
   const [editSummary, setEditSummary] = useState('')
+  const [newsSector, setNewsSector] = useState('All Sectors')
   const liveSocketBadge = useMemo(() => {
     if (liveActivity.connectionStatus === 'connected') {
       return { label: 'Connected', className: 'status-good' }
@@ -83,6 +116,16 @@ export default function OverviewPage() {
   }, [companies, summary])
   const statusBreakdown = managerSummary.status_breakdown || {}
   const cycleBanner = managerSummary.cycle_banner || {}
+  const sectorNewsOptions = useMemo(() => buildSectorNewsOptions(companies, summary), [companies, summary])
+  const visibleNewsItems = useMemo(() => {
+    const items = Array.isArray(externalNews.items) ? externalNews.items : []
+    if (newsSector === 'All Sectors') return items
+    const targetSector = newsSector.toLowerCase()
+    return items.filter((item) => {
+      const tags = Array.isArray(item?.sector_tags) ? item.sector_tags : []
+      return tags.some((tag) => String(tag || '').toLowerCase() === targetSector)
+    })
+  }, [externalNews.items, newsSector])
 
   const statusCards = [
     'Not Started',
@@ -139,6 +182,12 @@ export default function OverviewPage() {
     }, 25000)
     return () => clearInterval(timer)
   }, [collaboration.activeSection, collaboration.heartbeat, isCompany, primaryCycleId])
+
+  useEffect(() => {
+    if (!sectorNewsOptions.includes(newsSector)) {
+      setNewsSector('All Sectors')
+    }
+  }, [newsSector, sectorNewsOptions])
 
   useEffect(() => {
     if (!narrativeOps.record) return
@@ -362,6 +411,76 @@ export default function OverviewPage() {
           pageSize={10}
           emptyMessage="No company progress rows available."
         />
+      </SectionCard>
+
+      <SectionCard title="Sectoral Live ESG News" subtitle="Live ESG headlines grouped with sector tags for all roles">
+        <div className="news-premium-shell">
+          <div className="news-premium-toolbar">
+            <label className="news-premium-control">
+              <span>Sector</span>
+              <select value={newsSector} onChange={(event) => setNewsSector(event.target.value)}>
+                {sectorNewsOptions.map((option) => (
+                  <option key={option} value={option}>{option}</option>
+                ))}
+              </select>
+            </label>
+            <button className="button news-premium-refresh" type="button" onClick={() => externalNews.reload()} disabled={externalNews.loading}>
+              {externalNews.loading ? 'Refreshing...' : 'Refresh Feed'}
+            </button>
+          </div>
+          <div className="news-premium-meta">
+            <span className="news-premium-pill">Sources {externalNews.meta.source_count}</span>
+            <span className="news-premium-pill">{externalNews.meta.fallback_used ? 'Fallback Mode' : 'Live Mode'}</span>
+            <span className="news-premium-pill">Updated {formatNewsPublishedAt(externalNews.meta.generated_at)}</span>
+          </div>
+          {externalNews.loading ? <p>Loading latest ESG headlines...</p> : null}
+          {externalNews.error ? <p>{externalNews.error}</p> : null}
+          {!externalNews.loading && !externalNews.error ? (
+            <>
+              <ul className="news-premium-grid">
+                {visibleNewsItems.map((item, index) => {
+                  const sectorTags = (Array.isArray(item.sector_tags) && item.sector_tags.length ? item.sector_tags : ['General ESG']).slice(0, 3)
+                  const priorityLabel = String(item.priority || 'medium').toLowerCase()
+                  const isFeatured = index === 0
+                  return (
+                    <li key={item.id || `${item.title}-${item.published_at}`} className={`news-premium-item ${isFeatured ? 'featured' : ''}`}>
+                      <div className="news-premium-item-top">
+                        <span className={`news-priority-chip ${priorityLabel === 'high' ? 'high' : 'medium'}`}>
+                          {isFeatured ? 'Featured' : priorityLabel === 'high' ? 'High Priority' : 'Watch'}
+                        </span>
+                        <span className="news-source-chip">{item.source_label || 'External ESG feed'}</span>
+                      </div>
+                      {item.source_url ? (
+                        <a className="news-title-link" href={item.source_url} target="_blank" rel="noreferrer">
+                          {item.title || 'ESG update'}
+                        </a>
+                      ) : (
+                        <p className="news-title-link static">{item.title || 'ESG update'}</p>
+                      )}
+                      <p className="news-summary">{item.summary || 'No summary available.'}</p>
+                      <div className="news-chip-row">
+                        {sectorTags.map((sectorTag) => (
+                          <span key={`${item.id || item.title}-${sectorTag}`} className="news-sector-chip">{sectorTag}</span>
+                        ))}
+                      </div>
+                      <div className="news-item-foot">
+                        <p className="news-timestamp">{formatNewsPublishedAt(item.published_at)}</p>
+                        {item.source_url ? (
+                          <a className="news-read-link" href={item.source_url} target="_blank" rel="noreferrer">
+                            Read full article
+                          </a>
+                        ) : (
+                          <span className="news-read-link disabled">Source unavailable</span>
+                        )}
+                      </div>
+                    </li>
+                  )
+                })}
+              </ul>
+              {!visibleNewsItems.length ? <p className="news-empty">No live news items are tagged for this sector right now.</p> : null}
+            </>
+          ) : null}
+        </div>
       </SectionCard>
 
       <SectionCard

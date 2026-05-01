@@ -125,6 +125,16 @@ NEWS_FEED_SOURCES = [
         'url': 'https://news.google.com/rss/search?q=sustainable+finance+institutional+investors&hl=en-US&gl=US&ceid=US:en',
     },
 ]
+NEWS_SECTOR_KEYWORDS: dict[str, list[str]] = {
+    'Energy & Utilities': ['energy', 'utility', 'utilities', 'power', 'renewable', 'oil', 'gas', 'grid', 'solar', 'wind'],
+    'Financial Services': ['bank', 'banking', 'finance', 'financial', 'asset manager', 'private equity', 'investor', 'capital markets'],
+    'Technology': ['technology', 'tech', 'software', 'ai', 'data center', 'cloud', 'cybersecurity', 'semiconductor'],
+    'Healthcare': ['healthcare', 'hospital', 'pharma', 'biotech', 'medical', 'life sciences'],
+    'Industrials': ['manufacturing', 'industrial', 'factory', 'supply chain', 'logistics', 'construction'],
+    'Transportation': ['transport', 'shipping', 'aviation', 'airline', 'rail', 'mobility', 'fleet'],
+    'Consumer & Retail': ['retail', 'consumer', 'food', 'beverage', 'apparel', 'packaging'],
+    'Real Estate': ['real estate', 'property', 'buildings', 'construction materials', 'commercial real estate'],
+}
 NEWS_FEED_CACHE: dict[str, Any] = {
     'fetched_at': None,
     'items': [],
@@ -244,6 +254,12 @@ def get_user_email(x_user_email: str | None = Header(default=None)) -> str | Non
 def require_manager(role: str = Depends(get_user_role)):
     if role != 'manager':
         raise HTTPException(status_code=403, detail='Access restricted to ESG Managers')
+
+
+def require_supported_role(role: str = Depends(get_user_role)):
+    if role not in {'manager', 'investor', 'company'}:
+        raise HTTPException(status_code=403, detail='Access is restricted to platform users')
+
 
 def block_investors(role: str = Depends(get_user_role)):
     if role == 'investor':
@@ -4150,6 +4166,35 @@ def _strip_html_text(value: str | None) -> str:
     return re.sub(r'<[^>]+>', '', text_value).strip()
 
 
+def _infer_news_sector_tags(title: str | None, summary: str | None) -> list[str]:
+    haystack = f'{str(title or "")} {str(summary or "")}'.lower()
+    tags: list[str] = []
+    for sector, keywords in NEWS_SECTOR_KEYWORDS.items():
+        for keyword in keywords:
+            if re.search(rf'\b{re.escape(keyword.lower())}\b', haystack):
+                tags.append(sector)
+                break
+    if not tags:
+        return ['General ESG']
+    return tags[:3]
+
+
+def _with_sector_tags(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized_items: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        raw_tags = item.get('sector_tags')
+        cleaned_tags = [str(tag).strip() for tag in raw_tags] if isinstance(raw_tags, list) else []
+        cleaned_tags = [tag for tag in cleaned_tags if tag]
+        if not cleaned_tags:
+            cleaned_tags = _infer_news_sector_tags(item.get('title'), item.get('summary'))
+        normalized = dict(item)
+        normalized['sector_tags'] = cleaned_tags[:3]
+        normalized_items.append(normalized)
+    return normalized_items
+
+
 def _fetch_source_feed(source: dict[str, str], per_source_limit: int = 5) -> list[dict[str, Any]]:
     req = urlrequest.Request(
         source.get('url') or '',
@@ -4183,6 +4228,7 @@ def _fetch_source_feed(source: dict[str, str], per_source_limit: int = 5) -> lis
                 'source_label': source_label,
                 'source_url': link,
                 'live': True,
+                'sector_tags': _infer_news_sector_tags(title, summary),
             }
         )
     return items
@@ -4201,6 +4247,7 @@ def _fallback_external_feed_items(limit: int) -> list[dict[str, Any]]:
             'source_label': 'Curated regulatory monitor',
             'source_url': '',
             'live': False,
+            'sector_tags': ['Governance'],
         },
         {
             'id': 'fallback-climate-disclosure',
@@ -4212,6 +4259,7 @@ def _fallback_external_feed_items(limit: int) -> list[dict[str, Any]]:
             'source_label': 'Curated regulatory monitor',
             'source_url': '',
             'live': False,
+            'sector_tags': ['Energy & Utilities'],
         },
         {
             'id': 'fallback-cyber-governance',
@@ -4223,6 +4271,7 @@ def _fallback_external_feed_items(limit: int) -> list[dict[str, Any]]:
             'source_label': 'Curated regulatory monitor',
             'source_url': '',
             'live': False,
+            'sector_tags': ['Technology', 'Governance'],
         },
     ][: max(limit, 1)]
 
@@ -4234,11 +4283,12 @@ def _build_external_context_feed(limit: int) -> dict[str, Any]:
         cached_items = list(NEWS_FEED_CACHE.get('items') or [])
         if isinstance(cached_at, datetime) and cached_items:
             if (now - cached_at).total_seconds() < NEWS_FEED_TTL_SECONDS:
+                normalized_cached_items = _with_sector_tags(cached_items)
                 return {
                     'generated_at': cached_at.isoformat().replace('+00:00', 'Z'),
                     'fallback_used': bool(NEWS_FEED_CACHE.get('fallback_used', True)),
                     'source_count': int(NEWS_FEED_CACHE.get('source_count', 0)),
-                    'items': cached_items[: max(limit, 1)],
+                    'items': normalized_cached_items[: max(limit, 1)],
                 }
 
     live_items: list[dict[str, Any]] = []
@@ -4256,7 +4306,7 @@ def _build_external_context_feed(limit: int) -> dict[str, Any]:
 
     if live_items:
         live_items.sort(key=lambda item: item.get('published_at') or '', reverse=True)
-        final_items = live_items[: max(limit, 1)]
+        final_items = _with_sector_tags(live_items[: max(limit, 1)])
         with COLLAB_LOCK:
             NEWS_FEED_CACHE['fetched_at'] = now
             NEWS_FEED_CACHE['items'] = final_items
@@ -4269,7 +4319,7 @@ def _build_external_context_feed(limit: int) -> dict[str, Any]:
             'items': final_items,
         }
 
-    fallback_items = _fallback_external_feed_items(limit=limit)
+    fallback_items = _with_sector_tags(_fallback_external_feed_items(limit=limit))
     with COLLAB_LOCK:
         NEWS_FEED_CACHE['fetched_at'] = now
         NEWS_FEED_CACHE['items'] = fallback_items
@@ -4283,7 +4333,7 @@ def _build_external_context_feed(limit: int) -> dict[str, Any]:
     }
 
 
-@app.get('/external-context/feed', dependencies=[Depends(require_manager_or_investor)])
+@app.get('/external-context/feed', dependencies=[Depends(require_supported_role)])
 def external_context_feed(limit: int = Query(default=12, ge=3, le=30)):
     return _build_external_context_feed(limit=limit)
 
