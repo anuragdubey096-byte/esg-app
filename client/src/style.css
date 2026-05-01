@@ -20,6 +20,209 @@
   color: #0f172a;
 }
 
+/* ==============================
+   UI Revamp: Sleek Theme Layer
+   Keeps existing behavior intact
+============================== */
+:root {
+  --surface-0: #edf3ff;
+  --surface-1: #ffffff;
+  --surface-2: #f7faff;
+  --ink-strong: #0b1b33;
+  --ink-muted: #4a607f;
+  --line-subtle: #d8e4f5;
+  --brand-primary: #0f766e;
+  --brand-secondary: #2563eb;
+  --brand-accent: #ea580c;
+}
+
+body {
+  color: var(--ink-strong);
+  background:
+    radial-gradient(circle at 0% 0%, rgba(37, 99, 235, 0.14), transparent 34%),
+    radial-gradient(circle at 100% 0%, rgba(15, 118, 110, 0.13), transparent 36%),
+    linear-gradient(165deg, #f8fbff 0%, #eef5ff 48%, #f8fcff 100%);
+}
+
+.sidebar {
+  border-right: 1px solid rgba(148, 163, 184, 0.25);
+  background:
+    radial-gradient(circle at 8% 0%, rgba(56, 189, 248, 0.16), transparent 28%),
+    linear-gradient(180deg, #0f1f3d 0%, #13274b 50%, #152b54 100%);
+  box-shadow: 10px 0 28px rgba(15, 23, 42, 0.12);
+}
+
+.sidebar-title,
+.sidebar-link,
+.sidebar-icon {
+  color: #dbeafe;
+}
+
+.sidebar-toggle {
+  background: rgba(255, 255, 255, 0.16);
+  color: #e2e8f0;
+}
+
+.sidebar-icon {
+  background: rgba(148, 163, 184, 0.2);
+}
+
+.sidebar-link.active,
+.sidebar-link:hover {
+  background: linear-gradient(120deg, rgba(56, 189, 248, 0.22), rgba(59, 130, 246, 0.28));
+  color: #ffffff;
+}
+
+.top-navbar {
+  background: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(14px);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.05);
+}
+
+.brand-logo {
+  background: linear-gradient(140deg, #0f766e, #2563eb);
+  box-shadow: 0 14px 26px rgba(29, 78, 216, 0.24);
+}
+
+.search-wrap {
+  border-radius: 12px;
+  border-color: #d4e2f3;
+  background: rgba(255, 255, 255, 0.95);
+}
+
+.icon-button {
+  background: linear-gradient(140deg, #e6eefc, #dce8fb);
+  color: #334155;
+}
+
+.profile-pill {
+  border-color: #d4e2f3;
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.section-card {
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 18px;
+  background:
+    linear-gradient(150deg, rgba(255, 255, 255, 0.94), rgba(247, 251, 255, 0.96));
+  box-shadow: 0 18px 34px rgba(15, 23, 42, 0.08);
+}
+
+.section-card-header h3 {
+  letter-spacing: 0.01em;
+}
+
+.kpi-card {
+  border: 1px solid #d8e5f5;
+  border-radius: 16px;
+  background:
+    radial-gradient(circle at 85% 0%, rgba(37, 99, 235, 0.1), transparent 34%),
+    linear-gradient(170deg, #ffffff 0%, #f3f8ff 100%);
+  box-shadow: 0 12px 24px rgba(15, 23, 42, 0.06);
+}
+
+.summary-box,
+.compare-card,
+.alert-card {
+  border-color: #d7e3f4;
+  background: linear-gradient(160deg, #ffffff, #f7faff);
+}
+
+.table-shell {
+  border-color: #d6e3f3;
+  border-radius: 14px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+.data-table thead th {
+  background: #f1f6ff;
+  color: #34435d;
+}
+
+.data-table tbody tr:hover {
+  background: #f4f8ff;
+}
+
+.filter-bar,
+.report-form {
+  border: 1px solid #d7e4f3;
+  border-radius: 14px;
+  background: linear-gradient(150deg, #f8fbff, #f1f6ff);
+}
+
+.filter-bar select,
+.filter-bar input,
+.report-form select,
+.report-form input,
+.inline-comment {
+  border: 1px solid #c9d8ea;
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+.filter-bar :where(select, input):focus,
+.report-form :where(select, input):focus,
+.inline-comment:focus {
+  outline: none;
+  border-color: #7ea6df;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.13);
+}
+
+.button,
+.logout-button,
+.login-form button {
+  border-radius: 12px;
+  background: linear-gradient(130deg, #0f766e, #2563eb);
+  box-shadow: 0 12px 24px rgba(29, 78, 216, 0.25);
+}
+
+.button:hover,
+.logout-button:hover,
+.login-form button:hover {
+  filter: brightness(1.02);
+  transform: translateY(-1px);
+}
+
+.button.warning {
+  background: linear-gradient(130deg, #ea580c, #f59e0b);
+}
+
+.button.good {
+  background: linear-gradient(130deg, #0f9d58, #22c55e);
+}
+
+.status-badge {
+  border: 1px solid rgba(148, 163, 184, 0.24);
+}
+
+.news-premium-item {
+  border-radius: 16px;
+  border-color: #cdddf1;
+  box-shadow: 0 16px 28px rgba(15, 23, 42, 0.08);
+}
+
+.news-premium-item.featured {
+  border-color: #b7d1ef;
+  box-shadow: 0 20px 38px rgba(15, 23, 42, 0.12);
+}
+
+.news-sector-chip,
+.news-read-link {
+  border-color: #bcd3ee;
+}
+
+@media (max-width: 960px) {
+  .sidebar,
+  .sidebar.collapsed {
+    background: linear-gradient(180deg, #0f1f3d 0%, #14274a 100%);
+  }
+
+  .section-card {
+    border-radius: 14px;
+  }
+}
+
 * {
   box-sizing: border-box;
 }
