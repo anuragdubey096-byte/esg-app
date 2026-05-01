@@ -35,6 +35,20 @@ Run `python server/self_test.py` from the project root to verify:
 - ESG submission storage
 - submission status updates
 
+### Benchmarking
+Run the benchmark harness against a running API instance:
+
+```bash
+python server/benchmark_runner.py --base-url http://127.0.0.1:8000 --scenario read_core --duration 30 --concurrency 8
+```
+
+Available scenarios:
+- `smoke`: `/health` and `/health/ready`
+- `read_core`: manager/investor dashboard and analytics reads
+- `phase1_read`: Phase 1 permission/security/help/audit/onboarding reads
+
+The script prints p50/p95/p99 and throughput, then writes a JSON report under `run-logs/`.
+
 ### CSV Import
 Run `python server/import_csv.py <folder-with-csv-files>` from the project root.
 If your fixture CSVs are in `server/fixtures`, you can simply run `python server/import_csv.py` and it will use that folder automatically.
