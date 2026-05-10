@@ -2,6 +2,11 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "buildCommand": "cd client && npm ci && npm run build",
   "outputDirectory": "client/dist",
+  "functions": {
+    "api/**/*.py": {
+      "excludeFiles": "{client/**,run-logs/**,**/*.log,**/*.sqlite,**/__pycache__/**,**/*.pyc,.vercel/**,.vscode/**,node_modules/**,server/exports/**,api/pyproject.toml,api/uv.lock,api/.python-version}"
+    }
+  },
   "rewrites": [
     {
       "source": "/api/(.*)",
