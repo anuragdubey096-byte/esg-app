@@ -19,7 +19,7 @@ from xml.etree import ElementTree
 from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Header, Query, Body, WebSocket, WebSocketDisconnect, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import func, text
+from sqlalchemy import func, inspect, text
 from sqlalchemy.orm import Session
 
 from bootstrap import seed_sample_data
@@ -733,8 +733,8 @@ def _provision_company_for_user(db: Session, user: User) -> Company:
 
 
 def table_has_column(db: Session, table_name: str, column_name: str) -> bool:
-    pragma_rows = db.execute(text(f'PRAGMA table_info({table_name})')).mappings().all()
-    return any(row.get('name') == column_name for row in pragma_rows)
+    inspector = inspect(db.bind)
+    return any(column.get('name') == column_name for column in inspector.get_columns(table_name))
 
 
 def ensure_submission_cycle_column(db: Session):
@@ -2306,6 +2306,7 @@ def add_submission(
         previous_payload = parse_submission(latest_for_cycle)
         latest_for_cycle.esg_data = json.dumps(merged_payload)
         latest_for_cycle.status = 'submitted'
+        company.current_status = 'submitted'
         if is_feature_enabled(db, 'feature_26_declaration_workflow', default=True):
             _revoke_submission_declaration(db, latest_for_cycle.id)
         log_audit_event(
@@ -2331,6 +2332,7 @@ def add_submission(
         esg_data=json.dumps(merged_payload),
         status='submitted',
     )
+    company.current_status = 'submitted'
     db.add(submission_record)
     log_audit_event(
         db,
@@ -3633,6 +3635,41 @@ def parse_submission(submission: Submission | None) -> dict:
         return {}
 
 
+NUMERIC_ANOMALY_FIELDS = [
+    'scope_1_emissions',
+    'scope_2_location_based',
+    'scope_3_emissions',
+    'total_ghg_emissions',
+    'total_energy_consumption',
+    'renewable_energy_consumption',
+    'total_water_withdrawal',
+    'water_recycled_reused',
+    'total_waste_generated',
+    'waste_diverted_from_landfill',
+    'hazardous_waste_generated',
+    'female_representation_percent',
+    'female_leadership_representation_percent',
+    'independent_board_members_percent',
+    'female_board_members_percent',
+    'trifr',
+]
+
+
+def format_metric_label(value: str | None) -> str:
+    label = str(value or '').replace('_', ' ').strip()
+    if not label:
+        return 'Metric'
+    replacements = {
+        'ghg': 'GHG',
+        'trifr': 'TRIFR',
+        'esg': 'ESG',
+    }
+    parts = []
+    for word in label.split():
+        parts.append(replacements.get(word.lower(), word.capitalize()))
+    return ' '.join(parts)
+
+
 def build_emissions_trend(total_emissions: float) -> list[dict]:
     now = datetime.utcnow()
     periods = []
@@ -4394,6 +4431,12 @@ def _upsert_section_comments(
 ) -> dict[str, Any]:
     merged = dict(existing_payload or {})
     comments = _extract_section_comments(merged)
+    section_comment_fields = {_section_comment_field(section) for section in SECTION_ORDER}
+
+    for key, value in (incoming_payload or {}).items():
+        if key == '__section_comments' or key in section_comment_fields:
+            continue
+        merged[key] = value
 
     for section in SECTION_ORDER:
         field_name = _section_comment_field(section)
@@ -4415,7 +4458,8 @@ def _upsert_section_comments(
     for section in SECTION_ORDER:
         field_name = _section_comment_field(section)
         latest_items = comments.get(section) or []
-        merged[field_name] = str((latest_items[-1] or {}).get('text') or incoming_payload.get(field_name) or '').strip()
+        latest_item = latest_items[-1] if latest_items else {}
+        merged[field_name] = str((latest_item or {}).get('text') or incoming_payload.get(field_name) or '').strip()
     return merged
 
 
@@ -4526,7 +4570,7 @@ def _build_submission_comparison(current_payload: dict[str, Any], prior_payload:
                 curr_text = str(curr or '').strip()
                 prev_text = str(prev or '').strip()
                 changed = bool(prev_text or curr_text) and curr_text != prev_text
-                if input_type == 'select' and changed:
+                if input_type == 'select' and changed and prev_text:
                     requires_explanation = True
                     status = 'error'
 
@@ -5880,39 +5924,302 @@ def external_context_feed(limit: int = Query(default=12, ge=3, le=30)):
     return _build_external_context_feed(limit=limit)
 
 
-@app.get('/anomalies/summary', dependencies=[Depends(require_manager_or_investor)])
-def anomalies_summary(db: Session = Depends(get_db)):
-    flags = (
-        db.query(ValidationFlag)
-        .filter(func.lower(ValidationFlag.severity) != 'info')
-        .order_by(ValidationFlag.id.desc())
-        .limit(100)
+def _severity_label(value: str | None) -> str:
+    normalized = str(value or '').strip().lower()
+    mapping = {
+        'critical': 'Critical',
+        'high': 'High',
+        'medium': 'Medium',
+        'low': 'Low',
+        'info': 'Info',
+    }
+    return mapping.get(normalized, 'Info')
+
+
+def _severity_rank(value: str | None) -> int:
+    return {'critical': 4, 'high': 3, 'medium': 2, 'low': 1, 'info': 0}.get(str(value or '').strip().lower(), 0)
+
+
+def _normalize_action_plan_status(value: str | None) -> str:
+    normalized = str(value or '').strip().lower()
+    if normalized in {'complete', 'completed', 'done', 'closed'}:
+        return 'Complete'
+    if normalized in {'blocked', 'at risk'}:
+        return 'Blocked'
+    if normalized in {'in progress', 'active', 'underway'}:
+        return 'In Progress'
+    if normalized in {'planned', 'todo', 'to do'}:
+        return 'Planned'
+    return 'No Plan' if not normalized else format_metric_label(normalized)
+
+
+def _get_cycle_for_anomaly_summary(db: Session, cycle_year: int | None = None) -> CollectionCycle | None:
+    if cycle_year:
+        return db.query(CollectionCycle).filter(CollectionCycle.cycle_year == cycle_year).first()
+
+    active_cycle = get_active_cycle(db)
+    if active_cycle:
+        active_flag_count = (
+            db.query(ValidationFlag)
+            .filter(ValidationFlag.reporting_year == active_cycle.cycle_year)
+            .count()
+        )
+        active_submission_count = (
+            db.query(Submission)
+            .filter(Submission.cycle_id == active_cycle.id)
+            .count()
+        )
+        if active_flag_count > 0 or active_submission_count >= 3:
+            return active_cycle
+
+    flagged_year = (
+        db.query(ValidationFlag.reporting_year)
+        .order_by(ValidationFlag.reporting_year.desc())
+        .first()
+    )
+    if flagged_year:
+        flagged_cycle = db.query(CollectionCycle).filter(CollectionCycle.cycle_year == flagged_year[0]).first()
+        if flagged_cycle:
+            return flagged_cycle
+
+    return active_cycle or get_latest_cycle(db)
+
+
+def _latest_submissions_for_cycle(db: Session, cycle: CollectionCycle | None) -> list[Submission]:
+    query = db.query(Submission)
+    if cycle:
+        query = query.filter(Submission.cycle_id == cycle.id)
+    submissions = query.order_by(Submission.company_id.asc(), Submission.id.desc()).all()
+    latest_by_company: dict[int, Submission] = {}
+    for submission in submissions:
+        if submission.company_id not in latest_by_company:
+            latest_by_company[submission.company_id] = submission
+    return list(latest_by_company.values())
+
+
+def _remediation_summary_from_plans(plans: list[ActionPlan]) -> dict[str, Any]:
+    if not plans:
+        return {
+            'status': 'No Plan',
+            'open_count': 0,
+            'total_count': 0,
+            'latest_action': None,
+            'owner': None,
+            'target_completion_date': None,
+        }
+
+    normalized_statuses = [_normalize_action_plan_status(plan.status) for plan in plans]
+    open_count = sum(1 for status in normalized_statuses if status not in {'Complete'})
+    if any(status == 'Blocked' for status in normalized_statuses):
+        status = 'Blocked'
+    elif any(status == 'In Progress' for status in normalized_statuses):
+        status = 'In Progress'
+    elif open_count:
+        status = 'Planned'
+    else:
+        status = 'Complete'
+
+    latest = plans[0]
+    return {
+        'status': status,
+        'open_count': open_count,
+        'total_count': len(plans),
+        'latest_action': latest.initiative_name,
+        'owner': latest.assigned_owner,
+        'target_completion_date': latest.target_completion_date,
+    }
+
+
+def _company_remediation_summary(db: Session, company_id: int) -> dict[str, Any]:
+    plans = (
+        db.query(ActionPlan)
+        .filter(ActionPlan.company_id == company_id)
+        .order_by(ActionPlan.id.desc())
         .all()
     )
-    severity_counts = {'high': 0, 'medium': 0, 'low': 0}
+    return _remediation_summary_from_plans(plans)
+
+
+def _company_lookup(db: Session) -> dict[int, Company]:
+    return {company.id: company for company in db.query(Company).all()}
+
+
+def _remediation_lookup(db: Session) -> dict[int, dict[str, Any]]:
+    plans_by_company: dict[int, list[ActionPlan]] = {}
+    for plan in db.query(ActionPlan).order_by(ActionPlan.company_id.asc(), ActionPlan.id.desc()).all():
+        plans_by_company.setdefault(plan.company_id, []).append(plan)
+    return {
+        company_id: _remediation_summary_from_plans(plans)
+        for company_id, plans in plans_by_company.items()
+    }
+
+
+def _statistical_outliers_for_cycle(
+    db: Session,
+    cycle: CollectionCycle | None,
+    company_map: dict[int, Company] | None = None,
+    remediation_map: dict[int, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    company_map = company_map if company_map is not None else _company_lookup(db)
+    remediation_map = remediation_map if remediation_map is not None else _remediation_lookup(db)
+    submissions = _latest_submissions_for_cycle(db, cycle)
+    numeric_matrix: dict[str, list[tuple[Submission, float]]] = {field: [] for field in NUMERIC_ANOMALY_FIELDS}
+    for submission in submissions:
+        payload = parse_submission(submission)
+        for field_name in NUMERIC_ANOMALY_FIELDS:
+            value = safe_number(payload.get(field_name), default=float('nan'))
+            if value == value:
+                numeric_matrix[field_name].append((submission, value))
+
+    anomalies: list[dict[str, Any]] = []
+    for field_name, values in numeric_matrix.items():
+        if len(values) < 3:
+            continue
+        series = [item[1] for item in values]
+        mean = sum(series) / len(series)
+        variance = sum((item - mean) ** 2 for item in series) / len(series)
+        std_dev = variance ** 0.5
+        if std_dev <= 0:
+            continue
+
+        for submission, value in values:
+            z_score = (value - mean) / std_dev
+            if abs(z_score) < 2.0:
+                continue
+            company = company_map.get(submission.company_id)
+            remediation = remediation_map.get(submission.company_id) or _remediation_summary_from_plans([])
+            severity = 'Critical' if abs(z_score) >= 3.0 else 'High'
+            direction = 'above' if z_score > 0 else 'below'
+            anomalies.append({
+                'id': f'outlier-{submission.company_id}-{field_name}',
+                'type': 'Statistical Outlier',
+                'company_id': submission.company_id,
+                'company_name': company.name if company else f'Company {submission.company_id}',
+                'sector': company.sector if company else None,
+                'reporting_year': cycle.cycle_year if cycle else (submission.cycle.cycle_year if submission.cycle else None),
+                'field_name': field_name,
+                'field_label': format_metric_label(field_name),
+                'issue_description': f'{format_metric_label(field_name)} is {abs(z_score):.1f} standard deviations {direction} the portfolio mean.',
+                'severity': severity,
+                'value': round(value, 4),
+                'portfolio_mean': round(mean, 4),
+                'z_score': round(z_score, 3),
+                'remediation': remediation,
+            })
+
+    anomalies.sort(key=lambda item: abs(float(item.get('z_score') or 0)), reverse=True)
+    return anomalies
+
+
+def _validation_flag_items(
+    db: Session,
+    cycle: CollectionCycle | None,
+    company_id: int | None = None,
+    company_map: dict[int, Company] | None = None,
+    remediation_map: dict[int, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    company_map = company_map if company_map is not None else _company_lookup(db)
+    remediation_map = remediation_map if remediation_map is not None else _remediation_lookup(db)
+    query = db.query(ValidationFlag).filter(func.lower(ValidationFlag.severity) != 'info')
+    if cycle:
+        query = query.filter(ValidationFlag.reporting_year == cycle.cycle_year)
+    if company_id:
+        query = query.filter(ValidationFlag.company_id == company_id)
+
     items = []
-    for flag in flags:
-        sev = str(flag.severity or '').strip().lower()
-        if sev in severity_counts:
-            severity_counts[sev] += 1
+    for flag in query.order_by(ValidationFlag.id.desc()).limit(200).all():
+        company = company_map.get(flag.company_id)
+        remediation = remediation_map.get(flag.company_id) or _remediation_summary_from_plans([])
         items.append({
             'id': flag.id,
+            'type': 'Validation Flag',
             'company_id': flag.company_id,
+            'company_name': company.name if company else f'Company {flag.company_id}',
+            'sector': company.sector if company else None,
             'reporting_year': flag.reporting_year,
+            'flag_type': flag.flag_type,
             'field_name': flag.field_name,
+            'field_label': format_metric_label(flag.field_name),
             'issue_description': flag.issue_description,
-            'severity': flag.severity,
+            'severity': _severity_label(flag.severity),
+            'remediation': remediation,
         })
+    return items
+
+
+def _summarize_anomaly_items(items: list[dict[str, Any]]) -> dict[str, Any]:
+    severity_counts = {'critical': 0, 'high': 0, 'medium': 0, 'low': 0}
+    company_counts: dict[str, dict[str, Any]] = {}
+    field_counts: dict[str, int] = {}
+    type_counts: dict[str, int] = {}
+    remediation_counts: dict[str, int] = {}
+
+    for item in items:
+        severity_key = str(item.get('severity') or '').strip().lower()
+        if severity_key in severity_counts:
+            severity_counts[severity_key] += 1
+
+        company_key = str(item.get('company_id') or item.get('company_name') or 'unknown')
+        company_counts.setdefault(company_key, {
+            'company_id': item.get('company_id'),
+            'company_name': item.get('company_name') or 'Company',
+            'count': 0,
+            'max_severity': item.get('severity') or 'Info',
+        })
+        company_counts[company_key]['count'] += 1
+        if _severity_rank(item.get('severity')) > _severity_rank(company_counts[company_key]['max_severity']):
+            company_counts[company_key]['max_severity'] = item.get('severity')
+
+        field_label = item.get('field_label') or format_metric_label(item.get('field_name'))
+        field_counts[field_label] = field_counts.get(field_label, 0) + 1
+        item_type = item.get('type') or 'Anomaly'
+        type_counts[item_type] = type_counts.get(item_type, 0) + 1
+        remediation_status = (item.get('remediation') or {}).get('status') or 'No Plan'
+        remediation_counts[remediation_status] = remediation_counts.get(remediation_status, 0) + 1
+
+    top_companies = sorted(company_counts.values(), key=lambda item: (-item['count'], -_severity_rank(item['max_severity']), item['company_name']))[:8]
+    top_fields = [
+        {'field': field, 'count': count}
+        for field, count in sorted(field_counts.items(), key=lambda item: (-item[1], item[0]))[:8]
+    ]
+    type_breakdown = [{'type': item_type, 'count': count} for item_type, count in sorted(type_counts.items())]
+    remediation_breakdown = [{'status': status, 'count': count} for status, count in sorted(remediation_counts.items())]
+    return {
+        'severity_counts': severity_counts,
+        'top_companies': top_companies,
+        'top_fields': top_fields,
+        'type_breakdown': type_breakdown,
+        'remediation_breakdown': remediation_breakdown,
+    }
+
+
+@app.get('/anomalies/summary', dependencies=[Depends(require_manager_or_investor)])
+def anomalies_summary(cycle_year: int | None = Query(default=None), db: Session = Depends(get_db)):
+    cycle = _get_cycle_for_anomaly_summary(db, cycle_year)
+    company_map = _company_lookup(db)
+    remediation_map = _remediation_lookup(db)
+    validation_items = _validation_flag_items(db, cycle, company_map=company_map, remediation_map=remediation_map)
+    statistical_outliers = _statistical_outliers_for_cycle(db, cycle, company_map=company_map, remediation_map=remediation_map)
+    all_items = validation_items + statistical_outliers
+    all_items.sort(key=lambda item: (-_severity_rank(item.get('severity')), str(item.get('company_name') or ''), str(item.get('field_name') or '')))
+    summary = _summarize_anomaly_items(all_items)
     return {
         'available': True,
         'scope': 'portfolio',
+        'cycle_year': cycle.cycle_year if cycle else cycle_year,
         'generated_at': _utc_now_iso(),
         'headline': 'Portfolio anomaly watchlist',
-        'summary': 'Latest validation and variance anomalies from approved and submitted data.',
-        'severity_counts': severity_counts,
-        'items': items[:20],
-        'watchlist_companies': sorted({item['company_id'] for item in items[:20]}),
-        'fallback_used': True,
+        'summary': 'Latest validation, variance, and statistical outlier anomalies from portfolio data.',
+        'severity_counts': summary['severity_counts'],
+        'top_companies': summary['top_companies'],
+        'top_fields': summary['top_fields'],
+        'type_breakdown': summary['type_breakdown'],
+        'remediation_breakdown': summary['remediation_breakdown'],
+        'items': all_items[:100],
+        'validation_flags': validation_items[:100],
+        'statistical_outliers': statistical_outliers[:100],
+        'watchlist_companies': [item['company_name'] for item in summary['top_companies']],
+        'fallback_used': False,
     }
 
 
@@ -5929,28 +6236,37 @@ def company_anomalies(
     if not target_company:
         return {'company_id': None, 'items': []}
 
-    flags = (
-        db.query(ValidationFlag)
-        .filter(ValidationFlag.company_id == target_company.id)
-        .filter(func.lower(ValidationFlag.severity) != 'info')
-        .order_by(ValidationFlag.id.desc())
-        .limit(50)
-        .all()
+    cycle = _get_cycle_for_anomaly_summary(db)
+    company_map = _company_lookup(db)
+    remediation_map = _remediation_lookup(db)
+    validation_items = _validation_flag_items(
+        db,
+        cycle,
+        company_id=target_company.id,
+        company_map=company_map,
+        remediation_map=remediation_map,
     )
+    statistical_outliers = [
+        item
+        for item in _statistical_outliers_for_cycle(db, cycle, company_map=company_map, remediation_map=remediation_map)
+        if int(item.get('company_id') or 0) == target_company.id
+    ]
+    items = validation_items + statistical_outliers
+    items.sort(key=lambda item: (-_severity_rank(item.get('severity')), str(item.get('field_name') or '')))
+    summary = _summarize_anomaly_items(items)
     return {
         'company_id': target_company.id,
         'company_name': target_company.name,
-        'count': len(flags),
-        'items': [
-            {
-                'id': flag.id,
-                'reporting_year': flag.reporting_year,
-                'field_name': flag.field_name,
-                'issue_description': flag.issue_description,
-                'severity': flag.severity,
-            }
-            for flag in flags
-        ],
+        'cycle_year': cycle.cycle_year if cycle else None,
+        'count': len(items),
+        'severity_counts': summary['severity_counts'],
+        'top_fields': summary['top_fields'],
+        'type_breakdown': summary['type_breakdown'],
+        'remediation_breakdown': summary['remediation_breakdown'],
+        'remediation': remediation_map.get(target_company.id) or _remediation_summary_from_plans([]),
+        'items': items[:100],
+        'validation_flags': validation_items[:100],
+        'statistical_outliers': statistical_outliers[:100],
     }
 
 

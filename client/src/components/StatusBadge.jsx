@@ -18,6 +18,8 @@ const statusClassMap = {
   Closed: 'status-muted',
   Blocked: 'status-critical',
   Complete: 'status-good',
+  Planned: 'status-warning',
+  'No Plan': 'status-muted',
   Invited: 'status-warning',
 }
 
