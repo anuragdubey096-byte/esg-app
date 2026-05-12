@@ -60,6 +60,7 @@ from schemas import (
     CycleCreateRequest,
     CycleInfo,
     CycleStatusUpdateRequest,
+    CycleUpdateRequest,
     ForgotPasswordRequest,
     ForgotPasswordResponse,
     GHGCalculatorRequest,
@@ -1947,6 +1948,82 @@ def create_cycle(
 def list_cycles(db: Session = Depends(get_db)):
     cycles = db.query(CollectionCycle).order_by(CollectionCycle.cycle_year.desc()).all()
     return [serialize_cycle(cycle) for cycle in cycles]
+
+
+@app.patch('/cycles/{cycle_id}', response_model=CycleInfo, dependencies=[Depends(require_manager)])
+def update_cycle(
+    cycle_id: int,
+    payload: CycleUpdateRequest,
+    db: Session = Depends(get_db),
+    email: str | None = Depends(get_user_email),
+):
+    cycle = db.query(CollectionCycle).filter(CollectionCycle.id == cycle_id).first()
+    if not cycle:
+        raise HTTPException(status_code=404, detail='Cycle not found')
+
+    updates = payload.model_dump(exclude_unset=True)
+    if not updates:
+        return serialize_cycle(cycle)
+
+    if 'cycle_year' in updates and updates['cycle_year'] != cycle.cycle_year:
+        existing = db.query(CollectionCycle).filter(CollectionCycle.cycle_year == updates['cycle_year']).first()
+        if existing and existing.id != cycle.id:
+            raise HTTPException(status_code=400, detail='A cycle for this year already exists')
+
+    old_value = serialize_cycle(cycle).model_dump()
+
+    if 'cycle_year' in updates:
+        cycle.cycle_year = int(updates['cycle_year'])
+    if 'submission_open_date' in updates:
+        cycle.submission_open_date = updates['submission_open_date']
+    if 'submission_deadline' in updates:
+        cycle.submission_deadline = updates['submission_deadline']
+    if 'extension_date' in updates:
+        cycle.extension_date = updates['extension_date'] or None
+    if 'reminder_days_before_deadline' in updates:
+        cycle.reminder_schedule = json.dumps(updates['reminder_days_before_deadline'] or [])
+
+    template_config = parse_json_or_default(cycle.template_config, {})
+    template_updates = {
+        'private_equity_template': 'private_equity',
+        'real_estate_template': 'real_estate',
+        'debt_template': 'debt',
+    }
+    for request_key, config_key in template_updates.items():
+        if request_key in updates:
+            template_config[config_key] = updates[request_key] or ''
+    cycle.template_config = json.dumps(template_config)
+
+    prefill_summary = parse_json_or_default(cycle.prefill_summary, {})
+    if 'carry_forward_prefill' in updates:
+        prefill_summary['carry_forward_prefill'] = bool(updates['carry_forward_prefill'])
+    cycle.prefill_summary = json.dumps(prefill_summary)
+
+    if 'status' in updates:
+        next_status = normalize_cycle_status(updates['status'])
+        if next_status == 'active':
+            active_cycles = db.query(CollectionCycle).filter(CollectionCycle.status == 'active').all()
+            for active_cycle in active_cycles:
+                if active_cycle.id != cycle.id:
+                    active_cycle.status = 'draft'
+        cycle.status = next_status
+
+    request_user = find_request_user(db, email)
+    new_value = serialize_cycle(cycle).model_dump()
+    log_audit_event(
+        db,
+        event_type='cycle_updated',
+        actor_role='manager',
+        actor_email=email,
+        actor_user_id=request_user.id if request_user else None,
+        cycle_id=cycle.id,
+        old_value=old_value,
+        new_value=new_value,
+    )
+    db.commit()
+    db.refresh(cycle)
+    return serialize_cycle(cycle)
+
 
 @app.patch('/cycles/{cycle_id}/status', response_model=CycleInfo, dependencies=[Depends(require_manager)])
 def update_cycle_status(

@@ -16,6 +16,7 @@ const statusClassMap = {
   Low: 'status-good',
   Active: 'status-good',
   Closed: 'status-muted',
+  Draft: 'status-info',
   Blocked: 'status-critical',
   Complete: 'status-good',
   Planned: 'status-warning',

@@ -17,12 +17,41 @@ const adminSettingsTabs = [
 ]
 
 const BACKEND_URL = API_BASE_URL
+const defaultCycleForm = {
+  cycle_year: '',
+  submission_open_date: '',
+  submission_deadline: '',
+  extension_date: '',
+  reminder_days_before_deadline: '14, 7, 1',
+  private_equity_template: 'Standard Private Equity ESG Template',
+  real_estate_template: 'Real Estate Asset ESG Template',
+  debt_template: 'Debt Portfolio ESG Template',
+  activate_on_create: true,
+  carry_forward_prefill: true,
+}
+
+function toStatusLabel(status) {
+  const normalized = String(status || '').trim().toLowerCase()
+  if (normalized === 'active') return 'Active'
+  if (normalized === 'closed') return 'Closed'
+  if (normalized === 'draft') return 'Draft'
+  return status || 'Draft'
+}
+
+function parseReminderDays(value) {
+  const parsed = String(value || '')
+    .split(',')
+    .map((item) => Number(item.trim()))
+    .filter((item) => Number.isInteger(item) && item >= 0)
+  return [...new Set(parsed)]
+}
 
 export default function AdminSettingsPage() {
   const { user } = useOutletContext()
-  const { cycles, refresh } = useDashboardData(user)
+  const { cycles: dashboardCycles, refresh } = useDashboardData(user)
   const [activeTab, setActiveTab] = useState(adminSettingsTabs[0])
   const [message, setMessage] = useState('')
+  const [adminCycles, setAdminCycles] = useState([])
   const [users, setUsers] = useState([])
   const [permissions, setPermissions] = useState([])
   const [sessionPolicies, setSessionPolicies] = useState([])
@@ -34,6 +63,10 @@ export default function AdminSettingsPage() {
   const [auditEvents, setAuditEvents] = useState([])
   const [onboardingRows, setOnboardingRows] = useState([])
   const [cloneTargetYears, setCloneTargetYears] = useState({})
+  const [cycleForm, setCycleForm] = useState(defaultCycleForm)
+  const [editingCycleId, setEditingCycleId] = useState(null)
+  const [cycleSaving, setCycleSaving] = useState(false)
+  const cycles = adminCycles.length ? adminCycles : dashboardCycles
 
   const authHeaders = useMemo(() => ({
     'x-user-role': user?.role || '',
@@ -56,9 +89,51 @@ export default function AdminSettingsPage() {
     return response.json().catch(() => ({}))
   }
 
+  const updateCycleForm = (field, value) => {
+    setCycleForm((current) => ({ ...current, [field]: value }))
+  }
+
+  const resetCycleForm = () => {
+    setEditingCycleId(null)
+    setCycleForm(defaultCycleForm)
+  }
+
+  const buildCyclePayload = ({ includeCreateOptions = false } = {}) => {
+    const reminderDays = parseReminderDays(cycleForm.reminder_days_before_deadline)
+    const cycleYear = Number(cycleForm.cycle_year)
+    if (!Number.isInteger(cycleYear) || cycleYear <= 0) {
+      throw new Error('Enter a valid cycle year.')
+    }
+    if (!cycleForm.submission_open_date || !cycleForm.submission_deadline) {
+      throw new Error('Open date and deadline are required.')
+    }
+
+    const payload = {
+      cycle_year: cycleYear,
+      submission_open_date: cycleForm.submission_open_date,
+      submission_deadline: cycleForm.submission_deadline,
+      extension_date: cycleForm.extension_date || null,
+      reminder_days_before_deadline: reminderDays,
+      private_equity_template: cycleForm.private_equity_template.trim(),
+      real_estate_template: cycleForm.real_estate_template.trim(),
+      debt_template: cycleForm.debt_template.trim(),
+      carry_forward_prefill: Boolean(cycleForm.carry_forward_prefill),
+    }
+
+    if (includeCreateOptions) {
+      payload.activate_on_create = Boolean(cycleForm.activate_on_create)
+    }
+    return payload
+  }
+
   const loadUsers = async () => {
     const data = await requestJson('/users', {}, 'Failed to load users')
     setUsers(Array.isArray(data) ? data : [])
+  }
+
+  const loadCycles = async () => {
+    const data = await requestJson('/cycles', {}, 'Failed to load cycles')
+    setAdminCycles(Array.isArray(data) ? data : [])
   }
 
   const loadPermissions = async () => {
@@ -108,7 +183,16 @@ export default function AdminSettingsPage() {
   }
 
   useEffect(() => {
-    if (user?.role !== 'manager') return
+    const normalizedRole = String(user?.role || '').toLowerCase()
+    if (activeTab !== 'Data Collection Cycles') return
+    if (normalizedRole !== 'manager' && normalizedRole !== 'admin') return
+
+    loadCycles().catch((error) => setMessage(error.message))
+  }, [activeTab, user?.email, user?.role, user?.sessionToken])
+
+  useEffect(() => {
+    const normalizedRole = String(user?.role || '').toLowerCase()
+    if (normalizedRole !== 'manager' && normalizedRole !== 'admin') return
 
     const run = async () => {
       try {
@@ -131,7 +215,7 @@ export default function AdminSettingsPage() {
     }
 
     run()
-  }, [activeTab, authHeaders, cycles, helpForm.cycle_id, user?.role])
+  }, [activeTab, authHeaders, helpForm.cycle_id, user?.role])
 
   const updateCycleStatus = async (cycleId, status) => {
     setMessage('Updating cycle status...')
@@ -147,6 +231,7 @@ export default function AdminSettingsPage() {
       )
       setMessage(`Cycle updated to ${status}.`)
       refresh()
+      await loadCycles()
     } catch (error) {
       setMessage(error.message)
     }
@@ -172,9 +257,70 @@ export default function AdminSettingsPage() {
       )
       setMessage(`Cycle cloned to FY${targetYear} draft.`)
       refresh()
+      await loadCycles()
     } catch (error) {
       setMessage(error.message)
     }
+  }
+
+  const saveCycle = async (event) => {
+    event.preventDefault()
+    setCycleSaving(true)
+    setMessage(editingCycleId ? 'Saving cycle changes...' : 'Starting new cycle...')
+
+    try {
+      const payload = buildCyclePayload({ includeCreateOptions: !editingCycleId })
+      if (editingCycleId) {
+        await requestJson(
+          `/cycles/${editingCycleId}`,
+          {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          },
+          'Failed to update cycle'
+        )
+        setMessage(`FY${payload.cycle_year} cycle updated.`)
+      } else {
+        await requestJson(
+          '/cycles',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          },
+          'Failed to start new cycle'
+        )
+        setMessage(`FY${payload.cycle_year} cycle ${payload.activate_on_create ? 'started' : 'created as draft'}.`)
+      }
+      resetCycleForm()
+      refresh()
+      await loadCycles()
+    } catch (error) {
+      setMessage(error.message)
+    } finally {
+      setCycleSaving(false)
+    }
+  }
+
+  const editCycle = (cycle) => {
+    setEditingCycleId(cycle.id)
+    setCycleForm({
+      cycle_year: String(cycle.cycle_year || ''),
+      submission_open_date: cycle.submission_open_date || '',
+      submission_deadline: cycle.submission_deadline || '',
+      extension_date: cycle.extension_date || '',
+      reminder_days_before_deadline: Array.isArray(cycle.reminder_days_before_deadline)
+        ? cycle.reminder_days_before_deadline.join(', ')
+        : '14, 7, 1',
+      private_equity_template: cycle.private_equity_template || defaultCycleForm.private_equity_template,
+      real_estate_template: cycle.real_estate_template || defaultCycleForm.real_estate_template,
+      debt_template: cycle.debt_template || defaultCycleForm.debt_template,
+      activate_on_create: String(cycle.status || '').toLowerCase() === 'active',
+      carry_forward_prefill: Boolean(cycle.carry_forward_prefill),
+    })
+    setActiveTab('Data Collection Cycles')
+    setMessage(`Editing FY${cycle.cycle_year}.`)
   }
 
   const upsertPermission = async (userId, updates) => {
@@ -325,28 +471,38 @@ export default function AdminSettingsPage() {
     rows: cycles.map((cycle) => ({
       id: cycle.id,
       cycle: `FY${cycle.cycle_year}`,
-      cycleYear: cycle.cycle_year,
+      cycle_year: cycle.cycle_year,
+      submission_open_date: cycle.submission_open_date,
+      submission_deadline: cycle.submission_deadline,
+      extension_date: cycle.extension_date,
+      reminder_days_before_deadline: cycle.reminder_days_before_deadline,
+      private_equity_template: cycle.private_equity_template,
+      real_estate_template: cycle.real_estate_template,
+      debt_template: cycle.debt_template,
+      carry_forward_prefill: cycle.carry_forward_prefill,
       openDate: cycle.submission_open_date,
       deadline: cycle.submission_deadline,
       status: cycle.status,
+      statusLabel: toStatusLabel(cycle.status),
     })),
     columns: [
       { key: 'cycle', label: 'Cycle', sortable: true },
       { key: 'openDate', label: 'Open Date', sortable: true },
       { key: 'deadline', label: 'Deadline', sortable: true },
-      { key: 'status', label: 'Status', sortable: true, render: (row) => <StatusBadge value={row.status} /> },
+      { key: 'statusLabel', label: 'Status', sortable: true, render: (row) => <StatusBadge value={row.statusLabel} /> },
       {
         key: 'actions',
         label: 'Actions',
         render: (row) => (
           <div className="flex flex-wrap items-center gap-2">
+            <button type="button" className="text-xs text-blue-700 font-bold uppercase tracking-wide hover:underline" onClick={() => editCycle(row)}>Edit</button>
             <button type="button" className="text-xs text-green-700 font-bold uppercase tracking-wide hover:underline" onClick={() => updateCycleStatus(row.id, 'active')}>Activate</button>
             <button type="button" className="text-xs text-red-700 font-bold uppercase tracking-wide hover:underline" onClick={() => updateCycleStatus(row.id, 'closed')}>Close</button>
             <button type="button" className="text-xs text-slate-700 font-bold uppercase tracking-wide hover:underline" onClick={() => updateCycleStatus(row.id, 'draft')}>Draft</button>
             <input
               type="number"
               className="w-24 rounded-md border border-slate-300 px-2 py-1 text-xs"
-              value={cloneTargetYears[row.id] || row.cycleYear + 1}
+              value={cloneTargetYears[row.id] || row.cycle_year + 1}
               onChange={(event) => setCloneTargetYears((current) => ({ ...current, [row.id]: event.target.value }))}
             />
             <button type="button" className="text-xs text-indigo-700 font-bold uppercase tracking-wide hover:underline" onClick={() => cloneCycle(row.id)}>Clone</button>
@@ -444,7 +600,113 @@ export default function AdminSettingsPage() {
         }
       >
         {activeTab === 'Data Collection Cycles' ? (
-          <DataTable columns={cyclesTable.columns} rows={cyclesTable.rows} pageSize={8} />
+          <div className="space-y-4">
+            <form className="cycle-config-form" onSubmit={saveCycle}>
+              <div className="cycle-config-form-header">
+                <div>
+                  <h4>{editingCycleId ? 'Edit Collection Cycle' : 'Start New Collection Cycle'}</h4>
+                  <p>Managers can open a new reporting window, adjust templates, and control which cycle is active.</p>
+                </div>
+                {editingCycleId ? (
+                  <button type="button" className="button" onClick={resetCycleForm} disabled={cycleSaving}>
+                    Cancel Edit
+                  </button>
+                ) : null}
+              </div>
+
+              <div className="cycle-config-grid">
+                <label>
+                  <span>Cycle year</span>
+                  <input
+                    type="number"
+                    min="2020"
+                    value={cycleForm.cycle_year}
+                    onChange={(event) => updateCycleForm('cycle_year', event.target.value)}
+                    placeholder="2027"
+                  />
+                </label>
+                <label>
+                  <span>Open date</span>
+                  <input
+                    type="date"
+                    value={cycleForm.submission_open_date}
+                    onChange={(event) => updateCycleForm('submission_open_date', event.target.value)}
+                  />
+                </label>
+                <label>
+                  <span>Deadline</span>
+                  <input
+                    type="date"
+                    value={cycleForm.submission_deadline}
+                    onChange={(event) => updateCycleForm('submission_deadline', event.target.value)}
+                  />
+                </label>
+                <label>
+                  <span>Extension date</span>
+                  <input
+                    type="date"
+                    value={cycleForm.extension_date}
+                    onChange={(event) => updateCycleForm('extension_date', event.target.value)}
+                  />
+                </label>
+                <label>
+                  <span>Reminder days before deadline</span>
+                  <input
+                    value={cycleForm.reminder_days_before_deadline}
+                    onChange={(event) => updateCycleForm('reminder_days_before_deadline', event.target.value)}
+                    placeholder="14, 7, 1"
+                  />
+                </label>
+                <label>
+                  <span>Private equity template</span>
+                  <input
+                    value={cycleForm.private_equity_template}
+                    onChange={(event) => updateCycleForm('private_equity_template', event.target.value)}
+                  />
+                </label>
+                <label>
+                  <span>Real estate template</span>
+                  <input
+                    value={cycleForm.real_estate_template}
+                    onChange={(event) => updateCycleForm('real_estate_template', event.target.value)}
+                  />
+                </label>
+                <label>
+                  <span>Debt template</span>
+                  <input
+                    value={cycleForm.debt_template}
+                    onChange={(event) => updateCycleForm('debt_template', event.target.value)}
+                  />
+                </label>
+              </div>
+
+              <div className="cycle-config-actions">
+                {!editingCycleId ? (
+                  <label className="checkbox-row">
+                    <input
+                      type="checkbox"
+                      checked={cycleForm.activate_on_create}
+                      onChange={(event) => updateCycleForm('activate_on_create', event.target.checked)}
+                    />
+                    <span>Start as active cycle</span>
+                  </label>
+                ) : null}
+                <label className="checkbox-row">
+                  <input
+                    type="checkbox"
+                    checked={cycleForm.carry_forward_prefill}
+                    onChange={(event) => updateCycleForm('carry_forward_prefill', event.target.checked)}
+                  />
+                  <span>Carry forward prior submission data</span>
+                </label>
+                <button type="submit" className="button good" disabled={cycleSaving}>
+                  {cycleSaving ? 'Saving...' : editingCycleId ? 'Save Cycle' : 'Start New Cycle'}
+                </button>
+              </div>
+            </form>
+
+            <DataTable columns={cyclesTable.columns} rows={cyclesTable.rows} pageSize={8} />
+          </div>
         ) : null}
 
         {activeTab === 'Users' ? (

@@ -354,6 +354,19 @@ class CycleCreateRequest(BaseModel):
     carry_forward_prefill: bool = True
 
 
+class CycleUpdateRequest(BaseModel):
+    cycle_year: Optional[int] = None
+    submission_open_date: Optional[str] = None
+    submission_deadline: Optional[str] = None
+    extension_date: Optional[str] = None
+    reminder_days_before_deadline: Optional[List[int]] = None
+    private_equity_template: Optional[str] = None
+    real_estate_template: Optional[str] = None
+    debt_template: Optional[str] = None
+    status: Optional[Literal['draft', 'active', 'closed']] = None
+    carry_forward_prefill: Optional[bool] = None
+
+
 class CycleInfo(BaseModel):
     id: int
     cycle_year: int
