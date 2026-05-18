@@ -4305,33 +4305,89 @@ def anomalies_summary(db: Session = Depends(get_db)):
         db.query(ValidationFlag)
         .filter(func.lower(ValidationFlag.severity) != 'info')
         .order_by(ValidationFlag.id.desc())
-        .limit(100)
+        .limit(200)
         .all()
     )
-    severity_counts = {'high': 0, 'medium': 0, 'low': 0}
+
+    company_ids = sorted({int(flag.company_id) for flag in flags if flag.company_id is not None})
+    company_lookup: dict[int, dict[str, Any]] = {}
+    if company_ids:
+        companies = db.query(Company).filter(Company.id.in_(company_ids)).all()
+        company_lookup = {
+            int(company.id): {
+                'id': int(company.id),
+                'name': company.name,
+                'code': company.code,
+            }
+            for company in companies
+        }
+
+    severity_counts: Counter[str] = Counter()
+    flag_type_counts: Counter[str] = Counter()
     items = []
     for flag in flags:
-        sev = str(flag.severity or '').strip().lower()
-        if sev in severity_counts:
-            severity_counts[sev] += 1
+        severity_key = str(flag.severity or '').strip().lower() or 'unknown'
+        flag_type_key = str(flag.flag_type or '').strip().lower() or 'other'
+        severity_counts[severity_key] += 1
+        flag_type_counts[flag_type_key] += 1
+
+        company_meta = company_lookup.get(int(flag.company_id)) if flag.company_id is not None else None
         items.append({
             'id': flag.id,
             'company_id': flag.company_id,
+            'company_name': company_meta.get('name') if company_meta else None,
+            'company_code': company_meta.get('code') if company_meta else None,
             'reporting_year': flag.reporting_year,
+            'flag_type': flag.flag_type,
             'field_name': flag.field_name,
             'issue_description': flag.issue_description,
             'severity': flag.severity,
         })
+
+    watchlist_items = items[:20]
+    watchlist_company_ids = sorted({
+        int(item['company_id'])
+        for item in watchlist_items
+        if item.get('company_id') is not None
+    })
+    watchlist_company_details = []
+    for company_id in watchlist_company_ids:
+        company_meta = company_lookup.get(company_id) or {}
+        watchlist_company_details.append({
+            'company_id': company_id,
+            'company_name': company_meta.get('name'),
+            'company_code': company_meta.get('code'),
+        })
+
+    severity_priority = {'critical': 5, 'high': 4, 'medium': 3, 'low': 2, 'warning': 1, 'unknown': 0}
+    top_severity = None
+    if severity_counts:
+        top_severity = max(
+            severity_counts.keys(),
+            key=lambda key: (severity_priority.get(key, 0), int(severity_counts.get(key, 0))),
+        )
+    total_flags = len(watchlist_items)
+    total_companies = len(watchlist_company_ids)
+    if total_flags > 0:
+        top_label = str(top_severity or 'unknown').replace('_', ' ').title()
+        summary = f'Live anomaly feed: {total_flags} open flags across {total_companies} companies (top severity: {top_label}).'
+    else:
+        summary = 'No active anomaly flags in the latest validation feed.'
+
     return {
         'available': True,
         'scope': 'portfolio',
         'generated_at': _utc_now_iso(),
-        'headline': 'Portfolio anomaly watchlist',
-        'summary': 'Latest validation and variance anomalies from approved and submitted data.',
-        'severity_counts': severity_counts,
-        'items': items[:20],
-        'watchlist_companies': sorted({item['company_id'] for item in items[:20]}),
-        'fallback_used': True,
+        'headline': f'{total_flags} active anomaly flags',
+        'summary': summary,
+        'severity_counts': dict(severity_counts),
+        'flag_type_counts': dict(flag_type_counts),
+        'count': total_flags,
+        'items': watchlist_items,
+        'watchlist_companies': watchlist_company_ids,
+        'watchlist_company_details': watchlist_company_details,
+        'watchlist_company_ids': watchlist_company_ids,
+        'fallback_used': total_flags == 0,
     }
 
 
@@ -4356,20 +4412,35 @@ def company_anomalies(
         .limit(50)
         .all()
     )
+    severity_counts: Counter[str] = Counter(
+        (str(flag.severity or '').strip().lower() or 'unknown')
+        for flag in flags
+    )
+    flag_type_counts: Counter[str] = Counter(
+        (str(flag.flag_type or '').strip().lower() or 'other')
+        for flag in flags
+    )
     return {
+        'available': True,
         'company_id': target_company.id,
         'company_name': target_company.name,
+        'generated_at': _utc_now_iso(),
+        'headline': f'{len(flags)} active anomaly flags for {target_company.name}',
         'count': len(flags),
+        'severity_counts': dict(severity_counts),
+        'flag_type_counts': dict(flag_type_counts),
         'items': [
             {
                 'id': flag.id,
                 'reporting_year': flag.reporting_year,
+                'flag_type': flag.flag_type,
                 'field_name': flag.field_name,
                 'issue_description': flag.issue_description,
                 'severity': flag.severity,
             }
             for flag in flags
         ],
+        'fallback_used': len(flags) == 0,
     }
 
 
