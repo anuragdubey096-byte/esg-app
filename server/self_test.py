@@ -171,7 +171,10 @@ def run_self_test():
             'submission_notes': 'QA submission',
         }
 
-        initial_submit = client.post(f'/company/{company_id}/submissions', json=submission_payload)
+        investor_write_attempt = client.post(f'/company/{company_id}/submissions', json=submission_payload, headers=investor_headers)
+        check('investor blocked from submission writes', investor_write_attempt.status_code == 403, investor_write_attempt.text)
+
+        initial_submit = client.post(f'/company/{company_id}/submissions', json=submission_payload, headers=manager_headers)
         submission = initial_submit.json() if initial_submit.status_code == 200 else {}
         submission_id = submission.get('id')
         check('active cycle accepts submission', initial_submit.status_code == 200 and submission.get('status') == 'submitted', initial_submit.text)
@@ -193,7 +196,7 @@ def run_self_test():
             resub_requested.text,
         )
 
-        resubmit = client.post(f'/company/{company_id}/submissions', json=submission_payload)
+        resubmit = client.post(f'/company/{company_id}/submissions', json=submission_payload, headers=manager_headers)
         resubmitted = resubmit.json() if resubmit.status_code == 200 else {}
         check(
             'resubmission requested -> submitted',
@@ -204,7 +207,7 @@ def run_self_test():
         close_cycle = client.patch(f"/cycles/{cycle['id']}/status", json={'status': 'closed'}, headers=manager_headers)
         check('PATCH /cycles/{id}/status close', close_cycle.status_code == 200 and close_cycle.json().get('status') == 'closed', close_cycle.text)
 
-        blocked_submit = client.post(f'/company/{company_id}/submissions', json=submission_payload)
+        blocked_submit = client.post(f'/company/{company_id}/submissions', json=submission_payload, headers=manager_headers)
         check('closed cycle blocks write', blocked_submit.status_code == 423, blocked_submit.text)
 
         unlock_response = client.post(
@@ -215,7 +218,7 @@ def run_self_test():
         unlock_payload = unlock_response.json() if unlock_response.status_code == 200 else {}
         check('POST /submissions/{id}/unlock', unlock_response.status_code == 200 and unlock_payload.get('active') is True, unlock_response.text)
 
-        unlocked_submit = client.post(f'/company/{company_id}/submissions', json=submission_payload)
+        unlocked_submit = client.post(f'/company/{company_id}/submissions', json=submission_payload, headers=manager_headers)
         check('unlock allows temporary write', unlocked_submit.status_code == 200, unlocked_submit.text)
 
         reminder_response = client.post(

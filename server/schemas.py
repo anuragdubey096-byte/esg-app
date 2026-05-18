@@ -318,6 +318,7 @@ class InvestorDashboardResponse(InvestorSummary):
     top_performers: List[InvestorPerformer] = []
     bottom_performers: List[InvestorPerformer] = []
     data_quality: Dict[str, float]
+    companies: List[CompanyDetail] = Field(default_factory=list)
 
 
 class SubmissionStatusUpdateRequest(BaseModel):

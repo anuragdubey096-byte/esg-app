@@ -18,7 +18,7 @@ const NAV_ITEMS = [
     label: 'Submissions',
     icon: 'S',
     title: 'Submission Tracking',
-    roles: ['manager', 'company'],
+    roles: ['manager', 'investor', 'company'],
   },
   {
     to: '/analytics',

@@ -209,6 +209,10 @@ export default function SubmissionsPage() {
   const { user } = useOutletContext()
   const navigate = useNavigate()
   const { companies, cycles, loading, error, refresh } = useDashboardData(user)
+  const role = String(user?.role || '').toLowerCase()
+  const isManager = role === 'manager'
+  const isInvestor = role === 'investor'
+  const isCompany = role === 'company'
   const [status, setStatus] = useState('All')
   const [sector, setSector] = useState('All')
   const [geography, setGeography] = useState('All')
@@ -227,7 +231,7 @@ export default function SubmissionsPage() {
   const [carbonError, setCarbonError] = useState('')
 
   const investorChartData = useMemo(() => {
-    if (user?.role !== 'investor') return [];
+    if (!isInvestor) return [];
     return companies.map(c => {
       const payload = parseSubmissionPayload(getLatestSubmission(c));
       return {
@@ -238,9 +242,9 @@ export default function SubmissionsPage() {
         femaleLeadership: payload?.female_leadership_representation_percent || 0,
       }
     }).filter(d => d.scope1 > 0 || d.femaleLeadership > 0);
-  }, [companies, user?.role]);
+  }, [companies, isInvestor]);
 
-  const managerHeaders = useMemo(() => ({
+  const authJsonHeaders = useMemo(() => ({
     'Content-Type': 'application/json',
     'x-user-role': user?.role || '',
     'x-user-email': user?.email || '',
@@ -249,7 +253,7 @@ export default function SubmissionsPage() {
   const managerPost = async (path, method = 'POST', body = null) => {
     const response = await fetch(`${BACKEND_URL}${path}`, {
       method,
-      headers: body ? managerHeaders : {
+      headers: body ? authJsonHeaders : {
         'x-user-role': user?.role || '',
         'x-user-email': user?.email || '',
       },
@@ -366,21 +370,28 @@ export default function SubmissionsPage() {
     })
   }, [companies, cycles])
 
+  const visibleRows = useMemo(() => {
+    if (isInvestor) {
+      return rows.filter((row) => Boolean(row.submissionId))
+    }
+    return rows
+  }, [isInvestor, rows])
+
   const options = useMemo(() => ({
-    statuses: ['All', ...new Set(rows.map((row) => row.status))],
-    sectors: ['All', ...new Set(rows.map((row) => row.sector))],
-    geographies: ['All', ...new Set(rows.map((row) => row.geography))],
-  }), [rows])
+    statuses: ['All', ...new Set(visibleRows.map((row) => row.status))],
+    sectors: ['All', ...new Set(visibleRows.map((row) => row.sector))],
+    geographies: ['All', ...new Set(visibleRows.map((row) => row.geography))],
+  }), [visibleRows])
 
   const filteredRows = useMemo(() => {
-    return rows.filter((row) => {
+    return visibleRows.filter((row) => {
       const statusMatch = status === 'All' || row.status === status
       const sectorMatch = sector === 'All' || row.sector === sector
       const geoMatch = geography === 'All' || row.geography === geography
       const searchMatch = !search.trim() || row.companyName.toLowerCase().includes(search.toLowerCase())
       return statusMatch && sectorMatch && geoMatch && searchMatch
     })
-  }, [geography, rows, search, sector, status])
+  }, [geography, visibleRows, search, sector, status])
 
   const columns = [
     { key: 'companyName', label: 'Company Name', sortable: true },
@@ -391,7 +402,7 @@ export default function SubmissionsPage() {
     { key: 'risk', label: 'Risk Indicator', sortable: true, render: (row) => <StatusBadge value={row.risk} /> },
   ]
 
-  if (user?.role === 'manager') {
+  if (isManager) {
     columns.push({ key: 'reportingYear', label: 'Reporting Year', sortable: true })
     columns.push({
       key: 'flags', label: 'Anomalies', sortable: true, render: (row) => (
@@ -445,20 +456,20 @@ export default function SubmissionsPage() {
   }
 
   useEffect(() => {
-    if (user?.role !== 'company') return
+    if (!isCompany) return
     if (!companies.length) return
     if (!selectedCompanyId) {
       setSelectedCompanyId(companies[0].id)
     }
-  }, [companies, selectedCompanyId, user?.role])
+  }, [companies, isCompany, selectedCompanyId])
 
   useEffect(() => {
-    if (user?.role !== 'company') return
+    if (!isCompany) return
     if (!selectedCompanyId) return
     const company = companies.find((item) => item.id === selectedCompanyId)
     if (!company) return
     setFormValues(createPrefilledFormValues(company))
-  }, [companies, selectedCompanyId, user?.role])
+  }, [companies, isCompany, selectedCompanyId])
 
   const selectedCompany = companies.find((item) => item.id === selectedCompanyId) || null
   const selectedCompanyRow = rows.find((item) => item.id === selectedCompanyId) || null
@@ -578,7 +589,7 @@ export default function SubmissionsPage() {
     try {
       const response = await fetch(`${BACKEND_URL}/company/${selectedCompany.id}/submissions`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authJsonHeaders,
         body: JSON.stringify(buildSubmissionPayload(formValues)),
       })
 
@@ -597,13 +608,13 @@ export default function SubmissionsPage() {
   }
 
   useEffect(() => {
-    if (user?.role !== 'company' || !selectedCompany) return
+    if (!isCompany || !selectedCompany) return
     
     const autoSaveInterval = setInterval(async () => {
       try {
         await fetch(`${BACKEND_URL}/company/${selectedCompany.id}/submissions`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: authJsonHeaders,
           body: JSON.stringify(buildSubmissionPayload(formValuesRef.current)),
         })
         console.log('Auto-saved at', new Date().toLocaleTimeString())
@@ -611,7 +622,7 @@ export default function SubmissionsPage() {
     }, 300000) // 5 minutes in milliseconds
 
     return () => clearInterval(autoSaveInterval)
-  }, [selectedCompany, user?.role])
+  }, [authJsonHeaders, isCompany, selectedCompany])
 
   if (loading) {
     return (
@@ -633,7 +644,7 @@ export default function SubmissionsPage() {
     )
   }
 
-  if (user?.role === 'company') {
+  if (isCompany) {
     return (
       <div className="page-grid">
         <SectionCard title="Submission Workspace" subtitle="Prepare and submit your ESG form with confidence and validation checks.">
@@ -940,7 +951,12 @@ export default function SubmissionsPage() {
                       formData.append('file', fileInput.files[0]);
                       try {
                         const res = await fetch(`${BACKEND_URL}/company/${selectedCompany.id}/upload-evidence`, {
-                          method: 'POST', body: formData
+                          method: 'POST',
+                          headers: {
+                            'x-user-role': user?.role || '',
+                            'x-user-email': user?.email || '',
+                          },
+                          body: formData
                         });
                         if (res.ok) alert('Evidence uploaded successfully');
                         else alert('Upload failed');
@@ -975,7 +991,8 @@ export default function SubmissionsPage() {
                     if (!name || !owner || !date) return alert('Fill all fields');
                     try {
                       const res = await fetch(`${BACKEND_URL}/company/${selectedCompany.id}/action-plans`, {
-                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        method: 'POST',
+                        headers: authJsonHeaders,
                         body: JSON.stringify({ initiative_name: name, assigned_owner: owner, target_completion_date: date })
                       });
                       if (res.ok) { alert('Action Plan created'); refresh(); }
@@ -1088,14 +1105,14 @@ export default function SubmissionsPage() {
           </label>
         </div>
 
-        {user?.role === 'investor' && (
+        {isInvestor && (
           <div className="flex gap-4 mb-6">
              <button className="button bg-emerald-600 text-white" onClick={() => handleDownloadReport('edci')}>Generate EDCI Report</button>
              <button className="button bg-blue-600 text-white" onClick={() => handleDownloadReport('sfdr')}>Generate SFDR Report</button>
           </div>
         )}
 
-        {user?.role === 'investor' && investorChartData.length > 0 && (
+        {isInvestor && investorChartData.length > 0 && (
           <div className="mb-8 grid grid-cols-1 xl:grid-cols-2 gap-6">
             <div className="rounded-xl border border-slate-200 bg-white p-4 h-80">
               <h4 className="text-sm font-semibold mb-4 text-slate-700">Portfolio Emissions (tCO2e)</h4>

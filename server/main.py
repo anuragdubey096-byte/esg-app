@@ -245,6 +245,10 @@ def require_manager(role: str = Depends(get_user_role)):
     if role != 'manager':
         raise HTTPException(status_code=403, detail='Access restricted to ESG Managers')
 
+def require_company_or_manager(role: str = Depends(get_user_role)):
+    if role not in {'company', 'manager'}:
+        raise HTTPException(status_code=403, detail='Access restricted to portfolio companies and ESG Managers')
+
 def block_investors(role: str = Depends(get_user_role)):
     if role == 'investor':
         raise HTTPException(status_code=403, detail='Investors are blocked from individual company-level data')
@@ -1014,7 +1018,7 @@ def complete_onboarding(company_id: int, db: Session = Depends(get_db)):
     db.commit()
     return {"message": "Onboarding complete. Company is now active in the portfolio."}
 
-@app.post('/company/{company_id}/submissions', response_model=SubmissionInfo)
+@app.post('/company/{company_id}/submissions', response_model=SubmissionInfo, dependencies=[Depends(require_company_or_manager)])
 def add_submission(company_id: int, submission: SubmissionCreateRequest, db: Session = Depends(get_db)):
     company = db.query(Company).filter(Company.id == company_id).first()
     if not company:
@@ -1180,7 +1184,7 @@ def update_submission_status(
     db.refresh(submission)
     return submission
 
-@app.post('/company/{company_id}/action-plans', response_model=ActionPlanInfo)
+@app.post('/company/{company_id}/action-plans', response_model=ActionPlanInfo, dependencies=[Depends(require_company_or_manager)])
 def create_action_plan(company_id: int, payload: ActionPlanCreateRequest, db: Session = Depends(get_db)):
     company = db.query(Company).filter(Company.id == company_id).first()
     if not company:
@@ -1372,7 +1376,7 @@ def calculate_ghg(payload: GHGCalculatorRequest):
 def calculate_carbon(payload: GHGCalculatorRequest):
     return _compute_carbon(payload)
 
-@app.post('/company/{company_id}/upload-evidence')
+@app.post('/company/{company_id}/upload-evidence', dependencies=[Depends(require_company_or_manager)])
 def upload_evidence(company_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
     company = db.query(Company).filter(Company.id == company_id).first()
     if not company:
@@ -2600,8 +2604,15 @@ def analytics_portfolio(db: Session = Depends(get_db)):
 
 @app.get('/dashboard/investor', response_model=InvestorDashboardResponse)
 def investor_dashboard(db: Session = Depends(get_db)):
-    # Investor receives portfolio-level analytics only (no raw company submissions).
-    return InvestorDashboardResponse(**build_investor_analytics(db))
+    analytics = build_investor_analytics(db)
+    submitted_companies = (
+        db.query(Company)
+        .join(Submission, Submission.company_id == Company.id)
+        .distinct()
+        .order_by(Company.name.asc())
+        .all()
+    )
+    return InvestorDashboardResponse(**analytics, companies=submitted_companies)
 
 
 # ==========================================
