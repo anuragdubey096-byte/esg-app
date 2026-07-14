@@ -160,12 +160,13 @@ const portfolioPerformanceMetrics = [
 const operationsMetrics = [
   {
     title: 'Reminder Log',
-    endpoint: '/live/activity?limit=150',
+    endpoint: '/live/activity?limit=100',
     unit: 'events',
     valueType: 'integer',
     selectValue: (payload) => {
-      if (!Array.isArray(payload)) return null
-      return payload.filter((item) => String(item?.event_type || '').toLowerCase() === 'reminder_sent').length
+      const events = Array.isArray(payload) ? payload : payload?.events || payload?.items
+      if (!Array.isArray(events)) return null
+      return events.filter((item) => String(item?.event_type || '').toLowerCase() === 'reminder_sent').length
     },
   },
   {

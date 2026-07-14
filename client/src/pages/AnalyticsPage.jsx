@@ -16,6 +16,7 @@ import {
   YAxis,
 } from 'recharts'
 import DataTable from '../components/DataTable'
+import ExecutivePageHeader from '../components/ExecutivePageHeader'
 import KpiCard from '../components/KpiCard'
 import SectionCard from '../components/SectionCard'
 import AdminAnalyticsSections from '../components/analytics/AdminAnalyticsSections'
@@ -58,9 +59,23 @@ export default function AnalyticsPage() {
   const { user } = useOutletContext()
   const { companies, loading, error } = useDashboardData(user)
   const [activeTab, setActiveTab] = useState(analyticsTabs[0])
+  const [selectedSector, setSelectedSector] = useState('All')
+  const [selectedCompany, setSelectedCompany] = useState('All')
+
+  const sectorOptions = useMemo(() => (
+    ['All', ...new Set(companies.map((company) => company.sector || 'Unassigned'))]
+  ), [companies])
+  const companyOptions = useMemo(() => companies.filter((company) => (
+    selectedSector === 'All' || (company.sector || 'Unassigned') === selectedSector
+  )), [companies, selectedSector])
+  const scopedCompanies = useMemo(() => companies.filter((company) => {
+    const sectorMatch = selectedSector === 'All' || (company.sector || 'Unassigned') === selectedSector
+    const companyMatch = selectedCompany === 'All' || String(company.id) === selectedCompany
+    return sectorMatch && companyMatch
+  }), [companies, selectedCompany, selectedSector])
 
   const analytics = useMemo(() => {
-    const records = companies
+    const records = scopedCompanies
       .map((company) => {
         const latestSubmission = getLatestSubmission(company)
         const payload = parseSubmissionPayload(latestSubmission)
@@ -236,7 +251,7 @@ export default function AnalyticsPage() {
     ]
 
     return {
-      totalCompanies: companies.length,
+      totalCompanies: scopedCompanies.length,
       reportingCompanies: records.length,
       avgTRIFR: Number(toAverage(totalTRIFR, records.length).toFixed(2)),
       totalEmissions: Number((emissionsScopeTotals.scope1 + emissionsScopeTotals.scope2 + emissionsScopeTotals.scope3).toFixed(2)),
@@ -253,7 +268,7 @@ export default function AnalyticsPage() {
       topBenchmarkRows: [...benchmarkRows].sort((left, right) => right.compositeScore - left.compositeScore).slice(0, 10),
       benchmarkRows,
     }
-  }, [companies])
+  }, [scopedCompanies])
 
   if (loading) {
     return (
@@ -277,16 +292,65 @@ export default function AnalyticsPage() {
 
   return (
     <div className="page-grid">
-      <section className="kpi-grid">
+      <ExecutivePageHeader
+        eyebrow="Portfolio intelligence"
+        title="ESG analytics command center"
+        description="Move from portfolio signals to company-level evidence with a consistent environmental, social, governance, and benchmarking view."
+        meta={[
+          { label: 'Scope', value: selectedCompany !== 'All' ? 'Single company' : selectedSector !== 'All' ? selectedSector : 'Full portfolio' },
+          { label: 'Reporting', value: `${analytics.reportingCompanies}/${analytics.totalCompanies}` },
+          { label: 'Measured data', value: `${analytics.confidenceMeasured}%` },
+        ]}
+        actions={(
+          <div className="analytics-scope-controls">
+            <label>
+              Sector
+              <select
+                value={selectedSector}
+                onChange={(event) => {
+                  setSelectedSector(event.target.value)
+                  setSelectedCompany('All')
+                }}
+              >
+                {sectorOptions.map((sector) => <option key={sector} value={sector}>{sector}</option>)}
+              </select>
+            </label>
+            <label>
+              Company
+              <select value={selectedCompany} onChange={(event) => setSelectedCompany(event.target.value)}>
+                <option value="All">All companies</option>
+                {companyOptions.map((company) => <option key={company.id} value={String(company.id)}>{company.name}</option>)}
+              </select>
+            </label>
+          </div>
+        )}
+      />
+
+      <section className="executive-kpi-grid" aria-label="Portfolio analytics metrics">
         <KpiCard title="Reporting Coverage" value={`${analytics.reportingCompanies}/${analytics.totalCompanies}`} trendLabel="companies with submissions" />
         <KpiCard title="Portfolio Emissions" value={`${analytics.totalEmissions.toLocaleString()} tCO2e`} />
         <KpiCard title="Renewable Share" value={`${analytics.renewableShare}%`} />
-        <KpiCard title="Avg TRIFR" value={analytics.avgTRIFR.toFixed(2)} />
-        <KpiCard title="Women Representation" value={`${analytics.avgFemaleRep}%`} />
-        <KpiCard title="Women Leadership" value={`${analytics.avgFemaleLeadership}%`} />
         <KpiCard title="Governance Adoption" value={`${analytics.governanceAdoption}%`} />
-        <KpiCard title="Measured Confidence" value={`${analytics.confidenceMeasured}%`} />
       </section>
+
+      <section className="analytics-insight-strip" aria-label="Current portfolio insight">
+        <div>
+          <span>Decision signal</span>
+          <strong>
+            {analytics.riskTierData.find((item) => item.name === 'At Risk')?.value || 0} companies currently fall in the at-risk benchmark tier
+          </strong>
+        </div>
+        <p>
+          Average workforce representation is {analytics.avgFemaleRep}% and safety performance is {analytics.avgTRIFR.toFixed(2)} TRIFR across the selected scope.
+        </p>
+      </section>
+
+      {!analytics.reportingCompanies ? (
+        <div className="analytics-empty-scope" role="status">
+          <strong>No submitted ESG data in this scope</strong>
+          <p>Select another company or return to the full portfolio to populate charts and benchmarks.</p>
+        </div>
+      ) : null}
 
       <SectionCard
         title="Admin ESG Analytics"

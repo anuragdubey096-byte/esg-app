@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import AttentionInbox from '../components/AttentionInbox'
 import DataTable from '../components/DataTable'
+import ExecutivePageHeader from '../components/ExecutivePageHeader'
+import KpiCard from '../components/KpiCard'
 import ReportingProgress from '../components/ReportingProgress'
 import SectionCard from '../components/SectionCard'
 import StatusBadge from '../components/StatusBadge'
@@ -205,6 +207,19 @@ export default function OverviewPage() {
     statusBreakdown,
     upcomingDeadlines,
   })
+  const overviewMetrics = useMemo(() => {
+    const total = Object.values(statusBreakdown).reduce((sum, value) => sum + Number(value || 0), 0)
+    const approved = Number(statusBreakdown.Approved || 0)
+    const reviewQueue = Number(statusBreakdown.Submitted || 0) + Number(statusBreakdown['Under Review'] || 0)
+    const actionRequired = Number(statusBreakdown['Resubmission Requested'] || 0) + Number(statusBreakdown['Not Started'] || 0)
+    return {
+      total,
+      approved,
+      reviewQueue,
+      actionRequired,
+      completion: total ? Math.round((approved / total) * 100) : 0,
+    }
+  }, [statusBreakdown])
 
   const deadlineColumns = [
     { key: 'company_name', label: 'Company', sortable: true },
@@ -278,6 +293,42 @@ export default function OverviewPage() {
 
   return (
     <div className="page-grid">
+      <ExecutivePageHeader
+        eyebrow={isCompany ? 'Company reporting workspace' : 'Portfolio command center'}
+        title={isCompany ? `${primaryCompany?.name || 'Company'} ESG overview` : 'ESG reporting overview'}
+        description={isCompany
+          ? 'Track reporting readiness, resolve requested actions, and keep your ESG submission moving.'
+          : 'Monitor portfolio reporting, focus the review queue, and act on exceptions from one place.'}
+        meta={[
+          { label: 'Role', value: isCompany ? 'Company contributor' : 'ESG manager' },
+          { label: 'Cycle', value: cycleBanner.active_cycle_year || 'Not active' },
+          { label: 'Window', value: formatDays(cycleBanner.days_remaining) },
+        ]}
+      />
+
+      <section className="executive-kpi-grid" aria-label="Executive reporting metrics">
+        <KpiCard
+          title={isCompany ? 'Submission Status' : 'Portfolio Companies'}
+          value={isCompany ? normalizeStatus(primarySubmission?.status || 'Not Started') : overviewMetrics.total}
+          trendLabel={isCompany ? 'current reporting state' : 'in the active reporting view'}
+        />
+        <KpiCard
+          title={isCompany ? 'Cycle Timing' : 'Approved'}
+          value={isCompany ? formatDays(cycleBanner.days_remaining) : overviewMetrics.approved}
+          trendLabel={isCompany ? 'submission window' : `${overviewMetrics.completion}% portfolio completion`}
+        />
+        <KpiCard
+          title={isCompany ? 'Open Actions' : 'Review Queue'}
+          value={isCompany ? attentionItems.length : overviewMetrics.reviewQueue}
+          trendLabel={isCompany ? 'items requiring attention' : 'submitted or under review'}
+        />
+        <KpiCard
+          title={isCompany ? 'Data Workspace' : 'Action Required'}
+          value={isCompany ? (primarySubmission ? 'Active' : 'Not started') : overviewMetrics.actionRequired}
+          trendLabel={isCompany ? 'latest submission availability' : 'not started or correction requested'}
+        />
+      </section>
+
       <ReportingProgress
         breakdown={statusBreakdown}
         cycleLabel={cycleBanner.active_cycle_year ? `Cycle ${cycleBanner.active_cycle_year}` : null}
