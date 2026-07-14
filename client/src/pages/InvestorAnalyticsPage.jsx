@@ -19,6 +19,7 @@ import DataTable from '../components/DataTable'
 import ExecutivePageHeader from '../components/ExecutivePageHeader'
 import KpiCard from '../components/KpiCard'
 import SectionCard from '../components/SectionCard'
+import SectionLoadState from '../components/SectionLoadState'
 import LPAnalyticsSections from '../components/analytics/LPAnalyticsSections'
 import useDashboardData from '../hooks/useDashboardData'
 import useNewsletterPreview from '../hooks/useNewsletterPreview'
@@ -41,7 +42,7 @@ function toNumber(value) {
 
 export default function InvestorAnalyticsPage() {
   const { user } = useOutletContext()
-  const { summary, loading, error } = useDashboardData(user)
+  const { summary, loading, error, retrySection, sections, isRefreshing } = useDashboardData(user)
   const narrative = useNarrativeSummary({ user, audience: 'lp', tone: 'board-ready', enabled: Boolean(user) })
   const newsletter = useNewsletterPreview({ user, audience: 'investor', tone: 'board-ready' })
   const analytics = summary || {}
@@ -139,7 +140,7 @@ export default function InvestorAnalyticsPage() {
     return (
       <div className="page-grid">
         <SectionCard title="Investor Analytics" subtitle="Live data unavailable">
-          <p>{error}</p>
+          <SectionLoadState error={error} onRetry={() => retrySection('dashboard')} />
         </SectionCard>
       </div>
     )
@@ -158,6 +159,14 @@ export default function InvestorAnalyticsPage() {
         ]}
       />
 
+      <SectionLoadState
+        loading={isRefreshing}
+        error={sections.dashboard.error}
+        cached={Boolean(summary)}
+        loadingMessage="Refreshing investor analytics..."
+        onRetry={() => retrySection('dashboard')}
+      />
+
       <section className="executive-kpi-grid" aria-label="Investor analytics metrics">
         <KpiCard title="Portfolio ESG Score" value={`${toNumber(analytics.portfolio_esg_score).toFixed(1)}/100`} />
         <KpiCard title="Reporting Coverage" value={`${coveragePercent}%`} trendLabel={`${toNumber(analytics.reporting_companies)}/${toNumber(analytics.total_companies)} companies`} />
@@ -168,10 +177,18 @@ export default function InvestorAnalyticsPage() {
       </section>
 
       <SectionCard title="AI Analytics Narrative" subtitle="Detailed portfolio interpretation generated from live analytics">
-        {narrative.loading ? <p>Generating summary...</p> : null}
-        {narrative.error ? <p>{narrative.error}</p> : null}
-        {!narrative.loading && !narrative.error && narrative.data ? (
+        <SectionLoadState
+          loading={narrative.loading}
+          error={narrative.error}
+          cached={Boolean(narrative.data)}
+          loadingMessage="Generating analytics narrative..."
+          onRetry={narrative.refresh}
+        />
+        {narrative.data ? (
           <>
+            {narrative.data.fallback_used ? (
+              <span className="fallback-badge">Live AI unavailable — showing calculated summary</span>
+            ) : null}
             <h4>{narrative.data.headline || 'Portfolio Analytics Summary'}</h4>
             <p>{narrative.data.summary || 'No narrative summary available.'}</p>
           </>

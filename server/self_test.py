@@ -33,6 +33,7 @@ def run_self_test():
 
         manager_dashboard = client.get('/dashboard/manager', headers=manager_headers)
         check('GET /dashboard/manager', manager_dashboard.status_code == 200 and 'summary' in manager_dashboard.json(), manager_dashboard.text)
+        check('manager dashboard includes timing telemetry', 'app;dur=' in manager_dashboard.headers.get('server-timing', ''), dict(manager_dashboard.headers))
 
         rbac_fail = client.get('/dashboard/manager', headers=investor_headers)
         check('GET /dashboard/manager blocked for investor', rbac_fail.status_code == 403, rbac_fail.text)
@@ -40,8 +41,9 @@ def run_self_test():
         cycles_for_investor = client.get('/cycles', headers=investor_headers)
         check('GET /cycles blocked for investor', cycles_for_investor.status_code == 403, cycles_for_investor.text)
 
-        response = client.get('/dashboard/investor')
+        response = client.get('/dashboard/investor', headers=investor_headers)
         check('GET /dashboard/investor', response.status_code == 200 and 'portfolio_esg_score' in response.json(), response.text)
+        check('investor dashboard includes timing telemetry', 'app;dur=' in response.headers.get('server-timing', ''), dict(response.headers))
 
         response = client.get('/analytics/portfolio')
         check('GET /analytics/portfolio', response.status_code == 200 and 'portfolio_esg_score' in response.json(), response.text)
@@ -91,6 +93,7 @@ def run_self_test():
             response.status_code == 200 and company_id is not None and company_dashboard[0]['name'] == company_name,
             response.text,
         )
+        check('company dashboard includes timing telemetry', 'app;dur=' in response.headers.get('server-timing', ''), dict(response.headers))
 
         submission_payload = {
             'scope_1_emissions': 10,

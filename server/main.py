@@ -4,6 +4,7 @@ import os
 import re
 import asyncio
 import html
+import time
 from collections import Counter
 from threading import RLock
 from datetime import datetime, timedelta, timezone
@@ -14,7 +15,7 @@ from urllib import request as urlrequest
 from urllib.error import URLError, HTTPError
 from xml.etree import ElementTree
 
-from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Form, Header, Query, Body, Response, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Form, Header, Query, Body, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, inspect, text
@@ -144,6 +145,54 @@ except Exception:
     # Keep core API alive even if optional agent router import fails at runtime.
     pass
 app.mount('/exports', StaticFiles(directory=EXPORT_DIR), name='exports')
+
+
+def _runtime_error_category(error: Exception) -> str:
+    message = str(error or '').lower()
+    if 'lock timeout' in message or 'locknotavailable' in message or 'could not obtain lock' in message:
+        return 'database_lock_timeout'
+    if 'statement timeout' in message or 'querycanceled' in message:
+        return 'database_statement_timeout'
+    if 'queuepool limit' in message or 'connection pool' in message:
+        return 'database_pool_exhausted'
+    return 'request_exception'
+
+
+@app.middleware('http')
+async def request_timing_middleware(request: Request, call_next):
+    started = time.perf_counter()
+    request_id = request.headers.get('x-vercel-id') or request.headers.get('x-request-id') or ''
+    event = {
+        'route': request.url.path,
+        'method': request.method,
+        'request_id': request_id,
+    }
+    try:
+        response = await call_next(request)
+    except Exception as error:
+        duration_ms = round((time.perf_counter() - started) * 1000, 2)
+        print(json.dumps({
+            'level': 'error',
+            'event': _runtime_error_category(error),
+            'duration_ms': duration_ms,
+            'error_type': type(error).__name__,
+            'error': str(error)[:600],
+            **event,
+        }), flush=True)
+        raise
+
+    duration_ms = round((time.perf_counter() - started) * 1000, 2)
+    level = 'error' if response.status_code >= 500 else ('warning' if duration_ms >= 2000 else 'info')
+    log_event = 'request_slow' if duration_ms >= 2000 else 'request_complete'
+    print(json.dumps({
+        'level': level,
+        'event': log_event,
+        'status_code': response.status_code,
+        'duration_ms': duration_ms,
+        **event,
+    }), flush=True)
+    response.headers['Server-Timing'] = f'app;dur={duration_ms}'
+    return response
 
 
 def normalize_role(role: Any) -> str:
@@ -2795,13 +2844,13 @@ def build_investor_analytics(db: Session) -> dict:
     }
 
 
-def _call_openai_narrative(prompt: str) -> dict | None:
+def _call_openai_narrative(prompt: str) -> tuple[dict | None, str | None]:
     api_key = str(os.getenv('OPENAI_API_KEY') or '').strip()
     if not api_key or OpenAI is None:
-        return None
+        return None, 'not_configured'
 
     try:
-        client = OpenAI(api_key=api_key)
+        client = OpenAI(api_key=api_key, max_retries=0, timeout=6.0)
         response = client.chat.completions.create(
             model=OPENAI_DEFAULT_MODEL,
             temperature=0.2,
@@ -2820,11 +2869,28 @@ def _call_openai_narrative(prompt: str) -> dict | None:
         )
         content = (((response.choices or [None])[0] or {}).message or {}).content
         if not content:
-            return None
+            return None, 'empty_response'
         parsed = json.loads(content)
-        return parsed if isinstance(parsed, dict) else None
-    except Exception:
-        return None
+        return (parsed, None) if isinstance(parsed, dict) else (None, 'invalid_response')
+    except Exception as error:
+        status_code = getattr(error, 'status_code', None)
+        error_name = type(error).__name__.lower()
+        message = str(error or '').lower()
+        if status_code == 429 or 'ratelimit' in error_name or 'rate limit' in message or '429' in message:
+            reason = 'rate_limited'
+        elif 'timeout' in error_name or 'timed out' in message:
+            reason = 'timeout'
+        else:
+            reason = 'provider_error'
+        print(json.dumps({
+            'level': 'warning',
+            'event': 'ai_narrative_fallback',
+            'provider': 'openai',
+            'model': OPENAI_DEFAULT_MODEL,
+            'reason': reason,
+            'status_code': status_code,
+        }), flush=True)
+        return None, reason
 
 
 def _fallback_portfolio_narrative(analytics: dict) -> dict:
@@ -3009,7 +3075,7 @@ def narrative_summary(
             f"Status: {status_label}\n"
             f"Key payload: {json.dumps(payload, default=str)[:5000]}"
         )
-        ai_payload = _call_openai_narrative(prompt)
+        ai_payload, fallback_reason = _call_openai_narrative(prompt)
         normalized_payload = _normalize_narrative_payload(ai_payload, fallback)
         generated_at = datetime.now(timezone.utc).isoformat()
         return {
@@ -3021,6 +3087,7 @@ def narrative_summary(
             'company_name': target_company.name,
             'provider': 'openai' if ai_payload else 'fallback',
             'fallback_used': not bool(ai_payload),
+            'fallback_reason': fallback_reason,
             'generated_at': generated_at,
             **normalized_payload,
         }
@@ -3039,7 +3106,7 @@ def narrative_summary(
         "- Keep the narrative factual, board-ready, and decision-oriented.\n"
         f"Use these analytics: {json.dumps(analytics, default=str)[:7000]}"
     )
-    ai_payload = _call_openai_narrative(prompt)
+    ai_payload, fallback_reason = _call_openai_narrative(prompt)
     normalized_payload = _normalize_narrative_payload(ai_payload, fallback)
     generated_at = datetime.now(timezone.utc).isoformat()
     return {
@@ -3051,6 +3118,7 @@ def narrative_summary(
         'company_name': None,
         'provider': 'openai' if ai_payload else 'fallback',
         'fallback_used': not bool(ai_payload),
+        'fallback_reason': fallback_reason,
         'generated_at': generated_at,
         **normalized_payload,
     }

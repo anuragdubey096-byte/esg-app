@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { API_BASE_URL } from '../lib/api'
 
 const BACKEND_URL = API_BASE_URL
+const NARRATIVE_TIMEOUT_MS = 10000
 
 export default function useNarrativeSummary({
   user,
@@ -27,6 +28,8 @@ export default function useNarrativeSummary({
 
     setLoading(true)
     setError('')
+    const controller = new AbortController()
+    const timeoutId = window.setTimeout(() => controller.abort(), NARRATIVE_TIMEOUT_MS)
 
     try {
       const response = await fetch(`${BACKEND_URL}/narrative/summary?${query}`, {
@@ -34,6 +37,7 @@ export default function useNarrativeSummary({
           'x-user-role': user?.role || '',
           'x-user-email': user?.email || '',
         },
+        signal: controller.signal,
       })
       if (!response.ok) {
         const payload = await response.json().catch(() => ({}))
@@ -42,9 +46,13 @@ export default function useNarrativeSummary({
       const payload = await response.json()
       setData(payload)
     } catch (requestError) {
-      setData(null)
-      setError(requestError.message || 'Unable to load narrative summary.')
+      setError(
+        requestError?.name === 'AbortError'
+          ? 'Narrative generation timed out. Dashboard data is still available.'
+          : requestError.message || 'Unable to load narrative summary.',
+      )
     } finally {
+      window.clearTimeout(timeoutId)
       setLoading(false)
     }
   }, [enabled, query, user?.email, user?.role])

@@ -6,6 +6,7 @@ import ExecutivePageHeader from '../components/ExecutivePageHeader'
 import KpiCard from '../components/KpiCard'
 import ReportingProgress from '../components/ReportingProgress'
 import SectionCard from '../components/SectionCard'
+import SectionLoadState from '../components/SectionLoadState'
 import StatusBadge from '../components/StatusBadge'
 import useCollaborationWorkspace from '../hooks/useCollaborationWorkspace'
 import useDashboardData, { getDaysToDeadline, getLatestSubmission, getPreferredCycle, normalizeStatus } from '../hooks/useDashboardData'
@@ -161,7 +162,16 @@ function buildOverviewAttentionItems({ cycleBanner, isCompany, isManager, primar
 
 export default function OverviewPage() {
   const { user } = useOutletContext()
-  const { companies, cycles, summary, loading, error } = useDashboardData(user)
+  const {
+    companies,
+    cycles,
+    summary,
+    loading,
+    error,
+    retrySection,
+    sections,
+    isRefreshing,
+  } = useDashboardData(user)
   const role = String(user?.role || '').toLowerCase()
   const isManager = role === 'manager'
   const isCompany = role === 'company'
@@ -289,7 +299,7 @@ export default function OverviewPage() {
     return (
       <div className="page-grid">
         <SectionCard title="Overview Dashboard" subtitle="Live data unavailable">
-          <p>{error}</p>
+          <SectionLoadState error={error} onRetry={() => retrySection('dashboard')} />
         </SectionCard>
       </div>
     )
@@ -308,6 +318,22 @@ export default function OverviewPage() {
           { label: 'Cycle', value: cycleBanner.active_cycle_year || 'Not active' },
           { label: 'Window', value: formatDays(cycleBanner.days_remaining) },
         ]}
+      />
+
+      <SectionLoadState
+        loading={isRefreshing}
+        error={sections.dashboard.error}
+        cached={companies.length > 0 || Boolean(summary)}
+        loadingMessage="Refreshing dashboard data..."
+        onRetry={() => retrySection('dashboard')}
+      />
+
+      <SectionLoadState
+        loading={sections.cycles.loading}
+        error={sections.cycles.error}
+        cached={cycles.length > 0}
+        loadingMessage="Updating reporting cycles..."
+        onRetry={() => retrySection('cycles')}
       />
 
       <section className="executive-kpi-grid" aria-label="Executive reporting metrics">
@@ -351,10 +377,18 @@ export default function OverviewPage() {
           ? 'Current company reporting summary based on submitted ESG data'
           : 'Management summary based on latest approved portfolio data'}
       >
-        {narrative.loading ? <p>Generating summary...</p> : null}
-        {narrative.error ? <p>{narrative.error}</p> : null}
-        {!narrative.loading && !narrative.error && narrative.data ? (
+        <SectionLoadState
+          loading={narrative.loading}
+          error={narrative.error}
+          cached={Boolean(narrative.data)}
+          loadingMessage="Generating narrative..."
+          onRetry={narrative.refresh}
+        />
+        {narrative.data ? (
           <>
+            {narrative.data.fallback_used ? (
+              <span className="fallback-badge">Live AI unavailable — showing calculated summary</span>
+            ) : null}
             <h4>{narrative.data.headline || 'Portfolio Narrative'}</h4>
             <p>{narrative.data.summary || 'No narrative summary available.'}</p>
           </>

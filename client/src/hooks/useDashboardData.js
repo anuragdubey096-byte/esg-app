@@ -2,6 +2,10 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { API_BASE_URL } from '../lib/api'
 
 const BACKEND_URL = API_BASE_URL
+const DASHBOARD_TIMEOUT_MS = 12000
+const CYCLES_TIMEOUT_MS = 8000
+const CACHE_MAX_AGE_MS = 15 * 60 * 1000
+const CACHE_PREFIX = 'esg-dashboard-cache:v1'
 
 const STATUS_TO_UI = {
   'not started': 'Not Started',
@@ -83,6 +87,54 @@ export function getProgressFromStatus(status) {
   if (status === 'Resubmission Requested') return 58
   if (status === 'In Progress') return 45
   return 8
+}
+
+function getCacheKey(user, dashboardPath) {
+  const role = String(user?.role || 'anonymous').toLowerCase()
+  const email = String(user?.email || 'unknown').toLowerCase()
+  return `${CACHE_PREFIX}:${role}:${email}:${dashboardPath}`
+}
+
+function readCache(cacheKey) {
+  if (typeof window === 'undefined') return {}
+  try {
+    const parsed = JSON.parse(window.sessionStorage.getItem(cacheKey) || '{}')
+    const now = Date.now()
+    return Object.fromEntries(
+      Object.entries(parsed).filter(([, entry]) => (
+        entry && Number(entry.updatedAt) > 0 && now - Number(entry.updatedAt) <= CACHE_MAX_AGE_MS
+      )),
+    )
+  } catch {
+    return {}
+  }
+}
+
+function updateCache(cacheKey, section, value) {
+  if (typeof window === 'undefined') return
+  try {
+    const current = readCache(cacheKey)
+    window.sessionStorage.setItem(cacheKey, JSON.stringify({
+      ...current,
+      [section]: { value, updatedAt: Date.now() },
+    }))
+  } catch {
+    // Dashboard rendering must never depend on browser storage availability.
+  }
+}
+
+function normalizeDashboardPayload(payload) {
+  if (Array.isArray(payload)) return { companies: payload, summary: null }
+  if (payload && Array.isArray(payload.companies)) {
+    return { companies: payload.companies, summary: payload.summary || payload }
+  }
+  if (payload && typeof payload === 'object') return { companies: [], summary: payload }
+  return { companies: [], summary: null }
+}
+
+function requestErrorMessage(error, sectionLabel) {
+  if (error?.name === 'AbortError') return `${sectionLabel} timed out. Retry this section.`
+  return error?.message || `Unable to load ${sectionLabel.toLowerCase()}.`
 }
 
 function metricNumber(value) {
@@ -194,81 +246,167 @@ export function getRiskLevel({ status, esgScore, deadline }) {
 }
 
 export default function useDashboardData(user) {
-  const [companies, setCompanies] = useState([])
-  const [cycles, setCycles] = useState([])
-  const [summary, setSummary] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
+  const dashboardPath = useMemo(() => getDashboardPath(user), [user?.id, user?.role])
+  const cacheKey = useMemo(
+    () => getCacheKey(user, dashboardPath),
+    [dashboardPath, user?.email, user?.role],
+  )
+  const initialCache = useMemo(() => readCache(cacheKey), [cacheKey])
+  const initialDashboard = normalizeDashboardPayload(initialCache.dashboard?.value)
+  const [companies, setCompanies] = useState(initialDashboard.companies)
+  const [cycles, setCycles] = useState(() => initialCache.cycles?.value || [])
+  const [summary, setSummary] = useState(initialDashboard.summary)
+  const [hasDashboardData, setHasDashboardData] = useState(Boolean(initialCache.dashboard))
+  const [sections, setSections] = useState({
+    dashboard: {
+      loading: !initialCache.dashboard,
+      error: '',
+      fromCache: Boolean(initialCache.dashboard),
+      lastUpdated: initialCache.dashboard?.updatedAt || null,
+    },
+    cycles: {
+      loading: false,
+      error: '',
+      fromCache: Boolean(initialCache.cycles),
+      lastUpdated: initialCache.cycles?.updatedAt || null,
+    },
+  })
 
-  const dashboardPath = useMemo(() => getDashboardPath(user), [user])
+  const requestHeaders = useMemo(() => ({
+    'x-user-role': user?.role || '',
+    'x-user-email': user?.email || '',
+  }), [user?.email, user?.role])
 
-  const refresh = useCallback(async () => {
-    setLoading(true)
-    setError('')
+  const loadDashboard = useCallback(async () => {
+    setSections((current) => ({
+      ...current,
+      dashboard: { ...current.dashboard, loading: true, error: '' },
+    }))
+    const controller = new AbortController()
+    const timeoutId = window.setTimeout(() => controller.abort(), DASHBOARD_TIMEOUT_MS)
 
     try {
-      const headers = {
-        'x-user-role': user?.role || '',
-        'x-user-email': user?.email || '',
-      }
-      const shouldLoadCycles = ['manager', 'company'].includes(String(user?.role || '').toLowerCase())
-      const controller = new AbortController()
-      const timeoutId = window.setTimeout(() => controller.abort(), 25000)
-      const [dashboardResponse, cycleResponse] = await Promise.all([
-        fetch(`${BACKEND_URL}${dashboardPath}`, {
-          headers,
-          signal: controller.signal,
-        }),
-        shouldLoadCycles
-          ? fetch(`${BACKEND_URL}/cycles`, { headers, signal: controller.signal }).catch(() => null)
-          : Promise.resolve(null),
-      ]).finally(() => window.clearTimeout(timeoutId))
-      if (!dashboardResponse.ok) {
-        throw new Error('Failed to load dashboard data from backend.')
-      }
-
-      const dashboardData = await dashboardResponse.json()
-      if (Array.isArray(dashboardData)) {
-        setCompanies(dashboardData)
-        setSummary(null)
-      } else if (dashboardData && Array.isArray(dashboardData.companies)) {
-        setCompanies(dashboardData.companies)
-        setSummary(dashboardData.summary || dashboardData)
-      } else if (dashboardData && typeof dashboardData === 'object') {
-        setCompanies([])
-        setSummary(dashboardData)
-      } else {
-        setCompanies([])
-        setSummary(null)
-      }
-
-      if (shouldLoadCycles) {
-        try {
-          if (cycleResponse?.ok) {
-            const cycleData = await cycleResponse.json()
-            setCycles(Array.isArray(cycleData) ? cycleData : [])
-          } else {
-            setCycles([])
-          }
-        } catch {
-          setCycles([])
-        }
-      } else {
-        setCycles([])
-      }
+      const response = await fetch(`${BACKEND_URL}${dashboardPath}`, {
+        headers: requestHeaders,
+        signal: controller.signal,
+      })
+      if (!response.ok) throw new Error(`Dashboard request failed (${response.status}).`)
+      const payload = await response.json()
+      const normalized = normalizeDashboardPayload(payload)
+      setCompanies(normalized.companies)
+      setSummary(normalized.summary)
+      setHasDashboardData(true)
+      updateCache(cacheKey, 'dashboard', payload)
+      setSections((current) => ({
+        ...current,
+        dashboard: {
+          loading: false,
+          error: '',
+          fromCache: false,
+          lastUpdated: Date.now(),
+        },
+      }))
+      return payload
     } catch (requestError) {
-      setCompanies([])
-      setCycles([])
-      setSummary(null)
-      setError(requestError.message || 'Unable to fetch dashboard data.')
+      const message = requestErrorMessage(requestError, 'Dashboard data')
+      setSections((current) => ({
+        ...current,
+        dashboard: { ...current.dashboard, loading: false, error: message },
+      }))
+      throw requestError
     } finally {
-      setLoading(false)
+      window.clearTimeout(timeoutId)
     }
-  }, [dashboardPath, user?.email, user?.role])
+  }, [cacheKey, dashboardPath, requestHeaders])
+
+  const loadCycles = useCallback(async () => {
+    const shouldLoadCycles = ['manager', 'company'].includes(String(user?.role || '').toLowerCase())
+    if (!shouldLoadCycles) {
+      setCycles([])
+      setSections((current) => ({
+        ...current,
+        cycles: { loading: false, error: '', fromCache: false, lastUpdated: null },
+      }))
+      return []
+    }
+
+    setSections((current) => ({
+      ...current,
+      cycles: { ...current.cycles, loading: true, error: '' },
+    }))
+    const controller = new AbortController()
+    const timeoutId = window.setTimeout(() => controller.abort(), CYCLES_TIMEOUT_MS)
+
+    try {
+      const response = await fetch(`${BACKEND_URL}/cycles`, {
+        headers: requestHeaders,
+        signal: controller.signal,
+      })
+      if (!response.ok) throw new Error(`Reporting cycles request failed (${response.status}).`)
+      const payload = await response.json()
+      const nextCycles = Array.isArray(payload) ? payload : []
+      setCycles(nextCycles)
+      updateCache(cacheKey, 'cycles', nextCycles)
+      setSections((current) => ({
+        ...current,
+        cycles: {
+          loading: false,
+          error: '',
+          fromCache: false,
+          lastUpdated: Date.now(),
+        },
+      }))
+      return nextCycles
+    } catch (requestError) {
+      const message = requestErrorMessage(requestError, 'Reporting cycles')
+      setSections((current) => ({
+        ...current,
+        cycles: { ...current.cycles, loading: false, error: message },
+      }))
+      throw requestError
+    } finally {
+      window.clearTimeout(timeoutId)
+    }
+  }, [cacheKey, requestHeaders, user?.role])
+
+  const refresh = useCallback(async (section = 'all') => {
+    if (section === 'dashboard') return loadDashboard().catch(() => null)
+    if (section === 'cycles') return loadCycles().catch(() => null)
+    return Promise.allSettled([loadDashboard(), loadCycles()])
+  }, [loadCycles, loadDashboard])
 
   useEffect(() => {
+    const cached = readCache(cacheKey)
+    if (cached.dashboard) {
+      const normalized = normalizeDashboardPayload(cached.dashboard.value)
+      setCompanies(normalized.companies)
+      setSummary(normalized.summary)
+      setHasDashboardData(true)
+    } else {
+      setCompanies([])
+      setSummary(null)
+      setHasDashboardData(false)
+    }
+    setCycles(cached.cycles?.value || [])
+    setSections({
+      dashboard: {
+        loading: !cached.dashboard,
+        error: '',
+        fromCache: Boolean(cached.dashboard),
+        lastUpdated: cached.dashboard?.updatedAt || null,
+      },
+      cycles: {
+        loading: false,
+        error: '',
+        fromCache: Boolean(cached.cycles),
+        lastUpdated: cached.cycles?.updatedAt || null,
+      },
+    })
     refresh()
-  }, [refresh])
+  }, [cacheKey, refresh])
+
+  const loading = sections.dashboard.loading && !hasDashboardData
+  const error = !hasDashboardData ? sections.dashboard.error : ''
 
   return {
     companies,
@@ -277,5 +415,8 @@ export default function useDashboardData(user) {
     loading,
     error,
     refresh,
+    retrySection: refresh,
+    sections,
+    isRefreshing: sections.dashboard.loading && hasDashboardData,
   }
 }

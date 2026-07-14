@@ -18,6 +18,7 @@ import DataTable from '../components/DataTable'
 import ExecutivePageHeader from '../components/ExecutivePageHeader'
 import KpiCard from '../components/KpiCard'
 import SectionCard from '../components/SectionCard'
+import SectionLoadState from '../components/SectionLoadState'
 import useDashboardData from '../hooks/useDashboardData'
 import useLiveActivity from '../hooks/useLiveActivity'
 import useNarrativeHistory from '../hooks/useNarrativeHistory'
@@ -100,7 +101,7 @@ function buildInvestorAttentionItems(analytics, dataQuality) {
 
 export default function InvestorOverviewPage() {
   const { user } = useOutletContext()
-  const { summary, loading, error } = useDashboardData(user)
+  const { summary, loading, error, retrySection, sections, isRefreshing } = useDashboardData(user)
   const narrative = useNarrativeSummary({ user, audience: 'lp', tone: 'investor-ready', enabled: Boolean(user) })
   const narrativeHistory = useNarrativeHistory({ user, audience: 'lp', limit: 5, enabled: Boolean(user) })
   const liveActivity = useLiveActivity({ user, limit: 6, enabled: Boolean(user) })
@@ -161,7 +162,7 @@ export default function InvestorOverviewPage() {
     return (
       <div className="page-grid">
         <SectionCard title="Investor Portfolio Dashboard" subtitle="Live data unavailable">
-          <p>{error}</p>
+          <SectionLoadState error={error} onRetry={() => retrySection('dashboard')} />
         </SectionCard>
       </div>
     )
@@ -178,6 +179,14 @@ export default function InvestorOverviewPage() {
           { label: 'Reporting', value: analytics.reporting_companies || 0 },
           { label: 'Data confidence', value: `${Number(dataQuality.confidence || 0).toFixed(1)}%` },
         ]}
+      />
+
+      <SectionLoadState
+        loading={isRefreshing}
+        error={sections.dashboard.error}
+        cached={Boolean(summary)}
+        loadingMessage="Refreshing investor dashboard..."
+        onRetry={() => retrySection('dashboard')}
       />
 
       <section className="executive-kpi-grid" aria-label="Investor portfolio metrics">
@@ -199,10 +208,18 @@ export default function InvestorOverviewPage() {
       <AttentionInbox items={attentionItems} role="investor" />
 
       <SectionCard title="AI Investor Summary" subtitle="OpenAI-generated narrative from current portfolio analytics">
-        {narrative.loading ? <p>Generating summary...</p> : null}
-        {narrative.error ? <p>{narrative.error}</p> : null}
-        {!narrative.loading && !narrative.error && narrative.data ? (
+        <SectionLoadState
+          loading={narrative.loading}
+          error={narrative.error}
+          cached={Boolean(narrative.data)}
+          loadingMessage="Generating investor summary..."
+          onRetry={narrative.refresh}
+        />
+        {narrative.data ? (
           <>
+            {narrative.data.fallback_used ? (
+              <span className="fallback-badge">Live AI unavailable — showing calculated summary</span>
+            ) : null}
             <h4>{narrative.data.headline || 'Portfolio ESG Narrative'}</h4>
             <p>{narrative.data.summary || 'No narrative summary available.'}</p>
           </>
