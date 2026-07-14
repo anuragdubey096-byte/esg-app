@@ -956,8 +956,9 @@ def startup_event():
     db = SessionLocal()
     try:
         Base.metadata.create_all(bind=engine)
-        ensure_submission_cycle_column(db)
-        ensure_review_action_audit_columns(db)
+        if not os.getenv('VERCEL'):
+            ensure_submission_cycle_column(db)
+            ensure_review_action_audit_columns(db)
         seed_sample_data(db)
         migrate_legacy_user_roles(db)
         fix_cycle_statuses_and_active_conflicts(db)
@@ -965,6 +966,18 @@ def startup_event():
         deactivate_expired_unlocks(db)
     finally:
         db.close()
+
+
+@app.post('/admin/migrate-schema', dependencies=[Depends(require_manager)])
+def migrate_schema(db: Session = Depends(get_db)):
+    ensure_submission_cycle_column(db)
+    ensure_review_action_audit_columns(db)
+    return {
+        'status': 'ok',
+        'submission_cycle_column': table_has_column(db, 'submissions', 'cycle_id'),
+        'review_submission_column': table_has_column(db, 'review_actions', 'submission_id'),
+        'review_created_at_column': table_has_column(db, 'review_actions', 'created_at'),
+    }
 
 @app.post('/login', response_model=UserResponse)
 def login(request: LoginRequest, db: Session = Depends(get_db)):
@@ -2418,24 +2431,25 @@ def manager_dashboard(db: Session = Depends(get_db)):
 
 
 def serialize_company_details(db: Session, companies: List[Company]) -> list[dict]:
-    review_columns = {column['name'] for column in inspect(db.bind).get_columns('review_actions')}
-    submission_expression = 'submission_id' if 'submission_id' in review_columns else 'NULL AS submission_id'
-    created_expression = 'created_at' if 'created_at' in review_columns else 'NULL AS created_at'
-    review_rows = db.execute(text(
-        'SELECT id, company_id, reporting_year, review_status, reviewer_role, review_comment, '
-        f'{submission_expression}, {created_expression} FROM review_actions ORDER BY id ASC'
-    )).mappings().all()
     reviews_by_company: dict[int, list[dict]] = {}
-    for row in review_rows:
-        reviews_by_company.setdefault(int(row['company_id']), []).append({
-            'id': row['id'],
-            'submission_id': row['submission_id'],
-            'reporting_year': row['reporting_year'],
-            'review_status': row['review_status'],
-            'reviewer_role': row['reviewer_role'],
-            'review_comment': row['review_comment'],
-            'created_at': row['created_at'],
-        })
+    if not os.getenv('VERCEL'):
+        review_columns = {column['name'] for column in inspect(db.bind).get_columns('review_actions')}
+        submission_expression = 'submission_id' if 'submission_id' in review_columns else 'NULL AS submission_id'
+        created_expression = 'created_at' if 'created_at' in review_columns else 'NULL AS created_at'
+        review_rows = db.execute(text(
+            'SELECT id, company_id, reporting_year, review_status, reviewer_role, review_comment, '
+            f'{submission_expression}, {created_expression} FROM review_actions ORDER BY id ASC'
+        )).mappings().all()
+        for row in review_rows:
+            reviews_by_company.setdefault(int(row['company_id']), []).append({
+                'id': row['id'],
+                'submission_id': row['submission_id'],
+                'reporting_year': row['reporting_year'],
+                'review_status': row['review_status'],
+                'reviewer_role': row['reviewer_role'],
+                'review_comment': row['review_comment'],
+                'created_at': row['created_at'],
+            })
 
     return [
         {
