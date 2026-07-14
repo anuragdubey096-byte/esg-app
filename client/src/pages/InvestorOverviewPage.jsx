@@ -13,6 +13,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
+import AttentionInbox from '../components/AttentionInbox'
 import DataTable from '../components/DataTable'
 import KpiCard from '../components/KpiCard'
 import SectionCard from '../components/SectionCard'
@@ -27,6 +28,71 @@ const funnelColors = {
   Submitted: '#0ea5e9',
   Approved: '#10b981',
   Rejected: '#f97316',
+}
+
+function buildInvestorAttentionItems(analytics, dataQuality) {
+  const items = []
+  const hasQualityData = analytics.data_quality && typeof analytics.data_quality === 'object'
+  const totalCompanies = Number(analytics.total_companies || 0)
+  const reportingCompanies = Number(analytics.reporting_companies || 0)
+  const reportingGap = Math.max(0, totalCompanies - reportingCompanies)
+  const completeness = Number(dataQuality.completeness || 0)
+  const confidence = Number(dataQuality.confidence || 0)
+  const resubmissions = Number(
+    analytics.submission_funnel?.Rejected || analytics.submission_funnel?.['Resubmission Requested'] || 0,
+  )
+
+  if (reportingGap > 0) {
+    items.push({
+      id: 'investor-reporting-gap',
+      title: 'Portfolio reporting gap',
+      detail: `${reportingGap} compan${reportingGap === 1 ? 'y has' : 'ies have'} not completed reporting.`,
+      badge: `${reportingGap} outstanding`,
+      tone: 'warning',
+      icon: 'submissions',
+      to: '/submissions',
+      actionLabel: 'View coverage',
+    })
+  }
+  if (resubmissions > 0) {
+    items.push({
+      id: 'investor-resubmissions',
+      title: 'Corrections may affect portfolio data',
+      detail: `${resubmissions} submission${resubmissions === 1 ? '' : 's'} are rejected or awaiting resubmission.`,
+      badge: `${resubmissions} flagged`,
+      tone: 'critical',
+      icon: 'risks',
+      to: '/anomaly-intel',
+      actionLabel: 'Inspect risk',
+    })
+  }
+  if (hasQualityData && (completeness < 80 || confidence < 80)) {
+    const weakestMetric = completeness <= confidence ? 'completeness' : 'confidence'
+    const weakestValue = Math.min(completeness, confidence)
+    items.push({
+      id: 'investor-data-quality',
+      title: 'Data quality needs attention',
+      detail: `Portfolio ${weakestMetric} is ${weakestValue.toFixed(1)}%, below the 80% monitoring threshold.`,
+      badge: `${weakestValue.toFixed(0)}% ${weakestMetric}`,
+      tone: weakestValue < 60 ? 'critical' : 'warning',
+      icon: 'analytics',
+      to: '/analytics',
+      actionLabel: 'Review quality',
+    })
+  }
+  if ((analytics.bottom_performers || []).length > 0) {
+    items.push({
+      id: 'investor-bottom-performers',
+      title: 'ESG performance watchlist',
+      detail: `${analytics.bottom_performers.length} portfolio companies are currently in the bottom-performance group.`,
+      badge: `${analytics.bottom_performers.length} companies`,
+      tone: 'info',
+      icon: 'insights',
+      to: '/analytics',
+      actionLabel: 'Compare performance',
+    })
+  }
+  return items
 }
 
 export default function InvestorOverviewPage() {
@@ -49,6 +115,7 @@ export default function InvestorOverviewPage() {
   const scoreBreakdown = analytics.score_breakdown || { E: 0, S: 0, G: 0 }
   const emissionsTotals = analytics.emissions_totals || { scope_1: 0, scope_2: 0, scope_3: 0, total: 0 }
   const dataQuality = analytics.data_quality || { completeness: 0, accuracy: 0, confidence: 0 }
+  const attentionItems = buildInvestorAttentionItems(analytics, dataQuality)
 
   const submissionFunnelData = useMemo(() => {
     const funnel = analytics.submission_funnel || {}
@@ -114,6 +181,8 @@ export default function InvestorOverviewPage() {
           trendLabel="portfolio policy coverage"
         />
       </section>
+
+      <AttentionInbox items={attentionItems} role="investor" />
 
       <SectionCard title="AI Investor Summary" subtitle="OpenAI-generated narrative from current portfolio analytics">
         {narrative.loading ? <p>Generating summary...</p> : null}

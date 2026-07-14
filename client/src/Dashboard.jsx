@@ -1,19 +1,26 @@
+import { lazy, Suspense } from 'react'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
-import AdminLayout from './layouts/AdminLayout'
-import ActionPlansPage from './pages/ActionPlansPage'
-import AdminSettingsPage from './pages/AdminSettingsPage'
-import AlertsRisksPage from './pages/AlertsRisksPage'
-import AnalyticsPage from './pages/AnalyticsPage'
-import AnomalyIntelPage from './pages/AnomalyIntelPage'
+import RouteLoadingState from './components/RouteLoadingState'
 import { getAllowedNavItems, getDefaultDashboardPath } from './dashboardNavigation'
-import InvestorAnalyticsPage from './pages/InvestorAnalyticsPage'
-import InvestorOverviewPage from './pages/InvestorOverviewPage'
-import LPInsightsPage from './pages/LPInsightsPage'
-import NewsletterOpsPage from './pages/NewsletterOpsPage'
-import OverviewPage from './pages/OverviewPage'
-import ReportsPage from './pages/ReportsPage'
-import ReviewHubPage from './pages/ReviewHubPage'
-import SubmissionsPage from './pages/SubmissionsPage'
+import AdminLayout from './layouts/AdminLayout'
+
+const ActionPlansPage = lazy(() => import('./pages/ActionPlansPage'))
+const AdminSettingsPage = lazy(() => import('./pages/AdminSettingsPage'))
+const AlertsRisksPage = lazy(() => import('./pages/AlertsRisksPage'))
+const AnalyticsPage = lazy(() => import('./pages/AnalyticsPage'))
+const AnomalyIntelPage = lazy(() => import('./pages/AnomalyIntelPage'))
+const InvestorAnalyticsPage = lazy(() => import('./pages/InvestorAnalyticsPage'))
+const InvestorOverviewPage = lazy(() => import('./pages/InvestorOverviewPage'))
+const LPInsightsPage = lazy(() => import('./pages/LPInsightsPage'))
+const NewsletterOpsPage = lazy(() => import('./pages/NewsletterOpsPage'))
+const OverviewPage = lazy(() => import('./pages/OverviewPage'))
+const ReportsPage = lazy(() => import('./pages/ReportsPage'))
+const ReviewHubPage = lazy(() => import('./pages/ReviewHubPage'))
+const SubmissionsPage = lazy(() => import('./pages/SubmissionsPage'))
+
+function withRouteLoading(element) {
+  return <Suspense fallback={<RouteLoadingState />}>{element}</Suspense>
+}
 
 export default function Dashboard({ user, onLogout }) {
   const allowedNavItems = getAllowedNavItems(user?.role)
@@ -40,7 +47,7 @@ export default function Dashboard({ user, onLogout }) {
         <Route path="/" element={<AdminLayout user={user} onLogout={onLogout} navItems={allowedNavItems} />}>
           <Route index element={<Navigate to={defaultPath} replace />} />
           {allowedNavItems.map((item) => (
-            <Route key={item.to} path={item.to.replace(/^\//, '')} element={pageByPath[item.to]} />
+            <Route key={item.to} path={item.to.replace(/^\//, '')} element={withRouteLoading(pageByPath[item.to])} />
           ))}
         </Route>
         <Route path="*" element={<Navigate to={defaultPath} replace />} />

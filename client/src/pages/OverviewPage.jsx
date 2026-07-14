@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
+import AttentionInbox from '../components/AttentionInbox'
 import DataTable from '../components/DataTable'
-import KpiCard from '../components/KpiCard'
+import ReportingProgress from '../components/ReportingProgress'
 import SectionCard from '../components/SectionCard'
 import StatusBadge from '../components/StatusBadge'
 import useCollaborationWorkspace from '../hooks/useCollaborationWorkspace'
@@ -48,18 +49,130 @@ function buildFallbackSummary(companies) {
   }
 }
 
+function buildOverviewAttentionItems({ cycleBanner, isCompany, isManager, primarySubmission, statusBreakdown, upcomingDeadlines }) {
+  const items = []
+  const addItem = (item) => items.push(item)
+
+  if (isManager) {
+    const reviewCount = Number(statusBreakdown.Submitted || 0) + Number(statusBreakdown['Under Review'] || 0)
+    const resubmissionCount = Number(statusBreakdown['Resubmission Requested'] || 0)
+    const notStartedCount = Number(statusBreakdown['Not Started'] || 0)
+
+    if (resubmissionCount > 0) {
+      addItem({
+        id: 'manager-resubmissions',
+        title: 'Resubmissions require follow-up',
+        detail: `${resubmissionCount} compan${resubmissionCount === 1 ? 'y has' : 'ies have'} requested corrections outstanding.`,
+        badge: `${resubmissionCount} open`,
+        tone: 'critical',
+        icon: 'risks',
+        to: '/review-hub',
+        actionLabel: 'Review',
+      })
+    }
+    if (reviewCount > 0) {
+      addItem({
+        id: 'manager-review-queue',
+        title: 'Review queue is ready',
+        detail: `${reviewCount} submission${reviewCount === 1 ? '' : 's'} are submitted or currently under review.`,
+        badge: `${reviewCount} waiting`,
+        tone: 'warning',
+        icon: 'review',
+        to: '/review-hub',
+        actionLabel: 'Open queue',
+      })
+    }
+    if (upcomingDeadlines.length > 0) {
+      addItem({
+        id: 'manager-deadlines',
+        title: 'Reporting deadlines approaching',
+        detail: `${upcomingDeadlines.length} compan${upcomingDeadlines.length === 1 ? 'y is' : 'ies are'} due within the next seven days.`,
+        badge: `${upcomingDeadlines.length} due soon`,
+        tone: 'warning',
+        icon: 'submissions',
+        to: '/submissions',
+        actionLabel: 'Track progress',
+      })
+    }
+    if (notStartedCount > 0) {
+      addItem({
+        id: 'manager-not-started',
+        title: 'Collection has not started',
+        detail: `${notStartedCount} compan${notStartedCount === 1 ? 'y has' : 'ies have'} not started the current submission.`,
+        badge: `${notStartedCount} inactive`,
+        tone: 'info',
+        icon: 'submissions',
+        to: '/submissions',
+        actionLabel: 'View companies',
+      })
+    }
+  }
+
+  if (isCompany) {
+    const status = normalizeStatus(primarySubmission?.status || 'Not Started')
+    if (status === 'Resubmission Requested') {
+      addItem({
+        id: 'company-resubmission',
+        title: 'Corrections requested',
+        detail: 'Your latest ESG submission needs updates before it can return to review.',
+        badge: 'Action required',
+        tone: 'critical',
+        icon: 'risks',
+        to: '/submissions',
+        actionLabel: 'Update submission',
+      })
+    } else if (status === 'Not Started' || status === 'In Progress') {
+      addItem({
+        id: 'company-submission',
+        title: status === 'Not Started' ? 'Start your ESG submission' : 'Complete your ESG submission',
+        detail: 'Continue the current reporting cycle and complete all required evidence fields.',
+        badge: status,
+        tone: 'warning',
+        icon: 'submissions',
+        to: '/submissions',
+        actionLabel: status === 'Not Started' ? 'Get started' : 'Continue',
+      })
+    }
+    if (
+      cycleBanner.days_remaining != null
+      && Number.isFinite(Number(cycleBanner.days_remaining))
+      && Number(cycleBanner.days_remaining) <= 7
+    ) {
+      const daysRemaining = Number(cycleBanner.days_remaining)
+      addItem({
+        id: 'company-deadline',
+        title: daysRemaining < 0 ? 'Submission deadline has passed' : 'Submission deadline is close',
+        detail: formatDays(daysRemaining),
+        badge: daysRemaining < 0 ? 'Overdue' : `${daysRemaining} days left`,
+        tone: daysRemaining < 0 ? 'critical' : 'warning',
+        icon: 'risks',
+        to: '/submissions',
+        actionLabel: 'Open submission',
+      })
+    }
+  }
+
+  return items
+}
+
 export default function OverviewPage() {
   const { user } = useOutletContext()
   const { companies, summary, loading, error } = useDashboardData(user)
-  const narrative = useNarrativeSummary({ user, audience: 'lp', tone: 'board-ready', enabled: Boolean(user) })
-  const liveActivity = useLiveActivity({ user, limit: 8, enabled: Boolean(user) })
-  const narrativeOps = useNarrativeLifecycle({ user })
   const role = String(user?.role || '').toLowerCase()
   const isManager = role === 'manager'
   const isCompany = role === 'company'
   const primaryCompany = companies?.[0] || null
   const primarySubmission = getLatestSubmission(primaryCompany)
   const primaryCycleId = primarySubmission?.cycle_id || null
+  const narrative = useNarrativeSummary({
+    user,
+    audience: isCompany ? 'company' : 'lp',
+    tone: isCompany ? 'company-ready' : 'board-ready',
+    companyId: isCompany ? primaryCompany?.id || null : null,
+    enabled: Boolean(user) && (!isCompany || Boolean(primaryCompany)),
+  })
+  const liveActivity = useLiveActivity({ user, limit: 8, enabled: Boolean(user) })
+  const narrativeOps = useNarrativeLifecycle({ user })
   const collaboration = useCollaborationWorkspace({ user, companyId: primaryCompany?.id || null })
   const [fieldKey, setFieldKey] = useState('scope_1_emissions')
   const [fieldValue, setFieldValue] = useState('')
@@ -83,18 +196,15 @@ export default function OverviewPage() {
   }, [companies, summary])
   const statusBreakdown = managerSummary.status_breakdown || {}
   const cycleBanner = managerSummary.cycle_banner || {}
-
-  const statusCards = [
-    'Not Started',
-    'In Progress',
-    'Submitted',
-    'Under Review',
-    'Approved',
-    'Resubmission Requested',
-  ].map((label) => ({
-    title: label,
-    value: String(statusBreakdown[label] ?? 0),
-  }))
+  const upcomingDeadlines = managerSummary.upcoming_deadlines || []
+  const attentionItems = buildOverviewAttentionItems({
+    cycleBanner,
+    isCompany,
+    isManager,
+    primarySubmission,
+    statusBreakdown,
+    upcomingDeadlines,
+  })
 
   const deadlineColumns = [
     { key: 'company_name', label: 'Company', sortable: true },
@@ -168,27 +278,17 @@ export default function OverviewPage() {
 
   return (
     <div className="page-grid">
-      <section className="kpi-grid">
-        {statusCards.map((card) => <KpiCard key={card.title} {...card} />)}
-      </section>
+      <ReportingProgress
+        breakdown={statusBreakdown}
+        cycleLabel={cycleBanner.active_cycle_year ? `Cycle ${cycleBanner.active_cycle_year}` : null}
+        daysRemaining={cycleBanner.days_remaining}
+        role={role || 'manager'}
+        windowLabel={cycleBanner.submission_open_date && cycleBanner.submission_deadline
+          ? `${cycleBanner.submission_open_date} – ${cycleBanner.submission_deadline}`
+          : null}
+      />
 
-      <SectionCard title="Cycle Summary" subtitle="Current collection window status">
-        <div className="summary-grid three">
-          <article className="summary-box">
-            <p>Active Cycle</p>
-            <strong>{cycleBanner.active_cycle_year ?? 'N/A'}</strong>
-          </article>
-          <article className="summary-box">
-            <p>Window</p>
-            <strong>{cycleBanner.submission_open_date || 'N/A'} to {cycleBanner.submission_deadline || 'N/A'}</strong>
-          </article>
-          <article className="summary-box">
-            <p>Status</p>
-            <strong>{cycleBanner.cycle_status || 'closed'}</strong>
-          </article>
-        </div>
-        <p className="text-sm text-slate-600 mt-3">{formatDays(cycleBanner.days_remaining)}</p>
-      </SectionCard>
+      <AttentionInbox items={attentionItems} role={role || 'manager'} />
 
       <SectionCard title="AI Portfolio Narrative" subtitle="OpenAI-generated management summary from latest approved portfolio data">
         {narrative.loading ? <p>Generating summary...</p> : null}
@@ -349,7 +449,7 @@ export default function OverviewPage() {
       <SectionCard title="Upcoming Deadlines (Next 7 Days)" subtitle="Only non-submitted companies appear here">
         <DataTable
           columns={deadlineColumns}
-          rows={managerSummary.upcoming_deadlines || []}
+          rows={upcomingDeadlines}
           pageSize={8}
           emptyMessage="No upcoming deadlines in the next 7 days."
         />

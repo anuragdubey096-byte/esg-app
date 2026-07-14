@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import useGlobalSearch from '../hooks/useGlobalSearch'
+import AppIcon from './AppIcon'
 
 function formatRoleLabel(role) {
   const value = String(role || 'manager').toLowerCase()
@@ -32,19 +33,22 @@ export default function TopNavbar({ title, user, onLogout, onMenuToggle }) {
     <header className="top-navbar">
       <div className="brand-block">
         <button className="menu-button" type="button" onClick={onMenuToggle} aria-label="Open navigation">
-          Menu
+          <AppIcon name="menu" size={20} />
         </button>
-        <div className="brand-logo">GL</div>
-        <div>
-          <h1>GreenLedger</h1>
-          <p>{title} | Investment Portfolio Intelligence Platform</p>
+        <div className="page-heading">
+          <nav className="breadcrumbs" aria-label="Breadcrumb">
+            <span>Workspace</span>
+            <span aria-hidden="true">/</span>
+            <span aria-current="page">{title}</span>
+          </nav>
+          <h1>{title}</h1>
         </div>
       </div>
 
       <div className="top-actions">
         <div className="search-panel">
           <label className="search-wrap" htmlFor="global-search">
-            <span>Search</span>
+            <AppIcon name="search" size={17} />
             <input
               id="global-search"
               placeholder="Search company, metric, report..."
@@ -81,7 +85,7 @@ export default function TopNavbar({ title, user, onLogout, onMenuToggle }) {
         </div>
 
         <button className="icon-button" type="button" aria-label="Notifications">
-          N
+          <AppIcon name="notifications" size={19} />
           <span className="dot" />
         </button>
 

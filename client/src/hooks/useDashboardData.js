@@ -204,20 +204,24 @@ export default function useDashboardData(user) {
         setSummary(null)
       }
 
-      try {
-        const cycleResponse = await fetch(`${BACKEND_URL}/cycles`, {
-          headers: {
-            'x-user-role': user?.role || '',
-            'x-user-email': user?.email || '',
+      if (String(user?.role || '').toLowerCase() === 'manager') {
+        try {
+          const cycleResponse = await fetch(`${BACKEND_URL}/cycles`, {
+            headers: {
+              'x-user-role': user?.role || '',
+              'x-user-email': user?.email || '',
+            }
+          })
+          if (cycleResponse.ok) {
+            const cycleData = await cycleResponse.json()
+            setCycles(Array.isArray(cycleData) ? cycleData : [])
+          } else {
+            setCycles([])
           }
-        })
-        if (cycleResponse.ok) {
-          const cycleData = await cycleResponse.json()
-          setCycles(Array.isArray(cycleData) ? cycleData : [])
-        } else {
+        } catch {
           setCycles([])
         }
-      } catch {
+      } else {
         setCycles([])
       }
     } catch (requestError) {
@@ -228,7 +232,7 @@ export default function useDashboardData(user) {
     } finally {
       setLoading(false)
     }
-  }, [dashboardPath])
+  }, [dashboardPath, user?.email, user?.role])
 
   useEffect(() => {
     refresh()
