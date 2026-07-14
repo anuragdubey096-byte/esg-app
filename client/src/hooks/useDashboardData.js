@@ -207,12 +207,22 @@ export default function useDashboardData(user) {
     setError('')
 
     try {
-      const dashboardResponse = await fetch(`${BACKEND_URL}${dashboardPath}`, {
-        headers: {
-          'x-user-role': user?.role || '',
-          'x-user-email': user?.email || '',
-        }
-      })
+      const headers = {
+        'x-user-role': user?.role || '',
+        'x-user-email': user?.email || '',
+      }
+      const shouldLoadCycles = ['manager', 'company'].includes(String(user?.role || '').toLowerCase())
+      const controller = new AbortController()
+      const timeoutId = window.setTimeout(() => controller.abort(), 25000)
+      const [dashboardResponse, cycleResponse] = await Promise.all([
+        fetch(`${BACKEND_URL}${dashboardPath}`, {
+          headers,
+          signal: controller.signal,
+        }),
+        shouldLoadCycles
+          ? fetch(`${BACKEND_URL}/cycles`, { headers, signal: controller.signal }).catch(() => null)
+          : Promise.resolve(null),
+      ]).finally(() => window.clearTimeout(timeoutId))
       if (!dashboardResponse.ok) {
         throw new Error('Failed to load dashboard data from backend.')
       }
@@ -232,15 +242,9 @@ export default function useDashboardData(user) {
         setSummary(null)
       }
 
-      if (['manager', 'company'].includes(String(user?.role || '').toLowerCase())) {
+      if (shouldLoadCycles) {
         try {
-          const cycleResponse = await fetch(`${BACKEND_URL}/cycles`, {
-            headers: {
-              'x-user-role': user?.role || '',
-              'x-user-email': user?.email || '',
-            }
-          })
-          if (cycleResponse.ok) {
+          if (cycleResponse?.ok) {
             const cycleData = await cycleResponse.json()
             setCycles(Array.isArray(cycleData) ? cycleData : [])
           } else {

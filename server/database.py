@@ -52,6 +52,16 @@ SQLALCHEMY_DATABASE_URL = _database_url()
 engine_kwargs = {}
 if SQLALCHEMY_DATABASE_URL.startswith('sqlite:///'):
     engine_kwargs['connect_args'] = {'check_same_thread': False}
+else:
+    engine_kwargs.update({
+        'pool_pre_ping': True,
+        'pool_recycle': 240,
+        'pool_timeout': 10,
+        'connect_args': {
+            'connect_timeout': 10,
+            'options': '-c statement_timeout=30000 -c lock_timeout=5000',
+        },
+    })
 
 engine = create_engine(SQLALCHEMY_DATABASE_URL, **engine_kwargs)
 

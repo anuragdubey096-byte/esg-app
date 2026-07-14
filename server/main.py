@@ -18,7 +18,7 @@ from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Form, Hea
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, inspect, text
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from bootstrap import seed_sample_data
 from database import SessionLocal, engine
@@ -473,6 +473,10 @@ def table_has_column(db: Session, table_name: str, column_name: str) -> bool:
 
 
 def ensure_submission_cycle_column(db: Session):
+    if db.bind.dialect.name == 'postgresql':
+        db.execute(text('ALTER TABLE submissions ADD COLUMN IF NOT EXISTS cycle_id INTEGER'))
+        db.commit()
+        return
     if table_has_column(db, 'submissions', 'cycle_id'):
         return
     db.execute(text('ALTER TABLE submissions ADD COLUMN cycle_id INTEGER'))
@@ -480,6 +484,11 @@ def ensure_submission_cycle_column(db: Session):
 
 
 def ensure_review_action_audit_columns(db: Session):
+    if db.bind.dialect.name == 'postgresql':
+        db.execute(text('ALTER TABLE review_actions ADD COLUMN IF NOT EXISTS submission_id INTEGER'))
+        db.execute(text('ALTER TABLE review_actions ADD COLUMN IF NOT EXISTS created_at TIMESTAMP'))
+        db.commit()
+        return
     if not table_has_column(db, 'review_actions', 'submission_id'):
         db.execute(text('ALTER TABLE review_actions ADD COLUMN submission_id INTEGER'))
     if not table_has_column(db, 'review_actions', 'created_at'):
@@ -942,8 +951,8 @@ def _log_live_event(
 def startup_event():
     db = SessionLocal()
     try:
-        ensure_submission_cycle_column(db)
         Base.metadata.create_all(bind=engine)
+        ensure_submission_cycle_column(db)
         ensure_review_action_audit_columns(db)
         seed_sample_data(db)
         migrate_legacy_user_roles(db)
@@ -2387,7 +2396,17 @@ def export_report(
 
 @app.get('/dashboard/manager', response_model=ManagerDashboardResponse, dependencies=[Depends(require_manager)])
 def manager_dashboard(db: Session = Depends(get_db)):
-    companies = db.query(Company).order_by(Company.name.asc()).all()
+    companies = (
+        db.query(Company)
+        .options(
+            selectinload(Company.submissions),
+            selectinload(Company.action_plans),
+            selectinload(Company.review_actions),
+            selectinload(Company.validation_flags),
+        )
+        .order_by(Company.name.asc())
+        .all()
+    )
     summary = build_manager_summary(db, companies)
     return {
         'companies': companies,
@@ -2524,7 +2543,16 @@ def build_historical_portfolio_series(companies: List[Company]) -> tuple[list[di
 
 
 def build_investor_analytics(db: Session) -> dict:
-    companies = db.query(Company).all()
+    companies = (
+        db.query(Company)
+        .options(
+            selectinload(Company.submissions),
+            selectinload(Company.action_plans),
+            selectinload(Company.review_actions),
+            selectinload(Company.validation_flags),
+        )
+        .all()
+    )
 
     status_counts = {
         'Not Started': 0,

@@ -6,11 +6,14 @@ const backendUrl = API_BASE_URL
 
 export default function LoginPage({ onLogin }) {
   const authenticate = async ({ email, password }) => {
+    const controller = new AbortController()
+    const timeoutId = window.setTimeout(() => controller.abort(), 20000)
     try {
       const response = await fetch(`${backendUrl}/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),
+        signal: controller.signal,
       })
 
       if (response.status === 401) {
@@ -24,11 +27,16 @@ export default function LoginPage({ onLogin }) {
       const user = await response.json()
       return { user, mfaRequired: email.toLowerCase().includes('+mfa') }
     } catch (error) {
+      if (error?.name === 'AbortError') {
+        throw new Error('Sign in timed out. The server is taking too long to respond; please try again.')
+      }
       const isNetworkError = error?.name === 'TypeError' || String(error?.message || '').includes('Failed to fetch')
       if (isNetworkError) {
         throw new Error('Database server is unreachable. Please start the backend and try again.')
       }
       throw error
+    } finally {
+      window.clearTimeout(timeoutId)
     }
   }
 
