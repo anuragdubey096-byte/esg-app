@@ -98,6 +98,8 @@ ALLOWED_REPORT_TYPES = {'edci', 'sfdr'}
 ALLOWED_CYCLE_STATUSES = {'draft', 'active', 'closed'}
 ALLOWED_REVIEW_STATUSES = {'submitted', 'under review', 'approved', 'rejected', 'resubmission requested'}
 OPENAI_DEFAULT_MODEL = os.getenv('OPENAI_MODEL', 'gpt-4o-mini')
+MIN_REPORTING_CYCLE_YEAR = 2000
+MAX_REPORTING_CYCLE_FUTURE_YEARS = 5
 ALLOWED_REVIEW_TRANSITIONS = {
     'submitted': {'under review'},
     'under review': {'approved', 'rejected', 'resubmission requested'},
@@ -551,16 +553,118 @@ def ensure_review_action_audit_columns(db: Session):
 
 
 def get_active_cycle(db: Session) -> CollectionCycle | None:
+    max_cycle_year = datetime.now(timezone.utc).year + MAX_REPORTING_CYCLE_FUTURE_YEARS
     return (
         db.query(CollectionCycle)
-        .filter(CollectionCycle.status == 'active')
+        .filter(
+            CollectionCycle.status == 'active',
+            CollectionCycle.cycle_year >= MIN_REPORTING_CYCLE_YEAR,
+            CollectionCycle.cycle_year <= max_cycle_year,
+        )
         .order_by(CollectionCycle.cycle_year.desc())
         .first()
     )
 
 
 def get_latest_cycle(db: Session) -> CollectionCycle | None:
-    return db.query(CollectionCycle).order_by(CollectionCycle.id.desc()).first()
+    max_cycle_year = datetime.now(timezone.utc).year + MAX_REPORTING_CYCLE_FUTURE_YEARS
+    return (
+        db.query(CollectionCycle)
+        .filter(
+            CollectionCycle.cycle_year >= MIN_REPORTING_CYCLE_YEAR,
+            CollectionCycle.cycle_year <= max_cycle_year,
+        )
+        .order_by(CollectionCycle.cycle_year.desc(), CollectionCycle.id.desc())
+        .first()
+    )
+
+
+def cleanup_irrelevant_qa_cycles(db: Session) -> dict[str, Any]:
+    """Remove only impossible future cycles containing isolated self-test records."""
+    max_cycle_year = datetime.now(timezone.utc).year + MAX_REPORTING_CYCLE_FUTURE_YEARS
+    candidates = (
+        db.query(CollectionCycle)
+        .filter(CollectionCycle.cycle_year > max_cycle_year)
+        .order_by(CollectionCycle.id.asc())
+        .all()
+    )
+    if not candidates:
+        return {'cycles': 0, 'companies': 0, 'submissions': 0, 'users': 0, 'skipped_cycle_ids': []}
+
+    candidate_cycle_ids = [cycle.id for cycle in candidates]
+    candidate_submissions = db.query(Submission).filter(Submission.cycle_id.in_(candidate_cycle_ids)).all()
+    candidate_company_ids = sorted({submission.company_id for submission in candidate_submissions})
+    candidate_companies = (
+        db.query(Company).filter(Company.id.in_(candidate_company_ids)).all()
+        if candidate_company_ids else []
+    )
+    qa_company_ids = {
+        company.id for company in candidate_companies
+        if str(company.name or '').startswith('QA Company ')
+    }
+    unsafe_cycle_ids = set()
+    for submission in candidate_submissions:
+        if submission.company_id not in qa_company_ids:
+            unsafe_cycle_ids.add(submission.cycle_id)
+    for company_id in qa_company_ids:
+        company_submissions = db.query(Submission).filter(Submission.company_id == company_id).all()
+        has_non_candidate_submission = any(
+            item.cycle_id not in candidate_cycle_ids for item in company_submissions
+        )
+        if has_non_candidate_submission:
+            unsafe_cycle_ids.update(
+                submission.cycle_id for submission in candidate_submissions
+                if submission.company_id == company_id
+            )
+
+    safe_cycle_ids = [cycle.id for cycle in candidates if cycle.id not in unsafe_cycle_ids]
+    safe_submissions = [item for item in candidate_submissions if item.cycle_id in safe_cycle_ids]
+    safe_submission_ids = [item.id for item in safe_submissions]
+    safe_company_ids = sorted({item.company_id for item in safe_submissions if item.company_id in qa_company_ids})
+    safe_companies = [company for company in candidate_companies if company.id in safe_company_ids]
+    safe_user_ids = [company.user_id for company in safe_companies]
+
+    if safe_submission_ids:
+        db.query(SubmissionUnlock).filter(SubmissionUnlock.submission_id.in_(safe_submission_ids)).delete(synchronize_session=False)
+        db.query(SubmissionEvidence).filter(SubmissionEvidence.submission_id.in_(safe_submission_ids)).delete(synchronize_session=False)
+        db.query(ReviewAction).filter(ReviewAction.submission_id.in_(safe_submission_ids)).delete(synchronize_session=False)
+    if safe_company_ids:
+        db.query(SubmissionUnlock).filter(SubmissionUnlock.company_id.in_(safe_company_ids)).delete(synchronize_session=False)
+        db.query(SubmissionEvidence).filter(SubmissionEvidence.company_id.in_(safe_company_ids)).delete(synchronize_session=False)
+        db.query(SubmissionDraft).filter(SubmissionDraft.company_id.in_(safe_company_ids)).delete(synchronize_session=False)
+        db.query(ReminderLog).filter(ReminderLog.company_id.in_(safe_company_ids)).delete(synchronize_session=False)
+        db.query(ReviewAction).filter(ReviewAction.company_id.in_(safe_company_ids)).delete(synchronize_session=False)
+        db.query(ValidationFlag).filter(ValidationFlag.company_id.in_(safe_company_ids)).delete(synchronize_session=False)
+        db.query(ActionPlan).filter(ActionPlan.company_id.in_(safe_company_ids)).delete(synchronize_session=False)
+    if safe_cycle_ids:
+        db.query(SubmissionUnlock).filter(SubmissionUnlock.cycle_id.in_(safe_cycle_ids)).delete(synchronize_session=False)
+        db.query(SubmissionEvidence).filter(SubmissionEvidence.cycle_id.in_(safe_cycle_ids)).delete(synchronize_session=False)
+        db.query(SubmissionDraft).filter(SubmissionDraft.cycle_id.in_(safe_cycle_ids)).delete(synchronize_session=False)
+        db.query(ReminderLog).filter(ReminderLog.cycle_id.in_(safe_cycle_ids)).delete(synchronize_session=False)
+    if safe_submission_ids:
+        db.query(Submission).filter(Submission.id.in_(safe_submission_ids)).delete(synchronize_session=False)
+    if safe_company_ids:
+        db.query(Company).filter(Company.id.in_(safe_company_ids)).delete(synchronize_session=False)
+    if safe_cycle_ids:
+        db.query(CollectionCycle).filter(CollectionCycle.id.in_(safe_cycle_ids)).delete(synchronize_session=False)
+
+    deleted_users = 0
+    db.flush()
+    for user_id in safe_user_ids:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user or not str(user.email or '').startswith('qa_') or not str(user.email or '').endswith('@example.com'):
+            continue
+        if db.query(Company).filter(Company.user_id == user.id).first() is None:
+            db.delete(user)
+            deleted_users += 1
+    db.commit()
+    return {
+        'cycles': len(safe_cycle_ids),
+        'companies': len(safe_company_ids),
+        'submissions': len(safe_submission_ids),
+        'users': deleted_users,
+        'skipped_cycle_ids': sorted(unsafe_cycle_ids),
+    }
 
 
 def get_or_create_reserved_cycle(db: Session) -> CollectionCycle:
@@ -1022,11 +1126,13 @@ def startup_event():
 def migrate_schema(db: Session = Depends(get_db)):
     ensure_submission_cycle_column(db)
     ensure_review_action_audit_columns(db)
+    qa_cleanup = cleanup_irrelevant_qa_cycles(db)
     return {
         'status': 'ok',
         'submission_cycle_column': table_has_column(db, 'submissions', 'cycle_id'),
         'review_submission_column': table_has_column(db, 'review_actions', 'submission_id'),
         'review_created_at_column': table_has_column(db, 'review_actions', 'created_at'),
+        'qa_cycle_cleanup': qa_cleanup,
     }
 
 @app.post('/login', response_model=UserResponse)
@@ -1126,6 +1232,12 @@ def create_company(payload: CompanyCreateRequest, db: Session = Depends(get_db))
 
 @app.post('/cycles', response_model=CycleInfo, dependencies=[Depends(require_manager)])
 def create_cycle(payload: CycleCreateRequest, db: Session = Depends(get_db)):
+    max_cycle_year = datetime.now(timezone.utc).year + MAX_REPORTING_CYCLE_FUTURE_YEARS
+    if payload.cycle_year < MIN_REPORTING_CYCLE_YEAR or payload.cycle_year > max_cycle_year:
+        raise HTTPException(
+            status_code=422,
+            detail=f'Cycle year must be between {MIN_REPORTING_CYCLE_YEAR} and {max_cycle_year}',
+        )
     existing_cycle = db.query(CollectionCycle).filter(CollectionCycle.cycle_year == payload.cycle_year).first()
     if existing_cycle:
         raise HTTPException(status_code=400, detail='A cycle for this year already exists')
@@ -1166,7 +1278,16 @@ def create_cycle(payload: CycleCreateRequest, db: Session = Depends(get_db)):
 
 @app.get('/cycles', response_model=List[CycleInfo], dependencies=[Depends(require_manager)])
 def list_cycles(db: Session = Depends(get_db)):
-    cycles = db.query(CollectionCycle).order_by(CollectionCycle.cycle_year.desc()).all()
+    max_cycle_year = datetime.now(timezone.utc).year + MAX_REPORTING_CYCLE_FUTURE_YEARS
+    cycles = (
+        db.query(CollectionCycle)
+        .filter(
+            CollectionCycle.cycle_year >= MIN_REPORTING_CYCLE_YEAR,
+            CollectionCycle.cycle_year <= max_cycle_year,
+        )
+        .order_by(CollectionCycle.cycle_year.desc())
+        .all()
+    )
     return [serialize_cycle(cycle) for cycle in cycles]
 
 @app.patch('/cycles/{cycle_id}/status', response_model=CycleInfo, dependencies=[Depends(require_manager)])
@@ -2088,7 +2209,10 @@ def build_manager_summary(db: Session, companies: List[Company]) -> dict:
     if cycle is None:
         cycle = (
             db.query(CollectionCycle)
-            .filter(CollectionCycle.cycle_year > 0)
+            .filter(
+                CollectionCycle.cycle_year >= MIN_REPORTING_CYCLE_YEAR,
+                CollectionCycle.cycle_year <= datetime.now(timezone.utc).year + MAX_REPORTING_CYCLE_FUTURE_YEARS,
+            )
             .order_by(CollectionCycle.cycle_year.desc())
             .first()
         )

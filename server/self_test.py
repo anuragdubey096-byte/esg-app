@@ -1,5 +1,6 @@
 import json
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -51,7 +52,16 @@ def run_self_test():
         check('GET /analytics/portfolio', response.status_code == 200 and 'portfolio_esg_score' in response.json(), response.text)
 
         stamp = int(time.time())
-        cycle_year = 2500 + (stamp % 100)
+        existing_cycles_response = client.get('/cycles', headers=manager_headers)
+        existing_cycle_years = {
+            int(item.get('cycle_year')) for item in existing_cycles_response.json()
+            if item.get('cycle_year') is not None
+        }
+        current_year = datetime.now(timezone.utc).year
+        cycle_year = next(
+            year for year in range(current_year + 5, 1999, -1)
+            if year not in existing_cycle_years
+        )
         cycle_response = client.post('/cycles', json={
             'cycle_year': cycle_year,
             'submission_open_date': '2026-04-10',
@@ -67,9 +77,28 @@ def run_self_test():
         cycle = cycle_response.json() if cycle_response.status_code == 200 else {}
         check('POST /cycles', cycle_response.status_code == 200 and cycle.get('cycle_year') == cycle_year, cycle_response.text)
 
+        invalid_cycle_response = client.post('/cycles', json={
+            'cycle_year': 2595,
+            'submission_open_date': '2026-04-10',
+            'submission_deadline': '2026-05-10',
+            'extension_date': '2026-05-20',
+            'reminder_days_before_deadline': [30, 14, 7, 1],
+            'private_equity_template': 'PE Standard',
+            'real_estate_template': 'RE Standard',
+            'debt_template': 'Debt Standard',
+            'activate_on_create': False,
+            'carry_forward_prefill': False,
+        }, headers=manager_headers)
+        check('POST /cycles rejects irrelevant year', invalid_cycle_response.status_code == 422, invalid_cycle_response.text)
+
         list_cycles = client.get('/cycles', headers=manager_headers)
         cycles = list_cycles.json() if list_cycles.status_code == 200 else []
         check('GET /cycles manager', list_cycles.status_code == 200 and any(item.get('cycle_year') == cycle_year for item in cycles), list_cycles.text)
+        check(
+            'GET /cycles excludes irrelevant future years',
+            all(2000 <= int(item.get('cycle_year')) <= current_year + 5 for item in cycles),
+            list_cycles.text,
+        )
 
         company_email = f'qa_{stamp}@example.com'
         company_name = f'QA Company {stamp}'

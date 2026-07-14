@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
@@ -377,6 +377,13 @@ class CycleCreateRequest(BaseModel):
     debt_template: str
     activate_on_create: bool = True
     carry_forward_prefill: bool = True
+
+    @model_validator(mode='after')
+    def validate_cycle_year(self):
+        current_year = datetime.now(timezone.utc).year
+        if self.cycle_year < 2000 or self.cycle_year > current_year + 5:
+            raise ValueError(f'cycle_year must be between 2000 and {current_year + 5}')
+        return self
 
 
 class CycleInfo(BaseModel):
