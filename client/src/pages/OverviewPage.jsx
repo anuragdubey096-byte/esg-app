@@ -9,7 +9,15 @@ import SectionCard from '../components/SectionCard'
 import SectionLoadState from '../components/SectionLoadState'
 import StatusBadge from '../components/StatusBadge'
 import useCollaborationWorkspace from '../hooks/useCollaborationWorkspace'
-import useDashboardData, { getDaysToDeadline, getLatestSubmission, getPreferredCycle, normalizeStatus } from '../hooks/useDashboardData'
+import useDashboardData, {
+  calculateESGPillarScores,
+  getDaysToDeadline,
+  getLatestSubmission,
+  getPreferredCycle,
+  getSortedSubmissions,
+  normalizeStatus,
+  parseSubmissionPayload,
+} from '../hooks/useDashboardData'
 import useLiveActivity from '../hooks/useLiveActivity'
 import useNarrativeLifecycle from '../hooks/useNarrativeLifecycle'
 import useNarrativeSummary from '../hooks/useNarrativeSummary'
@@ -234,6 +242,25 @@ export default function OverviewPage() {
       completion: total ? Math.round((approved / total) * 100) : 0,
     }
   }, [statusBreakdown])
+  const companyPerformance = useMemo(() => {
+    if (!isCompany || !primarySubmission) return null
+    const submissions = getSortedSubmissions(primaryCompany)
+    const currentIndex = submissions.findIndex((submission) => submission.id === primarySubmission.id)
+    const currentScores = calculateESGPillarScores(parseSubmissionPayload(primarySubmission))
+    const previousScores = currentIndex > 0
+      ? calculateESGPillarScores(parseSubmissionPayload(submissions[currentIndex - 1]))
+      : null
+    if (!currentScores) return null
+    return {
+      composite: Number(currentScores.composite.toFixed(1)),
+      change: previousScores ? Number((currentScores.composite - previousScores.composite).toFixed(1)) : null,
+      pillars: [
+        { label: 'Environmental', value: Number(currentScores.environmental.toFixed(1)), tone: 'environmental' },
+        { label: 'Social', value: Number(currentScores.social.toFixed(1)), tone: 'social' },
+        { label: 'Governance', value: Number(currentScores.governance.toFixed(1)), tone: 'governance' },
+      ],
+    }
+  }, [isCompany, primaryCompany, primarySubmission])
 
   const deadlineColumns = [
     { key: 'company_name', label: 'Company', sortable: true },
@@ -387,6 +414,36 @@ export default function OverviewPage() {
       />
 
       <AttentionInbox items={attentionItems} role={role || 'manager'} />
+
+      {companyPerformance ? (
+        <SectionCard
+          title="ESG performance snapshot"
+          subtitle="Indicative pillar scores calculated from your latest reporting-cycle metrics"
+        >
+          <div className="company-performance-snapshot">
+            <div className="company-composite-score" aria-label={`Composite ESG score ${companyPerformance.composite} out of 100`}>
+              <span>Composite score</span>
+              <strong>{companyPerformance.composite}</strong>
+              <small>/100</small>
+              <em className={companyPerformance.change == null ? 'neutral' : companyPerformance.change >= 0 ? 'positive' : 'negative'}>
+                {companyPerformance.change == null
+                  ? 'First comparable cycle'
+                  : `${companyPerformance.change > 0 ? '+' : ''}${companyPerformance.change} vs prior cycle`}
+              </em>
+            </div>
+            <div className="company-pillar-list">
+              {companyPerformance.pillars.map((pillar) => (
+                <div className={`company-pillar-row ${pillar.tone}`} key={pillar.label}>
+                  <div><span>{pillar.label}</span><strong>{pillar.value}</strong></div>
+                  <div className="company-pillar-track" aria-hidden="true">
+                    <span style={{ width: `${pillar.value}%` }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </SectionCard>
+      ) : null}
 
       <SectionCard
         title={isCompany ? 'AI Company Narrative' : 'AI Portfolio Narrative'}

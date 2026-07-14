@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import {
   Bar,
@@ -20,10 +20,10 @@ import ExecutivePageHeader from '../components/ExecutivePageHeader'
 import KpiCard from '../components/KpiCard'
 import SectionCard from '../components/SectionCard'
 import SectionLoadState from '../components/SectionLoadState'
-import LPAnalyticsSections from '../components/analytics/LPAnalyticsSections'
 import useDashboardData from '../hooks/useDashboardData'
-import useNewsletterPreview from '../hooks/useNewsletterPreview'
 import useNarrativeSummary from '../hooks/useNarrativeSummary'
+
+const investorTabs = ['Climate', 'People & Governance', 'Data Quality', 'Benchmarking']
 
 const funnelColors = {
   'Not Started': '#ef4444',
@@ -44,7 +44,7 @@ export default function InvestorAnalyticsPage() {
   const { user } = useOutletContext()
   const { summary, loading, error, retrySection, sections, isRefreshing } = useDashboardData(user)
   const narrative = useNarrativeSummary({ user, audience: 'lp', tone: 'board-ready', enabled: Boolean(user) })
-  const newsletter = useNewsletterPreview({ user, audience: 'investor', tone: 'board-ready' })
+  const [activeTab, setActiveTab] = useState(investorTabs[0])
   const analytics = summary || {}
 
   const {
@@ -195,21 +195,22 @@ export default function InvestorAnalyticsPage() {
         ) : null}
       </SectionCard>
 
-      <SectionCard title="Newsletter Preview" subtitle="Generate and review the latest LP newsletter">
-        <button className="button" type="button" onClick={newsletter.generate} disabled={newsletter.loading}>
-          {newsletter.loading ? 'Generating...' : 'Generate Newsletter Preview'}
-        </button>
-        {newsletter.error ? <p>{newsletter.error}</p> : null}
-        {newsletter.data ? (
-          <div className="mt-3 space-y-2 text-sm text-slate-700">
-            <p><strong>{newsletter.data.subject_line || 'Portfolio newsletter'}</strong></p>
-            <p>{newsletter.data.summary || 'No summary available.'}</p>
-          </div>
-        ) : null}
-      </SectionCard>
+      <nav className="analytics-view-tabs" aria-label="Investor analytics topics">
+        {investorTabs.map((tab) => (
+          <button
+            key={tab}
+            type="button"
+            className={tab === activeTab ? 'active' : ''}
+            aria-pressed={tab === activeTab}
+            onClick={() => setActiveTab(tab)}
+          >
+            {tab}
+          </button>
+        ))}
+      </nav>
 
       <section className="two-col-grid">
-        <SectionCard title="Emissions Trend" subtitle="Portfolio total emissions over recent periods">
+        <SectionCard title="Emissions Trend" subtitle="Portfolio total emissions over recent periods" hidden={activeTab !== 'Climate'}>
           {emissionsTrend.length ? <div className="chart-wrap">
             <ResponsiveContainer width="100%" height={300}>
               <LineChart data={emissionsTrend}>
@@ -228,7 +229,7 @@ export default function InvestorAnalyticsPage() {
           )}
         </SectionCard>
 
-        <SectionCard title="Emissions Mix" subtitle="Scope distribution across portfolio">
+        <SectionCard title="Emissions Mix" subtitle="Scope distribution across portfolio" hidden={activeTab !== 'Climate'}>
           <div className="chart-wrap">
             <ResponsiveContainer width="100%" height={300}>
               <PieChart>
@@ -246,7 +247,7 @@ export default function InvestorAnalyticsPage() {
       </section>
 
       <section className="two-col-grid">
-        <SectionCard title="E / S / G Score Split" subtitle="Portfolio score composition">
+        <SectionCard title="E / S / G Score Split" subtitle="Portfolio score composition" hidden={activeTab !== 'People & Governance'}>
           <div className="chart-wrap">
             <ResponsiveContainer width="100%" height={300}>
               <PieChart>
@@ -262,7 +263,7 @@ export default function InvestorAnalyticsPage() {
           </div>
         </SectionCard>
 
-        <SectionCard title="Submission Funnel" subtitle="Current reporting lifecycle distribution">
+        <SectionCard title="Submission Funnel" subtitle="Current reporting lifecycle distribution" hidden={activeTab !== 'Data Quality'}>
           <div className="chart-wrap">
             <ResponsiveContainer width="100%" height={300}>
               <PieChart>
@@ -280,7 +281,7 @@ export default function InvestorAnalyticsPage() {
       </section>
 
       <section className="two-col-grid">
-        <SectionCard title="Resource Analytics" subtitle="Energy, water, and waste totals">
+        <SectionCard title="Resource Analytics" subtitle="Energy, water, and waste totals" hidden={activeTab !== 'Climate'}>
           <div className="metric-unit-grid">
             {resourceData.map((item) => {
               const unit = item.metric === 'Energy' ? 'MWh' : item.metric === 'Water' ? 'm³' : 'tonnes'
@@ -289,7 +290,7 @@ export default function InvestorAnalyticsPage() {
           </div>
         </SectionCard>
 
-        <SectionCard title="Data Quality Index" subtitle="Completeness, accuracy, and confidence">
+        <SectionCard title="Data Quality Index" subtitle="Completeness, accuracy, and confidence" hidden={activeTab !== 'Data Quality'}>
           <div className="chart-wrap">
             <ResponsiveContainer width="100%" height={300}>
               <BarChart data={qualityData}>
@@ -305,7 +306,7 @@ export default function InvestorAnalyticsPage() {
       </section>
 
       <section className="two-col-grid">
-        <SectionCard title="Social & Safety Indicators" subtitle="Portfolio averages and anomaly pressure">
+        <SectionCard title="Social & Safety Indicators" subtitle="Portfolio averages and anomaly pressure" hidden={activeTab !== 'People & Governance'}>
           <div className="metric-unit-grid">
             {socialData.map((item) => {
               const unit = item.metric.includes('%') ? '%' : item.metric.includes('TRIFR') ? 'TRIFR' : 'flags'
@@ -314,7 +315,7 @@ export default function InvestorAnalyticsPage() {
           </div>
         </SectionCard>
 
-        <SectionCard title="Underperforming Sectors" subtitle="Lowest-scoring sectors from portfolio benchmark">
+        <SectionCard title="Underperforming Sectors" subtitle="Lowest-scoring sectors from portfolio benchmark" hidden={activeTab !== 'Benchmarking'}>
           {underperformingSectors.length ? (
             <ul className="mini-legend">
               {underperformingSectors.map((sector) => (
@@ -329,7 +330,7 @@ export default function InvestorAnalyticsPage() {
         </SectionCard>
       </section>
 
-      <SectionCard title="Top & Watchlist Companies" subtitle="Highest and lowest ESG scores in the portfolio">
+      <SectionCard title="Top & Watchlist Companies" subtitle="Highest and lowest ESG scores in the portfolio" hidden={activeTab !== 'Benchmarking'}>
         <DataTable
           columns={[
             { key: 'bucket', label: 'Bucket', sortable: true },
@@ -343,7 +344,6 @@ export default function InvestorAnalyticsPage() {
         />
       </SectionCard>
 
-      <LPAnalyticsSections user={user} />
     </div>
   )
 }

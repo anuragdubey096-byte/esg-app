@@ -19,10 +19,9 @@ import DataTable from '../components/DataTable'
 import ExecutivePageHeader from '../components/ExecutivePageHeader'
 import KpiCard from '../components/KpiCard'
 import SectionCard from '../components/SectionCard'
-import AdminAnalyticsSections from '../components/analytics/AdminAnalyticsSections'
 import useDashboardData, { calculateESGPillarScores, getLatestSubmission, getSortedSubmissions, getSubmissionReportingYear, parseSubmissionPayload } from '../hooks/useDashboardData'
 
-const analyticsTabs = ['Environmental', 'Social', 'Governance', 'Benchmarking']
+const analyticsTabs = ['Environmental', 'Social', 'Governance', 'Data Quality', 'Benchmarking']
 
 function toNumber(value) {
   if (value === null || value === undefined || value === '') return 0
@@ -215,6 +214,9 @@ export default function AnalyticsPage() {
         scoreChange: Number((compositeScore - (previousScores?.composite || compositeScore)).toFixed(1)),
         reductionTarget: Number(toNumber(payload.reduction_target_percent).toFixed(1)),
         actualReduction: Number(actualReduction.toFixed(1)),
+        missingValues: missingCount,
+        estimatedValues: estimatedCount,
+        validationFlags: record.validationFlagCount,
         dataIssues: missingCount + estimatedCount + record.validationFlagCount,
       }
     })
@@ -276,6 +278,11 @@ export default function AnalyticsPage() {
       workforceMix,
       boardMix,
       riskTierData,
+      confidenceMix: [
+        { name: 'Measured', value: measuredConfidence, color: '#0f8f88' },
+        { name: 'Estimated / other', value: Math.max(0, totalConfidence - measuredConfidence), color: '#f59e0b' },
+      ],
+      dataQualityRows: [...benchmarkRows].sort((left, right) => right.dataIssues - left.dataIssues),
       topBenchmarkRows: [...benchmarkRows].sort((left, right) => right.compositeScore - left.compositeScore).slice(0, 10),
       benchmarkRows,
       avgReductionTarget: Number(toAverage(benchmarkRows.reduce((sum, row) => sum + row.reductionTarget, 0), benchmarkRows.length).toFixed(1)),
@@ -548,6 +555,57 @@ export default function AnalyticsPage() {
           </section>
         ) : null}
 
+        {activeTab === 'Data Quality' ? (
+          <section className="space-y-4">
+            <div className="two-col-grid">
+              <div className="chart-wrap">
+                <h4>Measured versus estimated evidence</h4>
+                <ResponsiveContainer width="100%" height={300}>
+                  <PieChart>
+                    <Pie data={analytics.confidenceMix} dataKey="value" nameKey="name" innerRadius={68} outerRadius={112}>
+                      {analytics.confidenceMix.map((entry) => (
+                        <Cell key={entry.name} fill={entry.color} />
+                      ))}
+                    </Pie>
+                    <Tooltip />
+                    <Legend />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+
+              <div className="chart-wrap">
+                <h4>Companies with the most data issues</h4>
+                <ResponsiveContainer width="100%" height={300}>
+                  <BarChart data={analytics.dataQualityRows.slice(0, 10)}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                    <XAxis dataKey="company" tick={{ fontSize: 11 }} angle={-18} textAnchor="end" height={70} />
+                    <YAxis allowDecimals={false} />
+                    <Tooltip />
+                    <Legend />
+                    <Bar dataKey="missingValues" stackId="issues" fill="#dc4c64" name="Missing" />
+                    <Bar dataKey="estimatedValues" stackId="issues" fill="#f59e0b" name="Estimated" />
+                    <Bar dataKey="validationFlags" stackId="issues" fill="#7c3aed" name="Validation flags" />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            <DataTable
+              columns={[
+                { key: 'company', label: 'Company', sortable: true },
+                { key: 'sector', label: 'Sector', sortable: true },
+                { key: 'missingValues', label: 'Missing', sortable: true },
+                { key: 'estimatedValues', label: 'Estimated', sortable: true },
+                { key: 'validationFlags', label: 'Validation flags', sortable: true },
+                { key: 'dataIssues', label: 'Total issues', sortable: true },
+              ]}
+              rows={analytics.dataQualityRows}
+              pageSize={10}
+              emptyMessage="No company data-quality records are available."
+            />
+          </section>
+        ) : null}
+
         {activeTab === 'Benchmarking' ? (
           <section className="space-y-4">
             <div className="two-col-grid">
@@ -601,7 +659,6 @@ export default function AnalyticsPage() {
         ) : null}
       </SectionCard>
 
-      <AdminAnalyticsSections user={user} />
     </div>
   )
 }

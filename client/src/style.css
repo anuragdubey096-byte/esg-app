@@ -1453,6 +1453,144 @@ p {
 .analytics-empty-scope strong { color: #8a4b08; font-size: 0.82rem; }
 .analytics-empty-scope p { margin-top: 0.2rem; color: #765d3d; font-size: 0.75rem; }
 
+.analytics-view-tabs {
+  position: sticky;
+  top: 76px;
+  z-index: 9;
+  display: flex;
+  gap: 0.35rem;
+  overflow-x: auto;
+  padding: 0.38rem;
+  border: 1px solid #d7e4ee;
+  border-radius: 14px;
+  background: rgba(247, 251, 253, 0.94);
+  box-shadow: 0 10px 26px rgba(15, 35, 52, 0.07);
+  backdrop-filter: blur(12px);
+  scrollbar-width: thin;
+}
+
+.analytics-view-tabs button {
+  min-height: 39px;
+  flex: 1 0 auto;
+  border: 0;
+  border-radius: 10px;
+  padding: 0.55rem 0.9rem;
+  background: transparent;
+  color: #526b80;
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 750;
+  cursor: pointer;
+  transition: background 160ms ease, color 160ms ease, box-shadow 160ms ease;
+}
+
+.analytics-view-tabs button:hover { background: #eaf2f7; color: #183b56; }
+
+.analytics-view-tabs button.active {
+  background: #0d3342;
+  color: #f8fafc;
+  box-shadow: 0 7px 16px rgba(13, 51, 66, 0.18);
+}
+
+.analytics-view-tabs button:focus-visible {
+  outline: 3px solid rgba(15, 143, 136, 0.2);
+  outline-offset: 2px;
+}
+
+.company-performance-snapshot {
+  display: grid;
+  grid-template-columns: minmax(190px, 0.55fr) minmax(280px, 1.45fr);
+  gap: 1.2rem;
+  align-items: stretch;
+}
+
+.company-composite-score {
+  display: grid;
+  grid-template-columns: auto auto;
+  grid-template-rows: auto 1fr auto;
+  align-items: end;
+  align-content: center;
+  justify-content: center;
+  padding: 1.2rem;
+  border: 1px solid #cce1df;
+  border-radius: 16px;
+  background:
+    radial-gradient(circle at 85% 12%, rgba(45, 212, 191, 0.18), transparent 30%),
+    linear-gradient(145deg, #effbf8, #f7fbff);
+}
+
+.company-composite-score > span,
+.company-composite-score > em { grid-column: 1 / -1; }
+
+.company-composite-score > span {
+  color: #526b80;
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.company-composite-score > strong {
+  color: #0d3342;
+  font-size: 2.7rem;
+  line-height: 1;
+  letter-spacing: -0.055em;
+}
+
+.company-composite-score > small {
+  margin: 0 0 0.22rem 0.2rem;
+  color: #70869a;
+  font-size: 0.78rem;
+}
+
+.company-composite-score > em {
+  margin-top: 0.55rem;
+  font-size: 0.72rem;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.company-composite-score > em.positive { color: #0f766e; }
+.company-composite-score > em.negative { color: #c24141; }
+.company-composite-score > em.neutral { color: #64748b; }
+
+.company-pillar-list {
+  display: grid;
+  align-content: center;
+  gap: 1rem;
+  padding: 0.6rem 0.2rem;
+}
+
+.company-pillar-row { --pillar-color: #0f8f88; display: grid; gap: 0.42rem; }
+.company-pillar-row.social { --pillar-color: #2563eb; }
+.company-pillar-row.governance { --pillar-color: #7c3aed; }
+
+.company-pillar-row > div:first-child {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  color: #526b80;
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.company-pillar-row > div:first-child strong { color: #183b56; font-size: 0.84rem; }
+
+.company-pillar-track {
+  height: 9px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e7eef4;
+}
+
+.company-pillar-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--pillar-color) 72%, white), var(--pillar-color));
+}
+
 .section-card {
   border: 1px solid #dbe7f3;
   border-radius: 16px;
@@ -1461,6 +1599,12 @@ p {
   padding: 1rem;
   display: grid;
   gap: 0.9rem;
+}
+
+.section-card[hidden] { display: none; }
+
+.two-col-grid:has(> .section-card[hidden]) > .section-card:not([hidden]) {
+  grid-column: 1 / -1;
 }
 
 .section-card-header {
@@ -2996,6 +3140,10 @@ p {
   .analytics-scope-controls {
     min-width: 0;
   }
+
+  .analytics-view-tabs { top: 8px; }
+
+  .company-performance-snapshot { grid-template-columns: 1fr; }
 
   .attention-item {
     grid-template-columns: auto minmax(0, 1fr);
