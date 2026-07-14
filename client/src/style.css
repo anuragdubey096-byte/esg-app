@@ -1223,6 +1223,16 @@ p {
   box-shadow: 0 0 0 3px rgba(29, 78, 216, 0.14), 0 10px 18px rgba(15, 23, 42, 0.08);
 }
 
+.workspace-field.invalid {
+  border-color: #ef9a9a !important;
+  background: #fffafa !important;
+  box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.08);
+}
+
+.workspace-field.invalid :where(input, select, textarea)[aria-invalid='true'] {
+  border-color: #dc2626 !important;
+}
+
 .workspace-form :where(input, select, textarea) {
   border: 1px solid #c9d8e8 !important;
   border-radius: 10px !important;
@@ -1266,6 +1276,302 @@ p {
   border-radius: 11px;
   letter-spacing: 0.01em;
   box-shadow: 0 10px 20px rgba(15, 23, 42, 0.12);
+}
+
+.submission-progress {
+  overflow: hidden;
+  border: 1px solid #cbddec;
+  border-radius: 15px;
+  background: #fff;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.06);
+}
+
+.submission-progress-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem;
+  border-bottom: 1px solid #dce7f1;
+  background: linear-gradient(120deg, rgba(15, 118, 110, 0.06), rgba(29, 78, 216, 0.05));
+}
+
+.submission-progress-header > div:first-child {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.submission-progress-header h3 {
+  color: var(--ink-strong);
+  font-size: 1.05rem;
+}
+
+.submission-progress-header p:not(.submission-progress-eyebrow) {
+  color: var(--ink-muted);
+  font-size: 0.78rem;
+}
+
+.submission-progress-eyebrow {
+  color: var(--brand-primary);
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.submission-save-state {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.55rem;
+  min-width: 270px;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid #d4e2ed;
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.88);
+}
+
+.submission-save-state > div {
+  display: grid;
+  gap: 0.08rem;
+}
+
+.submission-save-state strong {
+  color: var(--ink-strong);
+  font-size: 0.72rem;
+}
+
+.submission-save-state small {
+  color: var(--ink-muted);
+  font-size: 0.62rem;
+}
+
+.submission-save-state button,
+.submission-validation-summary button,
+.submission-step-actions button {
+  border: 1px solid #c8d8e7;
+  border-radius: 9px;
+  background: #fff;
+  color: #174f78;
+  cursor: pointer;
+  font-weight: 750;
+}
+
+.submission-save-state button {
+  padding: 0.42rem 0.58rem;
+  font-size: 0.68rem;
+  white-space: nowrap;
+}
+
+.submission-save-state button:disabled,
+.submission-step-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.save-state-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #94a3b8;
+}
+
+.save-state-dot.dirty { background: #d97706; }
+.save-state-dot.saving { background: #2563eb; animation: save-state-pulse 1s ease-in-out infinite; }
+.save-state-dot.saved { background: #16a34a; }
+.save-state-dot.error { background: #dc2626; }
+
+@keyframes save-state-pulse {
+  50% { opacity: 0.35; transform: scale(0.8); }
+}
+
+.submission-overall-progress {
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.85rem 1rem;
+  border-bottom: 1px solid #e1eaf2;
+}
+
+.submission-overall-progress > div:first-child {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--ink-muted);
+  font-size: 0.72rem;
+  font-weight: 750;
+}
+
+.submission-overall-progress strong {
+  color: var(--ink-strong);
+}
+
+.submission-progress-track {
+  height: 9px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e8eff5;
+}
+
+.submission-progress-track > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--brand-primary), var(--brand-secondary));
+  transition: width 0.25s ease;
+}
+
+.submission-error-count {
+  color: #b91c1c;
+  font-size: 0.7rem;
+  font-weight: 750;
+}
+
+.submission-stepper {
+  padding: 0.75rem;
+}
+
+.submission-stepper ol {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.6rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.submission-stepper button {
+  width: 100%;
+  min-height: 62px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.55rem;
+  border: 1px solid #d7e2ed;
+  border-radius: 11px;
+  padding: 0.6rem;
+  background: #f8fbfe;
+  color: var(--ink-muted);
+  text-align: left;
+  cursor: pointer;
+}
+
+.submission-stepper button.active {
+  border-color: #81aad7;
+  background: #eef6ff;
+  box-shadow: 0 0 0 2px rgba(29, 78, 216, 0.1);
+}
+
+.submission-stepper button.complete {
+  border-color: #a7d9c9;
+  background: #f0fdf8;
+}
+
+.submission-stepper button > span:nth-child(2) {
+  min-width: 0;
+  display: grid;
+  gap: 0.1rem;
+}
+
+.submission-stepper strong {
+  overflow: hidden;
+  color: var(--ink-strong);
+  font-size: 0.75rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.submission-stepper small {
+  overflow: hidden;
+  font-size: 0.61rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.submission-stepper b {
+  color: #315d80;
+  font-size: 0.68rem;
+}
+
+.submission-step-number {
+  width: 27px;
+  height: 27px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: #dfeaf4;
+  color: #315d80;
+  font-size: 0.7rem;
+  font-weight: 800;
+}
+
+.submission-stepper button.active .submission-step-number {
+  background: var(--brand-secondary);
+  color: #fff;
+}
+
+.submission-stepper button.complete .submission-step-number {
+  background: var(--brand-primary);
+  color: #fff;
+}
+
+.submission-validation-summary {
+  display: grid;
+  gap: 0.65rem;
+  border: 1px solid #fecaca;
+  border-radius: 13px;
+  padding: 0.9rem 1rem;
+  background: #fff7f7;
+  color: #7f1d1d;
+}
+
+.submission-validation-summary h4 {
+  color: #991b1b;
+  font-size: 0.9rem;
+}
+
+.submission-validation-summary p,
+.submission-validation-summary li {
+  font-size: 0.72rem;
+  line-height: 1.45;
+}
+
+.submission-validation-summary ul {
+  display: grid;
+  gap: 0.25rem;
+  margin: 0;
+  padding-left: 1.1rem;
+}
+
+.submission-validation-summary button {
+  justify-self: start;
+  padding: 0.45rem 0.65rem;
+  font-size: 0.7rem;
+}
+
+.submission-step-actions {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 0.7rem;
+  margin-top: 1rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid #d8e4ef;
+}
+
+.submission-step-actions button {
+  min-height: 38px;
+  padding: 0.45rem 0.7rem;
+  font-size: 0.72rem;
+}
+
+.submission-step-actions button:last-child {
+  justify-self: end;
+}
+
+.submission-step-actions span {
+  color: var(--ink-muted);
+  font-size: 0.68rem;
+  font-weight: 750;
 }
 
 .filter-bar label,
@@ -1823,6 +2129,19 @@ p {
     width: 100%;
   }
 
+  .submission-progress-header {
+    flex-direction: column;
+  }
+
+  .submission-save-state {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .submission-stepper ol {
+    grid-template-columns: 1fr;
+  }
+
   .filter-bar.sticky {
     top: 8px;
   }
@@ -1874,5 +2193,24 @@ p {
 
   .reporting-status-legend {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .submission-save-state {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .submission-save-state button {
+    grid-column: 2;
+    justify-self: start;
+  }
+
+  .submission-step-actions {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .submission-step-actions span {
+    grid-column: 1 / -1;
+    grid-row: 1;
+    text-align: center;
   }
 }

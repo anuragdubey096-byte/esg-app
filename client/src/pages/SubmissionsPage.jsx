@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useOutletContext } from 'react-router-dom'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts'
 import DataTable from '../components/DataTable'
 import SectionCard from '../components/SectionCard'
 import StatusBadge from '../components/StatusBadge'
+import SubmissionFormProgress from '../components/SubmissionFormProgress'
 import { CONFIDENCE_OPTIONS, ESG_FORM_SECTIONS, createInitialFormValues } from '../esgFormConfig'
 import { validateSubmissionData } from '../esgValidation'
 import useDashboardData, {
@@ -168,6 +169,44 @@ function validatePortfolioForm(formValues, varianceContext) {
   return [...new Set(errors)]
 }
 
+function getSectionProgress(section, formValues) {
+  const requiredFields = section.fields.filter((field) => field.type !== 'text' && field.type !== 'textarea')
+  const total = requiredFields.length * 2
+  const completed = requiredFields.reduce((count, field) => {
+    const hasValue = (formValues[field.name] ?? '') !== ''
+    const hasConfidence = Boolean(formValues[`${field.name}_confidence`])
+    return count + Number(hasValue) + Number(hasConfidence)
+  }, 0)
+
+  return {
+    ...section,
+    completed,
+    total,
+    percent: total > 0 ? Math.round((completed / total) * 100) : 100,
+  }
+}
+
+function getErrorSectionKey(errorMessage) {
+  const normalizedError = String(errorMessage || '').toLowerCase()
+  const matchingSection = ESG_FORM_SECTIONS.find((section) => (
+    normalizedError.includes(section.key)
+    || section.fields.some((field) => (
+      normalizedError.includes(field.name.replace(/_/g, ' '))
+      || normalizedError.includes(field.label.toLowerCase())
+    ))
+  ))
+  return matchingSection?.key || ESG_FORM_SECTIONS[0]?.key || ''
+}
+
+function hasFieldValidationError(errors, field) {
+  const fieldName = field.name.replace(/_/g, ' ')
+  const fieldLabel = field.label.toLowerCase()
+  return errors.some((errorMessage) => {
+    const normalizedError = String(errorMessage || '').toLowerCase()
+    return normalizedError.includes(fieldName) || normalizedError.includes(fieldLabel)
+  })
+}
+
 function createPrefilledFormValues(company) {
   const base = createInitialFormValues()
   const latestSubmission = getLatestSubmission(company)
@@ -180,6 +219,27 @@ function createPrefilledFormValues(company) {
   })
 
   return base
+}
+
+function getSubmissionDraftKey(companyId) {
+  return `esgSubmissionDraft.${companyId}`
+}
+
+function loadSubmissionDraft(companyId, fallbackValues) {
+  try {
+    const storedDraft = JSON.parse(localStorage.getItem(getSubmissionDraftKey(companyId)) || 'null')
+    if (!storedDraft?.values || typeof storedDraft.values !== 'object') return null
+
+    return {
+      values: Object.keys(fallbackValues).reduce((values, key) => ({
+        ...values,
+        [key]: storedDraft.values[key] ?? fallbackValues[key],
+      }), {}),
+      savedAt: storedDraft.savedAt || '',
+    }
+  } catch {
+    return null
+  }
 }
 
 function createInitialCarbonInputs() {
@@ -220,7 +280,10 @@ export default function SubmissionsPage() {
   const [selectedCompanyId, setSelectedCompanyId] = useState(null)
   const [formValues, setFormValues] = useState(createInitialFormValues)
   const [formMessage, setFormMessage] = useState('')
+  const [formErrors, setFormErrors] = useState([])
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [saveStatus, setSaveStatus] = useState('idle')
+  const [lastSavedAt, setLastSavedAt] = useState('')
   const formValuesRef = useRef(formValues)
   const [activeTab, setActiveTab] = useState(ESG_FORM_SECTIONS.length ? ESG_FORM_SECTIONS[0].key : '')
   const [historicalContext, setHistoricalContext] = useState(null)
@@ -468,7 +531,12 @@ export default function SubmissionsPage() {
     if (!selectedCompanyId) return
     const company = companies.find((item) => item.id === selectedCompanyId)
     if (!company) return
-    setFormValues(createPrefilledFormValues(company))
+    const prefilledValues = createPrefilledFormValues(company)
+    const draft = loadSubmissionDraft(company.id, prefilledValues)
+    setFormValues(draft?.values || prefilledValues)
+    setFormErrors([])
+    setSaveStatus(draft ? 'saved' : 'idle')
+    setLastSavedAt(draft?.savedAt ? new Date(draft.savedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '')
   }, [companies, isCompany, selectedCompanyId])
 
   const selectedCompany = companies.find((item) => item.id === selectedCompanyId) || null
@@ -477,6 +545,18 @@ export default function SubmissionsPage() {
     () => computeVarianceContext(formValues, historicalContext?.prior_values || {}),
     [formValues, historicalContext?.prior_values]
   )
+  const sectionProgress = useMemo(
+    () => ESG_FORM_SECTIONS.map((section) => getSectionProgress(section, formValues)),
+    [formValues]
+  )
+  const overallCompletion = useMemo(() => {
+    const totals = sectionProgress.reduce(
+      (result, section) => ({ completed: result.completed + section.completed, total: result.total + section.total }),
+      { completed: 0, total: 0 }
+    )
+    return totals.total > 0 ? Math.round((totals.completed / totals.total) * 100) : 0
+  }, [sectionProgress])
+  const activeStepIndex = Math.max(0, ESG_FORM_SECTIONS.findIndex((section) => section.key === activeTab))
 
   useEffect(() => {
     formValuesRef.current = formValues
@@ -484,7 +564,15 @@ export default function SubmissionsPage() {
 
   const handleFieldChange = (event) => {
     const { name, value } = event.target
-    setFormValues((current) => ({ ...current, [name]: value }))
+    const nextFormValues = { ...formValues, [name]: value }
+    setFormValues(nextFormValues)
+    setSaveStatus('dirty')
+    if (formErrors.length > 0) {
+      setFormErrors(validatePortfolioForm(
+        nextFormValues,
+        computeVarianceContext(nextFormValues, historicalContext?.prior_values || {})
+      ))
+    }
   }
 
   const handleCarbonInputChange = (event) => {
@@ -522,6 +610,7 @@ export default function SubmissionsPage() {
         scope_3_emissions: String(data.scope_3_tco2e ?? previous.scope_3_emissions ?? ''),
         total_ghg_emissions: String(data.total_tco2e ?? previous.total_ghg_emissions ?? ''),
       }))
+      setSaveStatus('dirty')
       setFormMessage(`Carbon calculation applied. Total emissions: ${data.total_tco2e} tCO2e`)
     } catch (calcError) {
       setCarbonError(calcError.message || 'Carbon calculator failed')
@@ -555,9 +644,9 @@ export default function SubmissionsPage() {
         setHistoricalContext(payload)
         setFormValues((current) => ({
           ...current,
-          section_comment_environmental: String(((payload.section_comments?.environmental || []).slice(-1)[0] || {}).text || current.section_comment_environmental || ''),
-          section_comment_social: String(((payload.section_comments?.social || []).slice(-1)[0] || {}).text || current.section_comment_social || ''),
-          section_comment_governance: String(((payload.section_comments?.governance || []).slice(-1)[0] || {}).text || current.section_comment_governance || ''),
+          section_comment_environmental: String(current.section_comment_environmental || ((payload.section_comments?.environmental || []).slice(-1)[0] || {}).text || ''),
+          section_comment_social: String(current.section_comment_social || ((payload.section_comments?.social || []).slice(-1)[0] || {}).text || ''),
+          section_comment_governance: String(current.section_comment_governance || ((payload.section_comments?.governance || []).slice(-1)[0] || {}).text || ''),
         }))
       } catch (contextError) {
         if (!cancelled) {
@@ -574,16 +663,41 @@ export default function SubmissionsPage() {
     }
   }, [selectedCompany?.id, selectedCompanyRow?.submissionId, user?.email, user?.role])
 
+  const saveDraft = useCallback(({ silent = false } = {}) => {
+    if (!isCompany || !selectedCompany?.id) return false
+
+    setSaveStatus('saving')
+    try {
+      const savedAt = new Date()
+      localStorage.setItem(getSubmissionDraftKey(selectedCompany.id), JSON.stringify({
+        values: formValuesRef.current,
+        savedAt: savedAt.toISOString(),
+      }))
+      const savedTime = savedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      setLastSavedAt(savedTime)
+      setSaveStatus('saved')
+      if (!silent) setFormMessage(`Draft saved at ${savedTime}.`)
+      return true
+    } catch (saveError) {
+      setSaveStatus('error')
+      if (!silent) setFormMessage(saveError.message || 'Unable to save draft.')
+      return false
+    }
+  }, [isCompany, selectedCompany?.id])
+
   const submitPortfolioESG = async (event) => {
     event.preventDefault()
     if (!selectedCompany) return
 
     const errors = validatePortfolioForm(formValues, varianceContext)
     if (errors.length) {
-      setFormMessage(errors[0])
+      setFormErrors(errors)
+      setActiveTab(getErrorSectionKey(errors[0]))
+      setFormMessage(`Resolve ${errors.length} validation item${errors.length === 1 ? '' : 's'} before submitting.`)
       return
     }
 
+    setFormErrors([])
     setIsSubmitting(true)
     setFormMessage('Submitting ESG data...')
     try {
@@ -599,6 +713,9 @@ export default function SubmissionsPage() {
       }
 
       setFormMessage(`ESG submission saved for ${selectedCompany.name}.`)
+      setSaveStatus('saved')
+      setLastSavedAt(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))
+      localStorage.removeItem(getSubmissionDraftKey(selectedCompany.id))
       await refresh()
     } catch (submitError) {
       setFormMessage(submitError.message)
@@ -608,21 +725,12 @@ export default function SubmissionsPage() {
   }
 
   useEffect(() => {
-    if (!isCompany || !selectedCompany) return
-    
-    const autoSaveInterval = setInterval(async () => {
-      try {
-        await fetch(`${BACKEND_URL}/company/${selectedCompany.id}/submissions`, {
-          method: 'POST',
-          headers: authJsonHeaders,
-          body: JSON.stringify(buildSubmissionPayload(formValuesRef.current)),
-        })
-        console.log('Auto-saved at', new Date().toLocaleTimeString())
-      } catch (e) { console.error('Auto-save failed', e) }
-    }, 300000) // 5 minutes in milliseconds
-
-    return () => clearInterval(autoSaveInterval)
-  }, [authJsonHeaders, isCompany, selectedCompany])
+    if (saveStatus !== 'dirty' || !isCompany || !selectedCompany) return undefined
+    const autoSaveTimer = setTimeout(() => {
+      saveDraft({ silent: true })
+    }, 15000)
+    return () => clearTimeout(autoSaveTimer)
+  }, [isCompany, saveDraft, saveStatus, selectedCompany?.id])
 
   if (loading) {
     return (
@@ -678,6 +786,31 @@ export default function SubmissionsPage() {
 
           {selectedCompany ? (
             <form onSubmit={submitPortfolioESG} className="workspace-form space-y-4">
+              <SubmissionFormProgress
+                activeKey={activeTab}
+                errorCount={formErrors.length}
+                lastSavedAt={lastSavedAt}
+                onChange={setActiveTab}
+                onSave={() => saveDraft()}
+                overallPercent={overallCompletion}
+                saveStatus={saveStatus}
+                sections={sectionProgress}
+              />
+
+              {formErrors.length > 0 ? (
+                <div className="submission-validation-summary" role="alert" aria-labelledby="submission-validation-title">
+                  <div>
+                    <h4 id="submission-validation-title">Review required information</h4>
+                    <p>{formErrors.length} item{formErrors.length === 1 ? '' : 's'} must be resolved before this submission can be sent.</p>
+                  </div>
+                  <ul>
+                    {formErrors.slice(0, 6).map((validationError) => <li key={validationError}>{validationError}</li>)}
+                  </ul>
+                  {formErrors.length > 6 ? <p>And {formErrors.length - 6} more validation items.</p> : null}
+                  <button type="button" onClick={() => setActiveTab(getErrorSectionKey(formErrors[0]))}>Go to first issue</button>
+                </div>
+              ) : null}
+
               <div className="rounded-xl border border-slate-200 bg-white p-4 workspace-panel">
                 <h4 className="mb-2 text-base font-semibold text-slate-800">Prior Year Comparison & Variance Guardrails</h4>
                 {historicalLoading ? <p className="text-sm text-slate-500">Loading prior-year baseline...</p> : null}
@@ -823,26 +956,15 @@ export default function SubmissionsPage() {
                 ) : null}
               </div>
 
-              <div className="workspace-tabs flex overflow-x-auto border-b border-slate-200 mb-6 pb-2 gap-2">
-                {ESG_FORM_SECTIONS.map((section) => (
-                  <button
-                    key={section.key}
-                    type="button"
-                    className={`whitespace-nowrap py-2 px-4 rounded-lg font-semibold text-sm transition-colors ${activeTab === section.key ? 'bg-blue-600 text-white shadow-md' : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'}`}
-                    onClick={() => setActiveTab(section.key)}
-                  >
-                    {section.title}
-                  </button>
-                ))}
-              </div>
-
               {ESG_FORM_SECTIONS.filter(s => s.key === activeTab).map((section) => (
                 <div key={section.key} className="rounded-xl border border-slate-200 bg-slate-50/60 p-4 workspace-panel workspace-section-panel">
                   <h4 className="mb-1 text-base font-semibold text-slate-800">{section.title}</h4>
                   <p className="mb-4 text-sm text-slate-500">{section.description}</p>
                   <div className="grid gap-3 md:grid-cols-2">
-                    {section.fields.map((field) => (
-                      <div key={field.name} className="rounded-lg border border-slate-200 bg-white p-3 workspace-field">
+                    {section.fields.map((field) => {
+                      const fieldHasError = hasFieldValidationError(formErrors, field)
+                      return (
+                      <div key={field.name} className={`rounded-lg border border-slate-200 bg-white p-3 workspace-field${fieldHasError ? ' invalid' : ''}`}>
                         <label className="mb-1 block text-sm font-medium text-slate-700" htmlFor={field.name}>
                           {field.label}
                         </label>
@@ -854,6 +976,7 @@ export default function SubmissionsPage() {
                             name={field.name}
                             value={formValues[field.name]}
                             onChange={handleFieldChange}
+                            aria-invalid={fieldHasError || undefined}
                             className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
                           />
                         ) : field.type === 'select' ? (
@@ -862,6 +985,7 @@ export default function SubmissionsPage() {
                             name={field.name}
                             value={formValues[field.name]}
                             onChange={handleFieldChange}
+                            aria-invalid={fieldHasError || undefined}
                             className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
                           >
                             <option value="">Select</option>
@@ -876,6 +1000,7 @@ export default function SubmissionsPage() {
                             name={field.name}
                             value={formValues[field.name]}
                             onChange={handleFieldChange}
+                            aria-invalid={fieldHasError || undefined}
                             min={field.min}
                             max={field.max}
                             step={field.step}
@@ -924,6 +1049,7 @@ export default function SubmissionsPage() {
                               name={`${field.name}_confidence`}
                               value={formValues[`${field.name}_confidence`]}
                               onChange={handleFieldChange}
+                              aria-invalid={fieldHasError || undefined}
                               className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
                             >
                               <option value="">Select confidence</option>
@@ -934,7 +1060,25 @@ export default function SubmissionsPage() {
                           </div>
                         ) : null}
                       </div>
-                    ))}
+                      )
+                    })}
+                  </div>
+                  <div className="submission-step-actions">
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab(ESG_FORM_SECTIONS[Math.max(0, activeStepIndex - 1)].key)}
+                      disabled={activeStepIndex === 0}
+                    >
+                      Previous section
+                    </button>
+                    <span>Step {activeStepIndex + 1} of {ESG_FORM_SECTIONS.length}</span>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab(ESG_FORM_SECTIONS[Math.min(ESG_FORM_SECTIONS.length - 1, activeStepIndex + 1)].key)}
+                      disabled={activeStepIndex === ESG_FORM_SECTIONS.length - 1}
+                    >
+                      Next section
+                    </button>
                   </div>
                 </div>
               ))}
@@ -1055,7 +1199,14 @@ export default function SubmissionsPage() {
                 <button
                   className="button"
                   type="button"
-                  onClick={() => selectedCompany && setFormValues(createPrefilledFormValues(selectedCompany))}
+                  onClick={() => {
+                    if (!selectedCompany) return
+                    localStorage.removeItem(getSubmissionDraftKey(selectedCompany.id))
+                    setFormValues(createPrefilledFormValues(selectedCompany))
+                    setFormErrors([])
+                    setSaveStatus('idle')
+                    setLastSavedAt('')
+                  }}
                 >
                   Reset to latest saved
                 </button>
