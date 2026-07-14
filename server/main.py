@@ -18,7 +18,7 @@ from xml.etree import ElementTree
 from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Form, Header, Query, Body, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import func, inspect, text
+from sqlalchemy import MetaData, Table, delete as sqlalchemy_delete, func, inspect, or_, text
 from sqlalchemy.orm import Session, selectinload
 
 from bootstrap import seed_sample_data
@@ -621,8 +621,35 @@ def cleanup_irrelevant_qa_cycles(db: Session) -> dict[str, Any]:
     safe_submissions = [item for item in candidate_submissions if item.cycle_id in safe_cycle_ids]
     safe_submission_ids = [item.id for item in safe_submissions]
     safe_company_ids = sorted({item.company_id for item in safe_submissions if item.company_id in qa_company_ids})
-    safe_companies = [company for company in candidate_companies if company.id in safe_company_ids]
-    safe_user_ids = [company.user_id for company in safe_companies]
+    legacy_dependencies = (
+        ('audit_events', {
+            'submission_id': safe_submission_ids,
+            'company_id': safe_company_ids,
+            'cycle_id': safe_cycle_ids,
+        }),
+        ('submission_declarations', {
+            'submission_id': safe_submission_ids,
+            'company_id': safe_company_ids,
+        }),
+        ('onboarding_states', {'company_id': safe_company_ids}),
+        ('context_help_content', {'cycle_id': safe_cycle_ids}),
+        ('cycle_clone_logs', {
+            'source_cycle_id': safe_cycle_ids,
+            'target_cycle_id': safe_cycle_ids,
+        }),
+    )
+    database_inspector = inspect(db.bind)
+    for table_name, column_values in legacy_dependencies:
+        if not database_inspector.has_table(table_name):
+            continue
+        legacy_table = Table(table_name, MetaData(), autoload_with=db.bind)
+        conditions = [
+            legacy_table.c[column_name].in_(values)
+            for column_name, values in column_values.items()
+            if values and column_name in legacy_table.c
+        ]
+        if conditions:
+            db.execute(sqlalchemy_delete(legacy_table).where(or_(*conditions)))
 
     if safe_submission_ids:
         db.query(SubmissionUnlock).filter(SubmissionUnlock.submission_id.in_(safe_submission_ids)).delete(synchronize_session=False)
@@ -648,21 +675,12 @@ def cleanup_irrelevant_qa_cycles(db: Session) -> dict[str, Any]:
     if safe_cycle_ids:
         db.query(CollectionCycle).filter(CollectionCycle.id.in_(safe_cycle_ids)).delete(synchronize_session=False)
 
-    deleted_users = 0
-    db.flush()
-    for user_id in safe_user_ids:
-        user = db.query(User).filter(User.id == user_id).first()
-        if not user or not str(user.email or '').startswith('qa_') or not str(user.email or '').endswith('@example.com'):
-            continue
-        if db.query(Company).filter(Company.user_id == user.id).first() is None:
-            db.delete(user)
-            deleted_users += 1
     db.commit()
     return {
         'cycles': len(safe_cycle_ids),
         'companies': len(safe_company_ids),
         'submissions': len(safe_submission_ids),
-        'users': deleted_users,
+        'users': 0,
         'skipped_cycle_ids': sorted(unsafe_cycle_ids),
     }
 
