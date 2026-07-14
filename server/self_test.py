@@ -407,7 +407,7 @@ def run_self_test():
         metadata = client.get('/reports/edci')
         check('GET /reports/edci metadata', metadata.status_code == 200 and metadata.json().get('report_type') == 'EDCI', metadata.text)
 
-        csv_export = client.get('/reports/edci/export?format=csv&period=FY2026&portfolio=All%20Portfolio%20Companies', headers=manager_headers)
+        csv_export = client.get(f'/reports/edci/export?format=csv&period=FY{cycle_year}&portfolio=All%20Portfolio%20Companies', headers=manager_headers)
         csv_payload = csv_export.json() if csv_export.status_code == 200 else {}
         csv_ok = False
         if csv_payload.get('file_path'):
@@ -415,12 +415,17 @@ def run_self_test():
             csv_ok = csv_file.exists() and csv_file.stat().st_size > 0 and csv_payload.get('content_type') == 'text/csv'
         check('GET /reports/{type}/export csv', csv_export.status_code == 200 and csv_ok, csv_export.text)
 
-        pdf_export = client.get('/reports/sfdr/export?format=pdf&period=FY2026&portfolio=All%20Portfolio%20Companies', headers=manager_headers)
+        pdf_export = client.get(f'/reports/sfdr/export?format=pdf&period=FY{cycle_year}&portfolio=All%20Portfolio%20Companies', headers=manager_headers)
         pdf_payload = pdf_export.json() if pdf_export.status_code == 200 else {}
         pdf_ok = False
         if pdf_payload.get('file_path'):
             pdf_file = Path(pdf_payload['file_path'])
-            pdf_ok = pdf_file.exists() and pdf_file.stat().st_size > 0 and pdf_payload.get('content_type') == 'application/pdf'
+            pdf_ok = (
+                pdf_file.exists()
+                and pdf_file.stat().st_size > 5_000
+                and pdf_file.read_bytes()[:4] == b'%PDF'
+                and pdf_payload.get('content_type') == 'application/pdf'
+            )
         check('GET /reports/{type}/export pdf', pdf_export.status_code == 200 and pdf_ok, pdf_export.text)
 
         manager_after = client.get('/dashboard/manager', headers=manager_headers)

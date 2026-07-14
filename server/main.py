@@ -28,6 +28,22 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import MetaData, Table, delete as sqlalchemy_delete, func, inspect, or_, text
 from sqlalchemy.orm import Session, selectinload
 from pydantic import ValidationError
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_CENTER, TA_LEFT
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.units import mm
+from reportlab.platypus import (
+    BaseDocTemplate,
+    Frame,
+    KeepTogether,
+    PageBreak,
+    PageTemplate,
+    Paragraph,
+    Spacer,
+    Table,
+    TableStyle,
+)
 
 from bootstrap import seed_sample_data
 from database import SessionLocal, engine
@@ -2944,8 +2960,26 @@ def slugify(value: str) -> str:
     return sanitized.lower() or 'all'
 
 
+def resolve_report_cycle(db: Session, period: str) -> CollectionCycle:
+    normalized = str(period or 'Current Cycle').strip()
+    year_match = re.fullmatch(r'FY\s*(\d{4})', normalized, flags=re.IGNORECASE)
+    if year_match:
+        cycle = db.query(CollectionCycle).filter(CollectionCycle.cycle_year == int(year_match.group(1))).first()
+        if not cycle:
+            raise HTTPException(status_code=404, detail=f'No reporting cycle found for {normalized.upper()}')
+        return cycle
+    if normalized.lower() not in {'current cycle', 'current', 'active'}:
+        raise HTTPException(status_code=400, detail='period must be Current Cycle or FY followed by a four-digit year')
+    return get_active_cycle(db) or get_latest_cycle(db) or get_or_create_reserved_cycle(db)
+
+
+def _latest_cycle_submission(company: Company, cycle_id: int) -> Submission | None:
+    matches = [item for item in (company.submissions or []) if item.cycle_id == cycle_id]
+    return max(matches, key=lambda item: item.id) if matches else None
+
+
 def build_report_rows(db: Session, portfolio: str, period: str):
-    active_cycle = get_active_cycle(db) or get_latest_cycle(db) or get_or_create_reserved_cycle(db)
+    active_cycle = resolve_report_cycle(db, period)
     companies_query = db.query(Company)
     normalized_portfolio = (portfolio or 'all').strip()
     if normalized_portfolio and normalized_portfolio.lower() not in {'all', 'all portfolio companies'}:
@@ -2954,8 +2988,7 @@ def build_report_rows(db: Session, portfolio: str, period: str):
 
     rows = []
     for company in companies:
-        cycle_submissions = [item for item in company.submissions if item.cycle_id == active_cycle.id]
-        latest_submission = (cycle_submissions or company.submissions)[-1] if (cycle_submissions or company.submissions) else None
+        latest_submission = _latest_cycle_submission(company, active_cycle.id)
         bucket = normalize_manager_bucket(latest_submission.status if latest_submission else company.current_status)
         payload = parse_submission(latest_submission)
         rows.append({
@@ -2993,60 +3026,344 @@ def write_csv_export(file_path: Path, rows: List[dict]):
             writer.writerow(row)
 
 
-def escape_pdf_text(text_value: str) -> str:
-    return str(text_value).replace('\\', '\\\\').replace('(', '\\(').replace(')', '\\)')
+REPORT_PILLARS = {
+    'Environmental': [
+        ('total_ghg_emissions', 'Total GHG emissions', 'tCO2e'),
+        ('scope_1_emissions', 'Scope 1 emissions', 'tCO2e'),
+        ('scope_2_location_based', 'Scope 2 emissions - location', 'tCO2e'),
+        ('scope_3_emissions', 'Scope 3 emissions', 'tCO2e'),
+        ('total_energy_consumption', 'Total energy consumption', 'MWh'),
+        ('renewable_energy_consumption', 'Renewable energy consumption', 'MWh'),
+        ('reduction_target_percent', 'Emissions reduction target', '%'),
+    ],
+    'Social': [
+        ('total_employees_fte', 'Employees', 'FTE'),
+        ('female_representation_percent', 'Female representation', '%'),
+        ('female_leadership_representation_percent', 'Female leadership', '%'),
+        ('trifr', 'Total recordable injury frequency rate', 'TRIFR'),
+        ('total_fatalities', 'Fatalities', 'count'),
+        ('employee_turnover_rate', 'Employee turnover', '%'),
+        ('community_investment_spend', 'Community investment', 'reported currency units'),
+    ],
+    'Governance': [
+        ('independent_board_members_percent', 'Independent board members', '%'),
+        ('female_board_members_percent', 'Female board members', '%'),
+        ('esg_policy_in_place', 'ESG policy in place', ''),
+        ('board_level_esg_oversight', 'Board-level ESG oversight', ''),
+        ('cybersecurity_policy_in_place', 'Cybersecurity policy', ''),
+        ('anti_bribery_corruption_policy', 'Anti-bribery policy', ''),
+        ('confirmed_cases_of_corruption', 'Confirmed corruption cases', 'count'),
+    ],
+}
 
 
-def build_simple_pdf(lines: List[str]) -> bytes:
-    if not lines:
-        lines = ['No data']
-    content_lines = ['BT', '/F1 12 Tf', '50 780 Td', '16 TL']
-    for index, line in enumerate(lines):
-        escaped = escape_pdf_text(line)
-        if index == 0:
-            content_lines.append(f'({escaped}) Tj')
+def _report_value(payload: dict, key: str, unit: str) -> str:
+    value = payload.get(key)
+    if value in (None, ''):
+        return 'Not reported'
+    if isinstance(value, (int, float)):
+        rendered = f'{float(value):,.2f}'.rstrip('0').rstrip('.')
+    else:
+        rendered = str(value)
+    return f'{rendered} {unit}'.strip()
+
+
+def _humanize_event(value: str | None) -> str:
+    return str(value or 'Activity').replace('_', ' ').strip().title()
+
+
+def build_formal_report_data(
+    db: Session,
+    report_type: str,
+    portfolio: str,
+    period: str,
+) -> dict[str, Any]:
+    cycle = resolve_report_cycle(db, period)
+    query = db.query(Company).options(selectinload(Company.submissions))
+    normalized_portfolio = str(portfolio or '').strip()
+    if normalized_portfolio and normalized_portfolio.lower() not in {'all', 'all portfolio companies'}:
+        query = query.filter(Company.name == normalized_portfolio)
+    companies = query.order_by(Company.name.asc()).all()
+    if not companies:
+        raise HTTPException(status_code=404, detail='No companies matched the selected report scope')
+
+    company_reports = []
+    for company in companies:
+        submission = _latest_cycle_submission(company, cycle.id)
+        payload = parse_submission(submission)
+        evidence_query = db.query(SubmissionEvidence).filter(
+            SubmissionEvidence.company_id == company.id,
+            SubmissionEvidence.cycle_id == cycle.id,
+        )
+        if submission:
+            evidence_query = evidence_query.filter(or_(
+                SubmissionEvidence.submission_id == submission.id,
+                SubmissionEvidence.submission_id.is_(None),
+            ))
+        evidence = evidence_query.order_by(SubmissionEvidence.created_at.desc()).all()
+        attached_metrics = {item.metric_key for item in evidence if str(item.status).lower() in {'uploaded', 'verified', 'accepted'}}
+        missing_required = sorted(REQUIRED_EVIDENCE_METRICS - attached_metrics)
+
+        flags = db.query(ValidationFlag).filter(
+            ValidationFlag.company_id == company.id,
+            ValidationFlag.reporting_year == cycle.cycle_year,
+        ).order_by(ValidationFlag.id.asc()).all()
+        reviews = db.query(ReviewAction).filter(
+            ReviewAction.company_id == company.id,
+            ReviewAction.reporting_year == cycle.cycle_year,
+        ).order_by(ReviewAction.created_at.desc()).limit(12).all()
+        audit_query = db.query(AuditEvent).filter(
+            AuditEvent.company_id == company.id,
+            or_(AuditEvent.cycle_id == cycle.id, AuditEvent.cycle_id.is_(None)),
+        )
+        if submission:
+            audit_query = audit_query.filter(or_(AuditEvent.submission_id == submission.id, AuditEvent.submission_id.is_(None)))
+        audits = audit_query.order_by(AuditEvent.created_at.desc()).limit(20).all()
+        history = [
+            {
+                'date': item.created_at,
+                'event': _humanize_event(item.event_type),
+                'actor': item.actor_email or item.actor_role or 'System',
+                'detail': _humanize_event(item.field_name) if item.field_name else 'Recorded through the application audit log',
+            }
+            for item in audits
+        ]
+        history.extend({
+            'date': item.created_at,
+            'event': f'Review - {_humanize_event(item.review_status)}',
+            'actor': item.reviewer_role or 'Reviewer',
+            'detail': item.review_comment or 'No review comment provided',
+        } for item in reviews)
+        history.sort(key=lambda item: item['date'] or datetime.min, reverse=True)
+
+        status = normalize_manager_bucket(submission.status if submission else company.current_status)
+        company_reports.append({
+            'company': company,
+            'submission': submission,
+            'payload': payload,
+            'status': status,
+            'scores': calculate_submission_scores(payload) if payload else None,
+            'pillars': {
+                pillar: [
+                    {'key': key, 'label': label, 'value': _report_value(payload, key, unit), 'confidence': payload.get(f'{key}_confidence') or 'Not stated'}
+                    for key, label, unit in metrics
+                ]
+                for pillar, metrics in REPORT_PILLARS.items()
+            },
+            'evidence': evidence,
+            'missing_required_evidence': missing_required,
+            'evidence_complete': not missing_required,
+            'flags': flags,
+            'history': history[:24],
+        })
+
+    status_counts = Counter(item['status'] for item in company_reports)
+    scores = [item['scores']['composite'] for item in company_reports if item['scores']]
+    return {
+        'report_type': report_type.upper(),
+        'portfolio': portfolio,
+        'period': period,
+        'cycle': cycle,
+        'generated_at': datetime.now(timezone.utc),
+        'companies': company_reports,
+        'status_counts': status_counts,
+        'average_score': round(sum(scores) / len(scores), 2) if scores else None,
+    }
+
+
+def _pdf_paragraph(value: Any, style: ParagraphStyle) -> Paragraph:
+    return Paragraph(html.escape(str(value if value not in (None, '') else '-')).replace('\n', '<br/>'), style)
+
+
+def write_pdf_export(file_path: Path, report_data: dict[str, Any]):
+    navy = colors.HexColor('#0F2742')
+    teal = colors.HexColor('#0F766E')
+    pale_teal = colors.HexColor('#E8F5F2')
+    pale_blue = colors.HexColor('#EFF5FB')
+    muted = colors.HexColor('#526579')
+    border = colors.HexColor('#D6E0E8')
+    page_width, page_height = A4
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(name='ReportTitle', parent=styles['Title'], fontName='Helvetica-Bold', fontSize=27, leading=32, textColor=navy, alignment=TA_LEFT, spaceAfter=8))
+    styles.add(ParagraphStyle(name='ReportSubtitle', parent=styles['Normal'], fontSize=12, leading=17, textColor=muted))
+    styles.add(ParagraphStyle(name='SectionTitle', parent=styles['Heading2'], fontName='Helvetica-Bold', fontSize=15, leading=19, textColor=navy, spaceBefore=10, spaceAfter=7))
+    styles.add(ParagraphStyle(name='PillarTitle', parent=styles['Heading3'], fontName='Helvetica-Bold', fontSize=11.5, leading=15, textColor=teal, spaceBefore=7, spaceAfter=5))
+    styles.add(ParagraphStyle(name='BodySmall', parent=styles['BodyText'], fontSize=8.5, leading=11, textColor=colors.HexColor('#263746')))
+    styles.add(ParagraphStyle(name='TableHead', parent=styles['BodyText'], fontName='Helvetica-Bold', fontSize=8, leading=10, textColor=colors.white))
+    styles.add(ParagraphStyle(name='TableCell', parent=styles['BodyText'], fontSize=7.7, leading=10, textColor=colors.HexColor('#263746')))
+    styles.add(ParagraphStyle(name='Score', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=17, leading=20, textColor=navy, alignment=TA_CENTER))
+    styles.add(ParagraphStyle(name='ScoreLabel', parent=styles['Normal'], fontSize=7.5, leading=9, textColor=muted, alignment=TA_CENTER))
+    styles.add(ParagraphStyle(name='CoverLabel', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=8, textColor=teal, spaceAfter=2))
+
+    cycle = report_data['cycle']
+    title = f"{report_data['report_type']} ESG Report"
+
+    def page_decor(canvas, doc):
+        canvas.saveState()
+        if doc.page > 1:
+            canvas.setStrokeColor(border)
+            canvas.line(18 * mm, page_height - 15 * mm, page_width - 18 * mm, page_height - 15 * mm)
+            canvas.setFont('Helvetica-Bold', 8)
+            canvas.setFillColor(navy)
+            canvas.drawString(18 * mm, page_height - 11.5 * mm, 'GREENLEDGER')
+            canvas.setFont('Helvetica', 7.5)
+            canvas.setFillColor(muted)
+            canvas.drawRightString(page_width - 18 * mm, page_height - 11.5 * mm, f'{title} | FY{cycle.cycle_year}')
+        canvas.setStrokeColor(border)
+        canvas.line(18 * mm, 13 * mm, page_width - 18 * mm, 13 * mm)
+        canvas.setFont('Helvetica', 7)
+        canvas.setFillColor(muted)
+        canvas.drawString(18 * mm, 8.5 * mm, 'Confidential - manager-generated report')
+        canvas.drawRightString(page_width - 18 * mm, 8.5 * mm, f'Page {doc.page}')
+        canvas.restoreState()
+
+    doc = BaseDocTemplate(
+        str(file_path), pagesize=A4, rightMargin=18 * mm, leftMargin=18 * mm,
+        topMargin=21 * mm, bottomMargin=18 * mm,
+        title=title, author='GreenLedger ESG Intelligence',
+        subject=f"FY{cycle.cycle_year} ESG report",
+    )
+    frame = Frame(doc.leftMargin, doc.bottomMargin, doc.width, doc.height, id='report-frame')
+    doc.addPageTemplates([PageTemplate(id='report', frames=[frame], onPage=page_decor)])
+
+    def table(data, widths, header=True):
+        result = Table(data, colWidths=widths, repeatRows=1 if header else 0, hAlign='LEFT')
+        commands = [
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('GRID', (0, 0), (-1, -1), 0.45, border),
+            ('LEFTPADDING', (0, 0), (-1, -1), 6), ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+            ('TOPPADDING', (0, 0), (-1, -1), 5), ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+            ('ROWBACKGROUNDS', (0, 1 if header else 0), (-1, -1), [colors.white, pale_blue]),
+        ]
+        if header:
+            commands.extend([('BACKGROUND', (0, 0), (-1, 0), navy), ('TEXTCOLOR', (0, 0), (-1, 0), colors.white)])
+        result.setStyle(TableStyle(commands))
+        return result
+
+    story = [
+        Spacer(1, 20 * mm),
+        _pdf_paragraph('GREENLEDGER ESG INTELLIGENCE', styles['CoverLabel']),
+        _pdf_paragraph(title, styles['ReportTitle']),
+        _pdf_paragraph('Formal company and portfolio disclosure record', styles['ReportSubtitle']),
+        Spacer(1, 13 * mm),
+    ]
+    cover_rows = [
+        [_pdf_paragraph('REPORT SCOPE', styles['CoverLabel']), _pdf_paragraph(report_data['portfolio'], styles['BodyText'])],
+        [_pdf_paragraph('REPORTING CYCLE', styles['CoverLabel']), _pdf_paragraph(f"FY{cycle.cycle_year} - {_humanize_event(cycle.status)}", styles['BodyText'])],
+        [_pdf_paragraph('SUBMISSION WINDOW', styles['CoverLabel']), _pdf_paragraph(f'{cycle.submission_open_date} to {cycle.extension_date or cycle.submission_deadline}', styles['BodyText'])],
+        [_pdf_paragraph('GENERATED', styles['CoverLabel']), _pdf_paragraph(report_data['generated_at'].strftime('%d %B %Y, %H:%M UTC'), styles['BodyText'])],
+        [_pdf_paragraph('FRAMEWORK ALIGNMENT', styles['CoverLabel']), _pdf_paragraph(report_data['report_type'], styles['BodyText'])],
+    ]
+    cover_table = Table(cover_rows, colWidths=[48 * mm, 102 * mm], hAlign='LEFT')
+    cover_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), pale_teal), ('BOX', (0, 0), (-1, -1), 0.8, teal),
+        ('INNERGRID', (0, 0), (-1, -1), 0.35, colors.white), ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('LEFTPADDING', (0, 0), (-1, -1), 9), ('RIGHTPADDING', (0, 0), (-1, -1), 9),
+        ('TOPPADDING', (0, 0), (-1, -1), 9), ('BOTTOMPADDING', (0, 0), (-1, -1), 9),
+    ]))
+    story.extend([cover_table, Spacer(1, 28 * mm), _pdf_paragraph('Document purpose', styles['SectionTitle']), _pdf_paragraph(
+        'This report consolidates submitted ESG metrics, supporting evidence status, validation findings, and recorded review activity for the selected reporting cycle. It is an internal reporting artifact and does not constitute independent assurance or regulatory certification.',
+        styles['BodyText'],
+    ), PageBreak()])
+
+    story.extend([_pdf_paragraph('Portfolio executive summary', styles['SectionTitle'])])
+    score_value = report_data['average_score'] if report_data['average_score'] is not None else '-'
+    summary_cards = Table([
+        [_pdf_paragraph(str(len(report_data['companies'])), styles['Score']), _pdf_paragraph(str(score_value), styles['Score']), _pdf_paragraph(str(sum(len(item['flags']) for item in report_data['companies'])), styles['Score'])],
+        [_pdf_paragraph('Companies in scope', styles['ScoreLabel']), _pdf_paragraph('Average internal ESG score', styles['ScoreLabel']), _pdf_paragraph('Validation issues', styles['ScoreLabel'])],
+    ], colWidths=[doc.width / 3] * 3)
+    summary_cards.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), pale_teal), ('BOX', (0, 0), (-1, -1), 0.6, border),
+        ('INNERGRID', (0, 0), (-1, -1), 0.6, colors.white), ('TOPPADDING', (0, 0), (-1, 0), 9),
+        ('BOTTOMPADDING', (0, 1), (-1, 1), 9),
+    ]))
+    story.extend([summary_cards, Spacer(1, 7 * mm)])
+    company_summary = [[_pdf_paragraph(label, styles['TableHead']) for label in ['Company', 'Sector', 'Status', 'ESG score', 'Evidence']]]
+    for item in report_data['companies']:
+        company_summary.append([
+            _pdf_paragraph(item['company'].name, styles['TableCell']),
+            _pdf_paragraph(item['company'].sector, styles['TableCell']),
+            _pdf_paragraph(item['status'], styles['TableCell']),
+            _pdf_paragraph(item['scores']['composite'] if item['scores'] else 'Not available', styles['TableCell']),
+            _pdf_paragraph('Complete' if item['evidence_complete'] else 'Required evidence missing', styles['TableCell']),
+        ])
+    story.append(table(company_summary, [44 * mm, 35 * mm, 30 * mm, 22 * mm, 34 * mm]))
+
+    for item in report_data['companies']:
+        company = item['company']
+        story.extend([PageBreak(), _pdf_paragraph(company.name, styles['ReportTitle'])])
+        story.append(_pdf_paragraph(
+            f"{company.sector} | {_humanize_event(company.asset_class) if company.asset_class else 'Asset class not stated'} | {company.geography or 'Geography not stated'} | FY{cycle.cycle_year}",
+            styles['ReportSubtitle'],
+        ))
+        story.append(Spacer(1, 5 * mm))
+        scores = item['scores'] or {'E': '-', 'S': '-', 'G': '-', 'composite': '-'}
+        score_table = Table([
+            [_pdf_paragraph(scores['E'], styles['Score']), _pdf_paragraph(scores['S'], styles['Score']), _pdf_paragraph(scores['G'], styles['Score']), _pdf_paragraph(scores['composite'], styles['Score'])],
+            [_pdf_paragraph('Environmental', styles['ScoreLabel']), _pdf_paragraph('Social', styles['ScoreLabel']), _pdf_paragraph('Governance', styles['ScoreLabel']), _pdf_paragraph('Composite', styles['ScoreLabel'])],
+        ], colWidths=[doc.width / 4] * 4)
+        score_table.setStyle(TableStyle([('BACKGROUND', (0, 0), (-1, -1), pale_teal), ('BOX', (0, 0), (-1, -1), .6, border), ('INNERGRID', (0, 0), (-1, -1), .6, colors.white), ('TOPPADDING', (0, 0), (-1, 0), 7), ('BOTTOMPADDING', (0, 1), (-1, 1), 7)]))
+        story.extend([score_table, Spacer(1, 4 * mm)])
+
+        for pillar, metrics in item['pillars'].items():
+            metric_rows = [[_pdf_paragraph(label, styles['TableHead']) for label in ['Metric', 'Reported value', 'Data confidence']]]
+            metric_rows.extend([
+                [_pdf_paragraph(metric['label'], styles['TableCell']), _pdf_paragraph(metric['value'], styles['TableCell']), _pdf_paragraph(metric['confidence'], styles['TableCell'])]
+                for metric in metrics
+            ])
+            story.extend([_pdf_paragraph(pillar, styles['PillarTitle']), table(metric_rows, [72 * mm, 48 * mm, 45 * mm])])
+
+        story.extend([Spacer(1, 3 * mm), _pdf_paragraph('Evidence status', styles['SectionTitle'])])
+        evidence_intro = 'All required metric evidence is attached.' if item['evidence_complete'] else 'Missing required evidence for: ' + ', '.join(_humanize_event(key) for key in item['missing_required_evidence']) + '.'
+        story.append(_pdf_paragraph(evidence_intro, styles['BodySmall']))
+        if item['evidence']:
+            evidence_rows = [[_pdf_paragraph(label, styles['TableHead']) for label in ['Metric', 'File', 'Status', 'Uploaded']]]
+            evidence_rows.extend([
+                [_pdf_paragraph(_humanize_event(ev.metric_key), styles['TableCell']), _pdf_paragraph(ev.filename, styles['TableCell']), _pdf_paragraph(_humanize_event(ev.status), styles['TableCell']), _pdf_paragraph(ev.created_at.strftime('%d %b %Y') if ev.created_at else '-', styles['TableCell'])]
+                for ev in item['evidence']
+            ])
+            story.extend([Spacer(1, 2 * mm), table(evidence_rows, [46 * mm, 60 * mm, 28 * mm, 31 * mm])])
         else:
-            content_lines.append(f'T* ({escaped}) Tj')
-    content_lines.append('ET')
-    stream = '\n'.join(content_lines).encode('utf-8')
-    objects = [
-        b'1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n',
-        b'2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n',
-        b'3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj\n',
-        b'4 0 obj << /Length ' + str(len(stream)).encode('ascii') + b' >> stream\n' + stream + b'\nendstream endobj\n',
-        b'5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n',
+            story.append(_pdf_paragraph('No evidence files are recorded for this company and cycle.', styles['BodySmall']))
+
+        story.extend([_pdf_paragraph('Validation findings', styles['SectionTitle'])])
+        if item['flags']:
+            flag_rows = [[_pdf_paragraph(label, styles['TableHead']) for label in ['Severity', 'Metric', 'Finding']]]
+            flag_rows.extend([
+                [_pdf_paragraph(flag.severity, styles['TableCell']), _pdf_paragraph(_humanize_event(flag.field_name), styles['TableCell']), _pdf_paragraph(flag.issue_description, styles['TableCell'])]
+                for flag in item['flags']
+            ])
+            story.append(table(flag_rows, [25 * mm, 42 * mm, 98 * mm]))
+        else:
+            story.append(_pdf_paragraph('No validation findings are recorded for the selected cycle.', styles['BodySmall']))
+
+        story.extend([_pdf_paragraph('Audit and review history', styles['SectionTitle'])])
+        if item['history']:
+            history_rows = [[_pdf_paragraph(label, styles['TableHead']) for label in ['Date', 'Event', 'Actor', 'Detail']]]
+            history_rows.extend([
+                [_pdf_paragraph(event['date'].strftime('%d %b %Y %H:%M') if event['date'] else '-', styles['TableCell']), _pdf_paragraph(event['event'], styles['TableCell']), _pdf_paragraph(event['actor'], styles['TableCell']), _pdf_paragraph(event['detail'], styles['TableCell'])]
+                for event in item['history']
+            ])
+            story.append(table(history_rows, [30 * mm, 38 * mm, 42 * mm, 55 * mm]))
+        else:
+            story.append(_pdf_paragraph('No audit or review history is recorded for this company and cycle.', styles['BodySmall']))
+
+    methodology_rows = [
+        ('Environmental score', 'Starts at 30 points; adjusts for reported Scope 1, 2 and 3 emissions, reduction target, and renewable-energy share; capped at 0-100.'),
+        ('Social score', 'Uses female representation, TRIFR, employee turnover, and workplace health and safety policy status; capped at 0-100.'),
+        ('Governance score', 'Uses ESG oversight and policy controls, independent-board representation, and confirmed corruption cases; capped at 0-100.'),
+        ('Composite score', 'Internal composite = 45% Environmental + 30% Social + 25% Governance.'),
+        ('Missing data', 'Missing numeric values are treated as zero by the internal scoring model and may reduce comparability.'),
+        ('Evidence', 'Evidence status confirms that a file is recorded against a metric. It does not mean the evidence has been independently assured unless its status explicitly says verified.'),
+        ('Framework alignment', f"The {report_data['report_type']} label describes reporting alignment only; this export is not a compliance opinion or external assurance statement."),
     ]
-    output = bytearray(b'%PDF-1.4\n')
-    offsets = [0]
-    for obj in objects:
-        offsets.append(len(output))
-        output.extend(obj)
-    xref_offset = len(output)
-    output.extend(f'xref\n0 {len(objects) + 1}\n'.encode('ascii'))
-    output.extend(b'0000000000 65535 f \n')
-    for offset in offsets[1:]:
-        output.extend(f'{offset:010d} 00000 n \n'.encode('ascii'))
-    output.extend((f'trailer << /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n').encode('ascii'))
-    return bytes(output)
-
-
-def write_pdf_export(file_path: Path, report_type: str, period: str, cycle: CollectionCycle, rows: List[dict]):
-    status_counts = {}
-    for row in rows:
-        status_counts[row['status']] = status_counts.get(row['status'], 0) + 1
-
-    lines = [
-        f'{report_type.upper()} Report Export',
-        f'Generated At: {datetime.now(timezone.utc).isoformat()}',
-        f'Period: {period}',
-        f'Cycle Year: {cycle.cycle_year}',
-        f'Total Rows: {len(rows)}',
-        f'Status Distribution: {json.dumps(status_counts)}',
-        '--- Company Snapshot ---',
-    ]
-    for row in rows[:25]:
-        lines.append(f"{row['company_name']} | {row['sector']} | {row['status']} | ESG {row['esg_score']}")
-    file_path.write_bytes(build_simple_pdf(lines))
+    story.extend([PageBreak(), _pdf_paragraph('Methodology and limitations', styles['ReportTitle']), _pdf_paragraph(
+        'The report uses the latest submission stored for each company within the selected reporting cycle. Historical-cycle reports do not fall back to data from another year.', styles['ReportSubtitle']), Spacer(1, 6 * mm)])
+    method_table = [[_pdf_paragraph('Area', styles['TableHead']), _pdf_paragraph('Method', styles['TableHead'])]]
+    method_table.extend([[_pdf_paragraph(label, styles['TableCell']), _pdf_paragraph(description, styles['TableCell'])] for label, description in methodology_rows])
+    story.extend([table(method_table, [45 * mm, 120 * mm]), Spacer(1, 6 * mm), _pdf_paragraph(
+        'Scheduled generation is intentionally not enabled in this release. Reports are generated on demand by an authenticated manager; scheduling can be added as a later phase with retention, delivery, and recipient controls.', styles['BodySmall'])])
+    doc.build(story)
 
 
 @app.post('/submissions/{submission_id}/unlock', response_model=SubmissionUnlockInfo, dependencies=[Depends(require_manager)])
@@ -3203,13 +3520,14 @@ def generate_report(report_type: str, db: Session = Depends(get_db)):
     }
 
 
-@app.get('/reports/{report_type}/export', response_model=ReportExportResponse, dependencies=[Depends(require_manager)])
+@app.get('/reports/{report_type}/export', response_model=ReportExportResponse)
 def export_report(
     report_type: str,
     format: str = Query(default='csv'),
     period: str = Query(default='Current Cycle'),
     portfolio: str = Query(default='All Portfolio Companies'),
     db: Session = Depends(get_db),
+    manager: User = Depends(require_manager),
 ):
     report_name = report_type.strip().lower()
     if report_name not in ALLOWED_REPORT_TYPES:
@@ -3228,8 +3546,24 @@ def export_report(
         write_csv_export(file_path, rows)
         content_type = 'text/csv'
     else:
-        write_pdf_export(file_path, report_name, period, cycle, rows)
+        formal_report = build_formal_report_data(db, report_name, portfolio, period)
+        write_pdf_export(file_path, formal_report)
         content_type = 'application/pdf'
+
+    log_audit_event(
+        db,
+        'report_generated',
+        manager,
+        cycle_id=cycle.id,
+        metadata={
+            'report_type': report_name.upper(),
+            'format': export_format,
+            'period': period,
+            'portfolio': portfolio,
+            'file_name': file_name,
+        },
+    )
+    db.commit()
 
     return ReportExportResponse(
         report_type=report_name.upper(),
