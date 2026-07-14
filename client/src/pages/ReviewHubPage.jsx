@@ -268,6 +268,21 @@ export default function ReviewHubPage() {
     }
   }, [historyRevision, selectedCompany?.submissionId, user?.email, user?.role])
 
+  useEffect(() => {
+    let cancelled = false
+    if (!selectedCompany?.submissionId) return undefined
+    fetch(`${BACKEND_URL}/submissions/${selectedCompany.submissionId}/metric-comments`)
+      .then((response) => (response.ok ? response.json() : []))
+      .then((items) => {
+        if (cancelled) return
+        const next = {}
+        items.forEach((item) => { next[buildCommentKey(selectedCompany.id, item.metric_key)] = item.comment })
+        setMetricCommentsByCell(next)
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [selectedCompany?.id, selectedCompany?.submissionId])
+
   const dataRows = useMemo(() => {
     const payloadForValidation = selectedCompany.payload && typeof selectedCompany.payload === 'object'
       ? selectedCompany.payload
@@ -450,6 +465,21 @@ export default function ReviewHubPage() {
     await handleReviewAction(currentStatus, 'Reviewer comment saved.', trimmed)
   }
 
+  const saveMetricComment = async (row) => {
+    if (!selectedCompany.submissionId || !row.fieldKey) return
+    const comment = String(metricCommentsByCell[row.commentKey] || '').trim()
+    if (!comment) return
+    try {
+      await managerPost(`/submissions/${selectedCompany.submissionId}/metric-comments`, 'PUT', {
+        metric_key: row.fieldKey,
+        comment,
+      })
+      setActionMessage(`${row.metric} reviewer comment saved.`)
+    } catch (error) {
+      setActionMessage(error.message || 'Unable to save metric comment.')
+    }
+  }
+
   const handleValidationDecision = async (row, decision) => {
     if (!selectedCompany.submissionId) {
       setActionMessage('No submission is selected for validation decision.')
@@ -536,6 +566,7 @@ export default function ReviewHubPage() {
           className="inline-comment"
           value={metricCommentsByCell[row.commentKey] || row.comment || ''}
           onChange={(event) => handleMetricCommentChange(row.commentKey, event.target.value)}
+          onBlur={() => saveMetricComment(row)}
           aria-label={`${row.metric} comment`}
           placeholder="Add comment"
           autoComplete="off"

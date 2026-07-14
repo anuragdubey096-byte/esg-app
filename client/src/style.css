@@ -959,6 +959,72 @@ p {
   background: #ef4444;
 }
 
+.notification-center {
+  position: relative;
+}
+
+.notification-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: min(380px, 90vw);
+  max-height: 480px;
+  overflow: auto;
+  padding: 0.65rem;
+  border: 1px solid #dbe7f3;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 18px 42px rgba(15, 23, 42, 0.16);
+  z-index: 40;
+}
+
+.notification-popover-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.35rem 0.4rem 0.65rem;
+}
+
+.notification-popover-heading span,
+.notification-popover > p {
+  color: #64748b;
+  font-size: 0.78rem;
+}
+
+.notification-popover ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.notification-popover li button {
+  width: 100%;
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.65rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #f8fafc;
+  text-align: left;
+}
+
+.notification-popover li button.unread {
+  border-color: #93c5fd;
+  background: #eff6ff;
+}
+
+.notification-popover li button strong {
+  color: #0f172a;
+  font-size: 0.84rem;
+}
+
+.notification-popover li button span {
+  color: #475569;
+  font-size: 0.76rem;
+}
+
 .profile-pill {
   display: flex;
   align-items: center;

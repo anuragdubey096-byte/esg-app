@@ -15,9 +15,7 @@ def run_self_test():
         results.append((name, bool(condition), detail))
 
     with TestClient(app) as client:
-        manager_headers = {'x-user-role': 'manager', 'x-user-email': 'manager@example.com'}
-        admin_alias_headers = {'x-user-role': 'admin', 'x-user-email': 'manager@example.com'}
-        investor_headers = {'x-user-role': 'investor', 'x-user-email': 'investor@example.com'}
+        role_headers = {}
 
         for email, expected_role in [
             ('manager@example.com', 'manager'),
@@ -27,21 +25,37 @@ def run_self_test():
             response = client.post('/login', json={'email': email, 'password': 'password123'})
             ok = response.status_code == 200 and response.json().get('role') == expected_role
             check(f'login:{email}', ok, response.text)
+            token = response.cookies.get('esg_session')
+            role_headers[expected_role] = {'Authorization': f'Bearer {token}'} if token else {}
 
-        # Admin alias should normalize to manager privileges.
-        alias_rbac = client.get('/dashboard/manager', headers=admin_alias_headers)
-        check('RBAC admin alias behaves as manager', alias_rbac.status_code == 200, alias_rbac.text)
+        manager_headers = role_headers['manager']
+        investor_headers = role_headers['investor']
+
+        forged_rbac = client.get('/dashboard/manager', headers={'x-user-role': 'manager', 'x-user-email': 'manager@example.com'})
+        check('forged role headers cannot authenticate as manager', forged_rbac.status_code in {401, 403}, forged_rbac.text)
 
         manager_dashboard = client.get('/dashboard/manager', headers=manager_headers)
         check('GET /dashboard/manager', manager_dashboard.status_code == 200 and 'summary' in manager_dashboard.json(), manager_dashboard.text)
         check('manager dashboard includes timing telemetry', 'app;dur=' in manager_dashboard.headers.get('server-timing', ''), dict(manager_dashboard.headers))
         check('manager dashboard exposes app duration', float(manager_dashboard.headers.get('x-app-duration-ms', -1)) >= 0, dict(manager_dashboard.headers))
 
+        disposable_login = client.post('/login', json={'email': 'manager@example.com', 'password': 'password123'})
+        disposable_token = disposable_login.cookies.get('esg_session')
+        disposable_headers = {'Authorization': f'Bearer {disposable_token}'}
+        session_me = client.get('/auth/me', headers=disposable_headers)
+        session_logout = client.post('/auth/logout', headers=disposable_headers)
+        session_after_logout = client.get('/auth/me', headers=disposable_headers)
+        check(
+            'session supports restore, logout, and revocation',
+            session_me.status_code == 200 and session_logout.status_code == 200 and session_after_logout.status_code == 401,
+            session_after_logout.text,
+        )
+
         rbac_fail = client.get('/dashboard/manager', headers=investor_headers)
         check('GET /dashboard/manager blocked for investor', rbac_fail.status_code == 403, rbac_fail.text)
 
         cycles_for_investor = client.get('/cycles', headers=investor_headers)
-        check('GET /cycles blocked for investor', cycles_for_investor.status_code == 403, cycles_for_investor.text)
+        check('GET /cycles available to authenticated investor', cycles_for_investor.status_code == 200, cycles_for_investor.text)
 
         response = client.get('/dashboard/investor', headers=investor_headers)
         check('GET /dashboard/investor', response.status_code == 200 and 'portfolio_esg_score' in response.json(), response.text)
@@ -113,12 +127,13 @@ def run_self_test():
 
         response = client.post('/login', json={'email': company_email, 'password': 'password123'})
         new_company_user = response.json() if response.status_code == 200 else {}
+        company_token = response.cookies.get('esg_session')
+        company_headers = {'Authorization': f'Bearer {company_token}'} if company_token else {}
         check('login:new company', response.status_code == 200 and new_company_user.get('role') == 'company', response.text)
 
-        response = client.get(f"/dashboard/company/{new_company_user['id']}", headers={'x-user-role': 'company'})
+        response = client.get(f"/dashboard/company/{new_company_user['id']}", headers=company_headers)
         company_dashboard = response.json() if response.status_code == 200 else []
         company_id = company_dashboard[0]['id'] if company_dashboard else None
-        company_headers = {'x-user-role': 'company', 'x-user-email': company_email}
         check(
             'dashboard/company shows created company',
             response.status_code == 200 and company_id is not None and company_dashboard[0]['name'] == company_name,
@@ -126,6 +141,22 @@ def run_self_test():
         )
         check('company dashboard includes timing telemetry', 'app;dur=' in response.headers.get('server-timing', ''), dict(response.headers))
         check('company dashboard exposes app duration', float(response.headers.get('x-app-duration-ms', -1)) >= 0, dict(response.headers))
+
+        malformed_preview = client.post(
+            '/admin/import/submissions',
+            data={'mode': 'preview', 'cycle_id': str(cycle.get('id') or '')},
+            files={'file': ('malformed.csv', f'company_name,reporting_year,female_representation_percent\n{company_name},{cycle_year},11442,shifted\n', 'text/csv')},
+            headers=manager_headers,
+        )
+        malformed_payload = malformed_preview.json() if malformed_preview.status_code == 200 else {}
+        check(
+            'CSV preview rejects shifted rows without importing',
+            malformed_preview.status_code == 200
+            and malformed_payload.get('summary', {}).get('accepted') == 0
+            and malformed_payload.get('summary', {}).get('rejected') == 1
+            and any('shifted or malformed' in message for message in malformed_payload.get('rows', [{}])[0].get('errors', [])),
+            malformed_preview.text,
+        )
 
         submission_payload = {
             'scope_1_emissions': 10,
@@ -210,6 +241,10 @@ def run_self_test():
             'section_comment_governance': 'QA variance explanation for governance metrics.',
         }
 
+        invalid_percentage_payload = {**submission_payload, 'female_representation_percent': 11442}
+        invalid_percentage = client.post(f'/company/{company_id}/submissions', json=invalid_percentage_payload, headers=manager_headers)
+        check('percentage values outside 0-100 are rejected', invalid_percentage.status_code == 422, invalid_percentage.text)
+
         first_draft = client.put(
             f'/company/{company_id}/draft',
             json={'payload': {'scope_1_emissions': 8, 'submission_notes': 'First synced draft'}},
@@ -267,6 +302,20 @@ def run_self_test():
         to_under_review = client.patch(f'/submissions/{submission_id}/status', json={'status': 'under review'}, headers=manager_headers)
         check('submitted -> under review', to_under_review.status_code == 200 and to_under_review.json().get('status') == 'under review', to_under_review.text)
 
+        metric_comment = client.put(
+            f'/submissions/{submission_id}/metric-comments',
+            json={'metric_key': 'scope_1_emissions', 'comment': 'Attach the meter reconciliation.'},
+            headers=manager_headers,
+        )
+        metric_comments = client.get(f'/submissions/{submission_id}/metric-comments', headers=manager_headers)
+        check(
+            'reviewer comments persist against individual metrics',
+            metric_comment.status_code == 200
+            and metric_comments.status_code == 200
+            and any(item.get('metric_key') == 'scope_1_emissions' for item in metric_comments.json()),
+            metric_comment.text,
+        )
+
         invalid_transition = client.patch(f'/submissions/{submission_id}/status', json={'status': 'submitted'}, headers=manager_headers)
         check('invalid transition blocked', invalid_transition.status_code == 422, invalid_transition.text)
 
@@ -279,6 +328,13 @@ def run_self_test():
             'under review -> resubmission requested',
             resub_requested.status_code == 200 and resub_requested.json().get('status') == 'resubmission requested',
             resub_requested.text,
+        )
+        company_notifications = client.get('/notifications', headers=company_headers)
+        check(
+            'resubmission request creates company notification',
+            company_notifications.status_code == 200
+            and any(item.get('type') == 'resubmission' for item in company_notifications.json().get('items', [])),
+            company_notifications.text,
         )
 
         editable_resubmission = client.get(f'/company/{company_id}/draft', headers=company_headers)

@@ -251,3 +251,74 @@ class NarrativeRecord(Base):
     edited_at = Column(String, nullable=True)
     updated_at = Column(String, nullable=False)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class AuthSession(Base):
+    __tablename__ = 'auth_sessions'
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
+    token_hash = Column(String, unique=True, nullable=False, index=True)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    revoked_at = Column(DateTime, nullable=True)
+    user_agent = Column(String, nullable=True)
+    ip_address = Column(String, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class PasswordResetToken(Base):
+    __tablename__ = 'password_reset_tokens'
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
+    token_hash = Column(String, unique=True, nullable=False, index=True)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    used_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class AuditEvent(Base):
+    __tablename__ = 'audit_events'
+
+    id = Column(Integer, primary_key=True, index=True)
+    event_type = Column(String, nullable=False, index=True)
+    actor_user_id = Column(Integer, ForeignKey('users.id'), nullable=True)
+    actor_email = Column(String, nullable=True, index=True)
+    actor_role = Column(String, nullable=True)
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=True, index=True)
+    submission_id = Column(Integer, ForeignKey('submissions.id'), nullable=True, index=True)
+    cycle_id = Column(Integer, ForeignKey('collection_cycles.id'), nullable=True, index=True)
+    field_name = Column(String, nullable=True)
+    old_value = Column(Text, nullable=True)
+    new_value = Column(Text, nullable=True)
+    source = Column(String, nullable=False, default='ui')
+    metadata_json = Column(Text, nullable=False, default='{}')
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+
+class Notification(Base):
+    __tablename__ = 'notifications'
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=True, index=True)
+    role = Column(String, nullable=True, index=True)
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=True, index=True)
+    notification_type = Column(String, nullable=False, index=True)
+    title = Column(String, nullable=False)
+    message = Column(Text, nullable=False)
+    dedupe_key = Column(String, unique=True, nullable=True, index=True)
+    read_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+
+class MetricReviewComment(Base):
+    __tablename__ = 'metric_review_comments'
+    __table_args__ = (UniqueConstraint('submission_id', 'metric_key', name='uq_metric_comment_submission_metric'),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    submission_id = Column(Integer, ForeignKey('submissions.id'), nullable=False, index=True)
+    metric_key = Column(String, nullable=False, index=True)
+    comment = Column(Text, nullable=False)
+    reviewer_user_id = Column(Integer, ForeignKey('users.id'), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)

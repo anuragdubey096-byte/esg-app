@@ -20,7 +20,7 @@ import ExecutivePageHeader from '../components/ExecutivePageHeader'
 import KpiCard from '../components/KpiCard'
 import SectionCard from '../components/SectionCard'
 import AdminAnalyticsSections from '../components/analytics/AdminAnalyticsSections'
-import useDashboardData, { calculateESGPillarScores, getLatestSubmission, parseSubmissionPayload } from '../hooks/useDashboardData'
+import useDashboardData, { calculateESGPillarScores, getLatestSubmission, getSortedSubmissions, getSubmissionReportingYear, parseSubmissionPayload } from '../hooks/useDashboardData'
 
 const analyticsTabs = ['Environmental', 'Social', 'Governance', 'Benchmarking']
 
@@ -53,10 +53,11 @@ function firstMeaningfulNumber(...values) {
 
 export default function AnalyticsPage() {
   const { user } = useOutletContext()
-  const { companies, loading, error } = useDashboardData(user)
+  const { companies, cycles, loading, error } = useDashboardData(user)
   const [activeTab, setActiveTab] = useState(analyticsTabs[0])
   const [selectedSector, setSelectedSector] = useState('All')
   const [selectedCompany, setSelectedCompany] = useState('All')
+  const [selectedCycle, setSelectedCycle] = useState('Latest')
 
   const sectorOptions = useMemo(() => (
     ['All', ...new Set(companies.map((company) => company.sector || 'Unassigned'))]
@@ -73,14 +74,21 @@ export default function AnalyticsPage() {
   const analytics = useMemo(() => {
     const records = scopedCompanies
       .map((company) => {
-        const latestSubmission = getLatestSubmission(company)
+        const submissions = getSortedSubmissions(company)
+        const latestSubmission = selectedCycle === 'Latest'
+          ? getLatestSubmission(company)
+          : [...submissions].reverse().find((submission) => String(getSubmissionReportingYear(submission)) === selectedCycle)
         const payload = parseSubmissionPayload(latestSubmission)
         if (!payload || typeof payload !== 'object') return null
+        const currentIndex = submissions.findIndex((submission) => submission.id === latestSubmission?.id)
+        const previousPayload = currentIndex > 0 ? parseSubmissionPayload(submissions[currentIndex - 1]) : null
         return {
           companyId: company.id,
           companyName: company.name,
           sector: company.sector || 'Unassigned',
           payload,
+          previousPayload,
+          validationFlagCount: (company.validation_flags || []).length,
         }
       })
       .filter(Boolean)
@@ -128,6 +136,11 @@ export default function AnalyticsPage() {
       const socialScore = pillarScores?.social || 0
       const governanceScore = pillarScores?.governance || 0
       const compositeScore = pillarScores?.composite || 0
+      const previousScores = calculateESGPillarScores(record.previousPayload)
+      const previousEmissions = toNumber(record.previousPayload?.total_ghg_emissions)
+      const actualReduction = previousEmissions > 0 ? ((previousEmissions - emissions) / previousEmissions) * 100 : 0
+      const missingCount = Object.values(payload).filter((value) => value === '' || value === null || value === undefined).length
+      const estimatedCount = Object.entries(payload).filter(([key, value]) => key.endsWith('_confidence') && value !== 'Measured').length
 
       emissionsScopeTotals.scope1 += scope1
       emissionsScopeTotals.scope2 += scope2
@@ -198,6 +211,11 @@ export default function AnalyticsPage() {
         renewableShare: Number(renewableShare.toFixed(1)),
         femaleLeadership: Number(femaleLeadership.toFixed(1)),
         independentBoard: Number(independentBoard.toFixed(1)),
+        previousComposite: Number((previousScores?.composite || 0).toFixed(1)),
+        scoreChange: Number((compositeScore - (previousScores?.composite || compositeScore)).toFixed(1)),
+        reductionTarget: Number(toNumber(payload.reduction_target_percent).toFixed(1)),
+        actualReduction: Number(actualReduction.toFixed(1)),
+        dataIssues: missingCount + estimatedCount + record.validationFlagCount,
       }
     })
 
@@ -260,8 +278,21 @@ export default function AnalyticsPage() {
       riskTierData,
       topBenchmarkRows: [...benchmarkRows].sort((left, right) => right.compositeScore - left.compositeScore).slice(0, 10),
       benchmarkRows,
+      avgReductionTarget: Number(toAverage(benchmarkRows.reduce((sum, row) => sum + row.reductionTarget, 0), benchmarkRows.length).toFixed(1)),
+      avgActualReduction: Number(toAverage(benchmarkRows.reduce((sum, row) => sum + row.actualReduction, 0), benchmarkRows.length).toFixed(1)),
     }
-  }, [scopedCompanies])
+  }, [scopedCompanies, selectedCycle])
+
+  const exportAnalyticsCsv = () => {
+    const columns = ['company', 'sector', 'compositeScore', 'scoreChange', 'reductionTarget', 'actualReduction', 'dataIssues']
+    const rows = [columns.join(','), ...analytics.benchmarkRows.map((row) => columns.map((column) => JSON.stringify(row[column] ?? '')).join(','))]
+    const url = URL.createObjectURL(new Blob([rows.join('\n')], { type: 'text/csv' }))
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `esg-analytics-${selectedCycle.toLowerCase()}.csv`
+    anchor.click()
+    URL.revokeObjectURL(url)
+  }
 
   if (loading) {
     return (
@@ -297,6 +328,13 @@ export default function AnalyticsPage() {
         actions={(
           <div className="analytics-scope-controls">
             <label>
+              Cycle
+              <select value={selectedCycle} onChange={(event) => setSelectedCycle(event.target.value)}>
+                <option value="Latest">Latest submission</option>
+                {cycles.map((cycle) => <option key={cycle.id} value={String(cycle.cycle_year)}>FY{cycle.cycle_year}</option>)}
+              </select>
+            </label>
+            <label>
               Sector
               <select
                 value={selectedSector}
@@ -315,6 +353,8 @@ export default function AnalyticsPage() {
                 {companyOptions.map((company) => <option key={company.id} value={String(company.id)}>{company.name}</option>)}
               </select>
             </label>
+            <button type="button" className="button" onClick={exportAnalyticsCsv}>Export CSV</button>
+            <button type="button" className="button" onClick={() => window.print()}>Export PDF</button>
           </div>
         )}
       />
@@ -324,7 +364,25 @@ export default function AnalyticsPage() {
         <KpiCard title="Portfolio Emissions" value={`${analytics.totalEmissions.toLocaleString()} tCO2e`} />
         <KpiCard title="Renewable Share" value={`${analytics.renewableShare}%`} />
         <KpiCard title="Governance Adoption" value={`${analytics.governanceAdoption}%`} />
+        <KpiCard title="Reduction Target" value={`${analytics.avgReductionTarget}%`} trendLabel="portfolio average" />
+        <KpiCard title="Actual Reduction" value={`${analytics.avgActualReduction}%`} trendLabel="versus prior cycle" />
       </section>
+
+      <SectionCard title="Target versus actual" subtitle="Emissions reduction commitments compared with achieved year-on-year change">
+        <div className="chart-wrap">
+          <ResponsiveContainer width="100%" height={320}>
+            <BarChart data={analytics.benchmarkRows.slice(0, 12)}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} />
+              <XAxis dataKey="company" tick={{ fontSize: 11 }} angle={-18} textAnchor="end" height={75} />
+              <YAxis />
+              <Tooltip />
+              <Legend />
+              <Bar dataKey="reductionTarget" fill="#2563eb" name="Target %" />
+              <Bar dataKey="actualReduction" fill="#0f766e" name="Actual %" />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </SectionCard>
 
       <section className="analytics-insight-strip" aria-label="Current portfolio insight">
         <div>
@@ -527,11 +585,13 @@ export default function AnalyticsPage() {
                 { key: 'company', label: 'Company', sortable: true },
                 { key: 'sector', label: 'Sector', sortable: true },
                 { key: 'compositeScore', label: 'Composite', sortable: true },
+                { key: 'scoreChange', label: 'YoY change', sortable: true },
                 { key: 'environmentScore', label: 'Env Score', sortable: true },
                 { key: 'socialScore', label: 'Social Score', sortable: true },
                 { key: 'governanceScore', label: 'Gov Score', sortable: true },
                 { key: 'renewableShare', label: 'Renewable %', sortable: true },
                 { key: 'emissionsIntensity', label: 'tCO2e/FTE', sortable: true },
+                { key: 'dataIssues', label: 'Data issues', sortable: true },
               ]}
               rows={analytics.benchmarkRows}
               pageSize={10}

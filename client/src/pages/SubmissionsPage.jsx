@@ -1181,6 +1181,7 @@ export default function SubmissionsPage() {
                           metricKey={field.name}
                           onRemove={removeMetricEvidence}
                           onUpload={uploadMetricEvidence}
+                          required={field.name === 'scope_1_emissions'}
                         />
                       </div>
                       )

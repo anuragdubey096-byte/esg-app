@@ -6,7 +6,7 @@ function formatFileSize(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-export default function MetricEvidenceUploader({ disabled = false, evidence = [], metricKey, onRemove, onUpload }) {
+export default function MetricEvidenceUploader({ disabled = false, evidence = [], metricKey, onRemove, onUpload, required = false }) {
   const inputRef = useRef(null)
   const [uploading, setUploading] = useState(false)
   const [message, setMessage] = useState('')
@@ -33,7 +33,7 @@ export default function MetricEvidenceUploader({ disabled = false, evidence = []
   return (
     <div className="metric-evidence">
       <div className="metric-evidence-upload">
-        <label htmlFor={`evidence-${metricKey}`}>Supporting evidence</label>
+        <label htmlFor={`evidence-${metricKey}`}>Supporting evidence{required ? ' (required)' : ''}</label>
         <input
           ref={inputRef}
           id={`evidence-${metricKey}`}
@@ -61,7 +61,7 @@ export default function MetricEvidenceUploader({ disabled = false, evidence = []
             </li>
           ))}
         </ul>
-      ) : <small className="metric-evidence-empty">No evidence attached</small>}
+      ) : <small className="metric-evidence-empty">{required ? 'Required evidence not attached' : 'No evidence attached'}</small>}
     </div>
   )
 }

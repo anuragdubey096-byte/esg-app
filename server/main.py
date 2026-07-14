@@ -1,25 +1,33 @@
+import base64
 import csv
+import hashlib
+import hmac
+import io
 import json
 import os
 import re
 import asyncio
 import html
+import secrets
+import smtplib
 import time
 from collections import Counter
 from threading import RLock
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
+from email.message import EmailMessage
 from pathlib import Path
 from typing import Any, List
 from urllib import request as urlrequest
 from urllib.error import URLError, HTTPError
 from xml.etree import ElementTree
 
-from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Form, Header, Query, Body, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Form, Header, Cookie, Query, Body, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import MetaData, Table, delete as sqlalchemy_delete, func, inspect, or_, text
 from sqlalchemy.orm import Session, selectinload
+from pydantic import ValidationError
 
 from bootstrap import seed_sample_data
 from database import SessionLocal, engine
@@ -38,6 +46,11 @@ from models import (
     SubmissionEvidence,
     ReminderLog,
     NarrativeRecord,
+    AuthSession,
+    PasswordResetToken,
+    AuditEvent,
+    Notification,
+    MetricReviewComment,
 )
 from schemas import (
     ActionPlanCreateRequest,
@@ -48,8 +61,10 @@ from schemas import (
     CycleCreateRequest,
     CycleInfo,
     CycleStatusUpdateRequest,
+    MetricReviewCommentRequest,
     ForgotPasswordRequest,
     ForgotPasswordResponse,
+    ResetPasswordRequest,
     GHGCalculatorRequest,
     GHGCalculatorResponse,
     ReviewSubmissionRequest,
@@ -95,11 +110,16 @@ else:
 EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 
 ALLOWED_REPORT_TYPES = {'edci', 'sfdr'}
-ALLOWED_CYCLE_STATUSES = {'draft', 'active', 'closed'}
+ALLOWED_CYCLE_STATUSES = {'draft', 'active', 'closed', 'archived'}
 ALLOWED_REVIEW_STATUSES = {'submitted', 'under review', 'approved', 'rejected', 'resubmission requested'}
+REQUIRED_EVIDENCE_METRICS = {'scope_1_emissions'}
 OPENAI_DEFAULT_MODEL = os.getenv('OPENAI_MODEL', 'gpt-4o-mini')
 MIN_REPORTING_CYCLE_YEAR = 2000
 MAX_REPORTING_CYCLE_FUTURE_YEARS = 5
+SESSION_TTL_HOURS = max(1, min(int(os.getenv('SESSION_TTL_HOURS', '12') or '12'), 168))
+PASSWORD_RESET_TTL_MINUTES = 30
+PASSWORD_HASH_ITERATIONS = 310_000
+AUTH_COOKIE_NAME = 'esg_session'
 ALLOWED_REVIEW_TRANSITIONS = {
     'submitted': {'under review'},
     'under review': {'approved', 'rejected', 'resubmission requested'},
@@ -266,6 +286,7 @@ def serialize_cycle(cycle: CollectionCycle):
         status=normalize_cycle_status(cycle.status),
         carry_forward_prefill=bool(prefill_summary.get('carry_forward_prefill', True)),
         prefill_company_count=int(prefill_summary.get('prefill_company_count', 0)),
+        submission_count=len(cycle.submissions or []),
     )
 
 app.add_middleware(
@@ -290,16 +311,155 @@ def get_db():
 # ==========================================
 # RBAC Dependencies
 # ==========================================
-def get_user_role(x_user_role: str = Header(None)):
-    return normalize_role(x_user_role)
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, PASSWORD_HASH_ITERATIONS)
+    return 'pbkdf2_sha256${}${}${}'.format(
+        PASSWORD_HASH_ITERATIONS,
+        base64.urlsafe_b64encode(salt).decode('ascii'),
+        base64.urlsafe_b64encode(digest).decode('ascii'),
+    )
 
 
-def get_user_email(x_user_email: str | None = Header(default=None)) -> str | None:
-    return x_user_email.strip().lower() if x_user_email else None
+def verify_password(password: str, stored_password: str) -> bool:
+    if not str(stored_password or '').startswith('pbkdf2_sha256$'):
+        return hmac.compare_digest(str(stored_password or ''), password)
+    try:
+        _, iterations, encoded_salt, encoded_digest = stored_password.split('$', 3)
+        salt = base64.urlsafe_b64decode(encoded_salt.encode('ascii'))
+        expected = base64.urlsafe_b64decode(encoded_digest.encode('ascii'))
+        actual = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, int(iterations))
+        return hmac.compare_digest(actual, expected)
+    except (TypeError, ValueError):
+        return False
 
-def require_manager(role: str = Depends(get_user_role)):
-    if role != 'manager':
+
+def migrate_plaintext_passwords(db: Session) -> int:
+    users = db.query(User).all()
+    changed = 0
+    for user in users:
+        if not str(user.password or '').startswith('pbkdf2_sha256$'):
+            user.password = hash_password(str(user.password or secrets.token_urlsafe(18)))
+            changed += 1
+    if changed:
+        db.commit()
+    return changed
+
+
+def _token_digest(token: str) -> str:
+    return hashlib.sha256(str(token or '').encode('utf-8')).hexdigest()
+
+
+def log_audit_event(
+    db: Session,
+    event_type: str,
+    user: User | None = None,
+    *,
+    actor_email: str | None = None,
+    company_id: int | None = None,
+    submission_id: int | None = None,
+    cycle_id: int | None = None,
+    field_name: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    db.add(AuditEvent(
+        event_type=event_type,
+        actor_user_id=user.id if user else None,
+        actor_email=(user.email if user else actor_email),
+        actor_role=normalize_role(user.role) if user else None,
+        company_id=company_id,
+        submission_id=submission_id,
+        cycle_id=cycle_id,
+        field_name=field_name,
+        source='api',
+        metadata_json=json.dumps(metadata or {}),
+    ))
+
+
+def send_password_reset_email(recipient: str, raw_token: str) -> bool:
+    smtp_host = str(os.getenv('SMTP_HOST') or '').strip()
+    sender = str(os.getenv('SMTP_FROM_EMAIL') or '').strip()
+    if not smtp_host or not sender:
+        return False
+    reset_base = str(os.getenv('APP_URL') or 'https://esg-app-two.vercel.app').rstrip('/')
+    message = EmailMessage()
+    message['Subject'] = 'Reset your GreenLedger password'
+    message['From'] = sender
+    message['To'] = recipient
+    message.set_content(
+        f'Use this secure link within {PASSWORD_RESET_TTL_MINUTES} minutes to reset your password:\n\n'
+        f'{reset_base}/?reset_token={raw_token}\n\nIf you did not request this, ignore this email.'
+    )
+    port = int(os.getenv('SMTP_PORT', '587') or '587')
+    username = str(os.getenv('SMTP_USERNAME') or '')
+    password = str(os.getenv('SMTP_PASSWORD') or '')
+    try:
+        with smtplib.SMTP(smtp_host, port, timeout=10) as client:
+            client.starttls()
+            if username:
+                client.login(username, password)
+            client.send_message(message)
+        return True
+    except Exception as error:
+        print(json.dumps({'level': 'warning', 'event': 'password_reset_email_failed', 'error': str(error)[:300]}), flush=True)
+        return False
+
+
+def create_auth_session(db: Session, user: User, request: Request | None = None) -> tuple[str, datetime]:
+    raw_token = secrets.token_urlsafe(48)
+    expires_at = datetime.utcnow() + timedelta(hours=SESSION_TTL_HOURS)
+    db.add(AuthSession(
+        user_id=user.id,
+        token_hash=_token_digest(raw_token),
+        expires_at=expires_at,
+        user_agent=(request.headers.get('user-agent', '')[:500] if request else None),
+        ip_address=(request.client.host[:120] if request and request.client else None),
+    ))
+    return raw_token, expires_at
+
+
+def get_authenticated_user(
+    authorization: str | None = Header(default=None),
+    session_cookie: str | None = Cookie(default=None, alias=AUTH_COOKIE_NAME),
+    db: Session = Depends(get_db),
+) -> User:
+    bearer_token = ''
+    if authorization and authorization.lower().startswith('bearer '):
+        bearer_token = authorization.split(' ', 1)[1].strip()
+    raw_token = bearer_token or str(session_cookie or '').strip()
+    if not raw_token:
+        raise HTTPException(status_code=401, detail='Authentication required')
+    session = (
+        db.query(AuthSession)
+        .filter(
+            AuthSession.token_hash == _token_digest(raw_token),
+            AuthSession.revoked_at.is_(None),
+            AuthSession.expires_at > datetime.utcnow(),
+        )
+        .first()
+    )
+    if not session:
+        raise HTTPException(status_code=401, detail='Session expired or invalid')
+    user = db.query(User).filter(User.id == session.user_id).first()
+    if not user:
+        raise HTTPException(status_code=401, detail='Session user no longer exists')
+    return user
+
+
+def get_user_role(user: User = Depends(get_authenticated_user)):
+    return normalize_role(user.role)
+
+
+def get_user_email(user: User = Depends(get_authenticated_user)) -> str:
+    return user.email.strip().lower()
+
+
+def require_manager(user: User = Depends(get_authenticated_user), db: Session = Depends(get_db)):
+    if normalize_role(user.role) != 'manager':
+        log_audit_event(db, 'permission_denied', user, metadata={'required_role': 'manager'})
+        db.commit()
         raise HTTPException(status_code=403, detail='Access restricted to ESG Managers')
+    return user
 
 def require_company_or_manager(role: str = Depends(get_user_role)):
     if role not in {'company', 'manager'}:
@@ -1133,6 +1293,7 @@ def startup_event():
             ensure_review_action_audit_columns(db)
         seed_sample_data(db)
         migrate_legacy_user_roles(db)
+        migrate_plaintext_passwords(db)
         fix_cycle_statuses_and_active_conflicts(db)
         ensure_submission_cycle_backfill(db)
         deactivate_expired_unlocks(db)
@@ -1154,52 +1315,220 @@ def migrate_schema(db: Session = Depends(get_db)):
     }
 
 @app.post('/login', response_model=UserResponse)
-def login(request: LoginRequest, db: Session = Depends(get_db)):
-    normalized_email = request.email.strip().lower()
+def login(payload: LoginRequest, response: Response, request: Request, db: Session = Depends(get_db)):
+    normalized_email = payload.email.strip().lower()
     user = db.query(User).filter(func.lower(User.email) == normalized_email).first()
-    if not user or user.password != request.password:
+    if not user or not verify_password(payload.password, user.password):
+        log_audit_event(db, 'login_failed', actor_email=normalized_email)
+        db.commit()
         raise HTTPException(status_code=401, detail='Invalid email or password')
+    if not str(user.password or '').startswith('pbkdf2_sha256$'):
+        user.password = hash_password(payload.password)
+    raw_token, expires_at = create_auth_session(db, user, request)
+    log_audit_event(db, 'login_succeeded', user, metadata={'expires_at': expires_at.isoformat()})
+    db.commit()
+    response.set_cookie(
+        key=AUTH_COOKIE_NAME,
+        value=raw_token,
+        max_age=SESSION_TTL_HOURS * 3600,
+        expires=datetime.now(timezone.utc) + timedelta(hours=SESSION_TTL_HOURS),
+        httponly=True,
+        secure=bool(os.getenv('VERCEL')),
+        samesite='lax',
+        path='/',
+    )
     return serialize_user(user)
+
+
+@app.get('/auth/me', response_model=UserResponse)
+def auth_me(user: User = Depends(get_authenticated_user)):
+    return serialize_user(user)
+
+
+@app.post('/auth/logout')
+def logout(
+    response: Response,
+    authorization: str | None = Header(default=None),
+    session_cookie: str | None = Cookie(default=None, alias=AUTH_COOKIE_NAME),
+    db: Session = Depends(get_db),
+):
+    bearer_token = authorization.split(' ', 1)[1].strip() if authorization and authorization.lower().startswith('bearer ') else ''
+    raw_token = bearer_token or str(session_cookie or '').strip()
+    if raw_token:
+        session = db.query(AuthSession).filter(AuthSession.token_hash == _token_digest(raw_token)).first()
+        if session and session.revoked_at is None:
+            session.revoked_at = datetime.utcnow()
+            user = db.query(User).filter(User.id == session.user_id).first()
+            log_audit_event(db, 'logout', user)
+            db.commit()
+    response.delete_cookie(AUTH_COOKIE_NAME, path='/', secure=bool(os.getenv('VERCEL')), samesite='lax')
+    return {'message': 'Signed out'}
 
 
 @app.post('/auth/forgot-password', response_model=ForgotPasswordResponse)
 def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db)):
     # Deliberately return a generic message to avoid revealing account existence.
-    _ = db.query(User).filter(User.email == request.email).first()
+    normalized_email = request.email.strip().lower()
+    user = db.query(User).filter(func.lower(User.email) == normalized_email).first()
+    if user:
+        raw_token = secrets.token_urlsafe(40)
+        expires_at = datetime.utcnow() + timedelta(minutes=PASSWORD_RESET_TTL_MINUTES)
+        db.add(PasswordResetToken(user_id=user.id, token_hash=_token_digest(raw_token), expires_at=expires_at))
+        email_sent = send_password_reset_email(user.email, raw_token)
+        db.add(Notification(
+            user_id=user.id,
+            role=normalize_role(user.role),
+            notification_type='password_reset',
+            title='Password reset requested',
+            message='A password reset email was sent.' if email_sent else 'A password reset was requested; email delivery is awaiting SMTP configuration.',
+            dedupe_key=f'password-reset-{user.id}-{int(expires_at.timestamp())}',
+        ))
+        log_audit_event(db, 'password_reset_requested', user, metadata={'email_sent': email_sent})
+        db.commit()
+        if not os.getenv('VERCEL'):
+            print(f'Password reset token for {normalized_email}: {raw_token}', flush=True)
     return ForgotPasswordResponse(
         message='If an account with that email exists, password reset instructions have been sent.'
     )
 
 
+@app.post('/auth/reset-password')
+def reset_password(payload: ResetPasswordRequest, db: Session = Depends(get_db)):
+    reset = (
+        db.query(PasswordResetToken)
+        .filter(
+            PasswordResetToken.token_hash == _token_digest(payload.token),
+            PasswordResetToken.used_at.is_(None),
+            PasswordResetToken.expires_at > datetime.utcnow(),
+        )
+        .first()
+    )
+    if not reset:
+        raise HTTPException(status_code=400, detail='Reset link is invalid or expired')
+    user = db.query(User).filter(User.id == reset.user_id).first()
+    if not user:
+        raise HTTPException(status_code=400, detail='Reset link is invalid or expired')
+    user.password = hash_password(payload.new_password)
+    reset.used_at = datetime.utcnow()
+    db.query(AuthSession).filter(AuthSession.user_id == user.id, AuthSession.revoked_at.is_(None)).update(
+        {'revoked_at': datetime.utcnow()}, synchronize_session=False
+    )
+    log_audit_event(db, 'password_reset_completed', user)
+    db.commit()
+    return {'message': 'Password updated. Sign in with your new password.'}
+
+
+def create_notification(
+    db: Session,
+    *,
+    notification_type: str,
+    title: str,
+    message: str,
+    user_id: int | None = None,
+    role: str | None = None,
+    company_id: int | None = None,
+    dedupe_key: str | None = None,
+) -> Notification | None:
+    if dedupe_key and db.query(Notification).filter(Notification.dedupe_key == dedupe_key).first():
+        return None
+    notification = Notification(
+        user_id=user_id,
+        role=normalize_role(role) if role else None,
+        company_id=company_id,
+        notification_type=notification_type,
+        title=title,
+        message=message,
+        dedupe_key=dedupe_key,
+    )
+    db.add(notification)
+    return notification
+
+
+def generate_deadline_notifications(db: Session) -> None:
+    cycle = get_active_cycle(db) or get_latest_cycle(db)
+    if not cycle:
+        return
+    days_remaining = get_days_to_deadline(cycle.submission_deadline)
+    if days_remaining is None or days_remaining > 7:
+        return
+    for company in db.query(Company).all():
+        submission = latest_submission_for_cycle(db, company.id, cycle.id)
+        status = normalize_submission_status(submission.status) if submission else 'not started'
+        if status in {'approved', 'submitted', 'under review'}:
+            continue
+        overdue = days_remaining < 0
+        day_label = 'day' if days_remaining == 1 else 'days'
+        label = 'overdue' if overdue else f'due in {days_remaining} {day_label}'
+        create_notification(
+            db,
+            notification_type='deadline',
+            title='ESG submission overdue' if overdue else 'ESG submission deadline approaching',
+            message=f'{company.name} FY{cycle.cycle_year} submission is {label}.',
+            user_id=company.user_id,
+            company_id=company.id,
+            dedupe_key=f'deadline-company-{cycle.id}-{company.id}-{days_remaining}',
+        )
+        create_notification(
+            db,
+            notification_type='overdue' if overdue else 'deadline',
+            title='Portfolio submission overdue' if overdue else 'Portfolio deadline approaching',
+            message=f'{company.name} FY{cycle.cycle_year} submission is {label}.',
+            role='manager',
+            company_id=company.id,
+            dedupe_key=f'deadline-manager-{cycle.id}-{company.id}-{days_remaining}',
+        )
+    db.commit()
+
+
+def serialize_notification(item: Notification) -> dict[str, Any]:
+    return {
+        'id': item.id,
+        'type': item.notification_type,
+        'title': item.title,
+        'message': item.message,
+        'company_id': item.company_id,
+        'read': item.read_at is not None,
+        'created_at': item.created_at.isoformat() if item.created_at else None,
+    }
+
+
+@app.get('/notifications')
+def list_notifications(user: User = Depends(get_authenticated_user), db: Session = Depends(get_db)):
+    generate_deadline_notifications(db)
+    role = normalize_role(user.role)
+    query = db.query(Notification)
+    if role == 'company':
+        company_ids = [company.id for company in db.query(Company).filter(Company.user_id == user.id).all()]
+        query = query.filter(or_(Notification.user_id == user.id, Notification.company_id.in_(company_ids)))
+    else:
+        query = query.filter(or_(Notification.user_id == user.id, Notification.role == role))
+    items = query.order_by(Notification.created_at.desc(), Notification.id.desc()).limit(100).all()
+    return {'unread_count': sum(item.read_at is None for item in items), 'items': [serialize_notification(item) for item in items]}
+
+
+@app.patch('/notifications/{notification_id}/read')
+def read_notification(notification_id: int, user: User = Depends(get_authenticated_user), db: Session = Depends(get_db)):
+    item = db.query(Notification).filter(Notification.id == notification_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail='Notification not found')
+    role = normalize_role(user.role)
+    owned_company_ids = {company.id for company in db.query(Company).filter(Company.user_id == user.id).all()}
+    allowed = item.user_id == user.id or item.role == role or (role == 'company' and item.company_id in owned_company_ids)
+    if not allowed:
+        raise HTTPException(status_code=403, detail='Notification access denied')
+    item.read_at = datetime.utcnow()
+    db.commit()
+    return serialize_notification(item)
+
+
 @app.post('/auth/sso/{provider}', response_model=UserResponse)
-def sso_login(provider: str, payload: SSOLoginRequest | None = None, db: Session = Depends(get_db)):
+def sso_login(provider: str, payload: SSOLoginRequest | None = None):
     normalized_provider = provider.strip().lower()
     allowed_providers = {'google', 'microsoft'}
     if normalized_provider not in allowed_providers:
         raise HTTPException(status_code=400, detail='Unsupported SSO provider')
 
-    email_hint = (payload.email_hint if payload else None) or ''
-    provider_default_email = 'manager@example.com' if normalized_provider == 'google' else 'investor@example.com'
-    target_email = email_hint.strip().lower() or provider_default_email
-
-    user = db.query(User).filter(User.email == target_email).first()
-    if not user:
-        # Fallback to the provider default user if hint email does not exist.
-        user = db.query(User).filter(User.email == provider_default_email).first()
-
-    if not user:
-        # Create a bootstrap user if seed data is unavailable.
-        user = User(
-            name='SSO User',
-            email=provider_default_email,
-            password='password123',
-            role=UserRole.MANAGER if normalized_provider == 'google' else UserRole.INVESTOR,
-        )
-        db.add(user)
-        db.commit()
-        db.refresh(user)
-
-    return serialize_user(user)
+    raise HTTPException(status_code=501, detail=f'{normalized_provider.title()} SSO requires verified provider configuration')
 
 
 @app.get('/users', response_model=List[UserResponse], dependencies=[Depends(require_manager)])
@@ -1213,6 +1542,192 @@ def csv_parity_check(db: Session = Depends(get_db)):
     return _build_csv_parity_report(db)
 
 
+def _normalize_csv_header(value: Any) -> str:
+    return re.sub(r'[^a-z0-9]+', '_', str(value or '').strip().lower()).strip('_')
+
+
+def _clean_csv_value(value: Any, numeric: bool) -> tuple[Any, bool]:
+    original = '' if value is None else str(value)
+    cleaned = original.strip()
+    corrected = cleaned != original
+    if numeric:
+        without_commas = cleaned.replace(',', '')
+        if without_commas.endswith('%'):
+            without_commas = without_commas[:-1].strip()
+        corrected = corrected or without_commas != cleaned
+        cleaned = without_commas
+    return cleaned, corrected
+
+
+def _csv_validation_messages(error: ValidationError) -> list[str]:
+    messages = []
+    for item in error.errors():
+        field = '.'.join(str(part) for part in item.get('loc') or []) or 'row'
+        messages.append(f"{field}: {item.get('msg', 'invalid value')}")
+    return messages
+
+
+@app.post('/admin/import/submissions')
+def import_submissions_csv(
+    file: UploadFile = File(...),
+    mode: str = Form(default='preview'),
+    cycle_id: int | None = Form(default=None),
+    mapping_json: str = Form(default='{}'),
+    manager: User = Depends(require_manager),
+    db: Session = Depends(get_db),
+):
+    normalized_mode = str(mode or 'preview').strip().lower()
+    if normalized_mode not in {'preview', 'commit'}:
+        raise HTTPException(status_code=422, detail='mode must be preview or commit')
+    raw = file.file.read(5 * 1024 * 1024 + 1)
+    if len(raw) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail='CSV files must be 5 MB or smaller')
+    try:
+        content = raw.decode('utf-8-sig')
+    except UnicodeDecodeError as error:
+        raise HTTPException(status_code=422, detail='CSV must use UTF-8 encoding') from error
+    try:
+        requested_mapping = json.loads(mapping_json or '{}')
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail='Column mapping must be valid JSON') from error
+    if not isinstance(requested_mapping, dict):
+        raise HTTPException(status_code=422, detail='Column mapping must be an object')
+
+    reader = csv.DictReader(io.StringIO(content))
+    source_columns = [str(item or '').strip() for item in (reader.fieldnames or [])]
+    if not source_columns:
+        raise HTTPException(status_code=422, detail='CSV header row is required')
+    identity_fields = {'company_id', 'company_code', 'company_name', 'reporting_year'}
+    submission_fields = set(SubmissionCreateRequest.model_fields.keys())
+    supported_fields = identity_fields | submission_fields
+    mapping = {}
+    column_mapping = []
+    used_targets = set()
+    for source in source_columns:
+        requested_target = str(requested_mapping.get(source) or '').strip()
+        suggested_target = requested_target or _normalize_csv_header(source)
+        target = suggested_target if suggested_target in supported_fields else ''
+        if target and target in used_targets:
+            target = ''
+        if target:
+            mapping[source] = target
+            used_targets.add(target)
+        column_mapping.append({
+            'source': source,
+            'target': target,
+            'status': 'mapped' if target else 'unmapped',
+        })
+
+    target_cycle = db.query(CollectionCycle).filter(CollectionCycle.id == cycle_id).first() if cycle_id else get_latest_cycle(db)
+    if not target_cycle:
+        raise HTTPException(status_code=422, detail='A valid reporting cycle is required')
+    numeric_fields = {
+        field_name for field_name, model_field in SubmissionCreateRequest.model_fields.items()
+        if model_field.annotation in {int, float}
+    }
+    rows = []
+    seen_companies = set()
+    accepted_records = []
+    corrected_rows = 0
+    rejected_rows = 0
+    for row_number, source_row in enumerate(reader, start=2):
+        errors = []
+        corrected = False
+        if None in source_row or any(source_row.get(column) is None for column in source_columns):
+            errors.append('Column count does not match the header; the row may be shifted or malformed')
+        mapped_row = {}
+        for source, target in mapping.items():
+            cleaned, value_corrected = _clean_csv_value(source_row.get(source), target in numeric_fields or target == 'reporting_year')
+            mapped_row[target] = cleaned
+            corrected = corrected or value_corrected or source != target
+
+        company = None
+        company_id_value = str(mapped_row.get('company_id') or '').strip()
+        company_code = str(mapped_row.get('company_code') or '').strip()
+        company_name = str(mapped_row.get('company_name') or '').strip()
+        if company_id_value.isdigit():
+            company = db.query(Company).filter(Company.id == int(company_id_value)).first()
+        elif company_code:
+            company = db.query(Company).filter(func.lower(Company.code) == company_code.lower()).first()
+        elif company_name:
+            company = db.query(Company).filter(func.lower(Company.name) == company_name.lower()).first()
+        if not company:
+            errors.append('Company could not be matched by company_id, company_code, or company_name')
+
+        reporting_year_text = str(mapped_row.get('reporting_year') or '').strip()
+        try:
+            reporting_year = int(float(reporting_year_text))
+        except (TypeError, ValueError):
+            reporting_year = None
+            errors.append('reporting_year must be a four-digit number')
+        max_year = datetime.now(timezone.utc).year + MAX_REPORTING_CYCLE_FUTURE_YEARS
+        if reporting_year is not None and not MIN_REPORTING_CYCLE_YEAR <= reporting_year <= max_year:
+            errors.append(f'reporting_year must be between {MIN_REPORTING_CYCLE_YEAR} and {max_year}')
+        if reporting_year is not None and reporting_year != target_cycle.cycle_year:
+            errors.append(f'reporting_year {reporting_year} does not match selected cycle FY{target_cycle.cycle_year}')
+
+        if company and company.id in seen_companies:
+            errors.append('Duplicate company row in this CSV')
+        if company:
+            seen_companies.add(company.id)
+            if db.query(Submission).filter(Submission.company_id == company.id, Submission.cycle_id == target_cycle.id).first():
+                errors.append('A submission already exists for this company and reporting cycle')
+
+        validated_payload = None
+        if not errors:
+            try:
+                validated_payload = SubmissionCreateRequest.model_validate({
+                    field: mapped_row.get(field) for field in submission_fields
+                })
+            except ValidationError as error:
+                errors.extend(_csv_validation_messages(error))
+        status = 'rejected' if errors else 'accepted'
+        if errors:
+            rejected_rows += 1
+        else:
+            corrected_rows += int(corrected)
+            accepted_records.append((company, validated_payload))
+        rows.append({
+            'row': row_number,
+            'company': company.name if company else company_name or company_code or company_id_value or 'Unmatched',
+            'status': status,
+            'corrected': corrected,
+            'errors': errors,
+        })
+
+    if normalized_mode == 'commit':
+        for company, validated_payload in accepted_records:
+            db.add(Submission(
+                company_id=company.id,
+                cycle_id=target_cycle.id,
+                esg_data=json.dumps(validated_payload.model_dump()),
+                status='submitted',
+            ))
+        log_audit_event(db, 'csv_import_committed', manager, cycle_id=target_cycle.id, metadata={
+            'accepted': len(accepted_records),
+            'rejected': rejected_rows,
+            'corrected': corrected_rows,
+            'filename': Path(file.filename or 'upload.csv').name,
+        })
+        db.commit()
+
+    return {
+        'mode': normalized_mode,
+        'file_name': Path(file.filename or 'upload.csv').name,
+        'cycle_id': target_cycle.id,
+        'cycle_year': target_cycle.cycle_year,
+        'columns': column_mapping,
+        'rows': rows,
+        'summary': {
+            'total': len(rows),
+            'accepted': len(accepted_records),
+            'rejected': rejected_rows,
+            'corrected': corrected_rows,
+            'imported': len(accepted_records) if normalized_mode == 'commit' else 0,
+        },
+    }
+
+
 @app.post('/companies', response_model=CompanyCreateResponse, dependencies=[Depends(require_manager)])
 def create_company(payload: CompanyCreateRequest, db: Session = Depends(get_db)):
     existing_user = db.query(User).filter(User.email == payload.contact_email).first()
@@ -1222,7 +1737,7 @@ def create_company(payload: CompanyCreateRequest, db: Session = Depends(get_db))
     portfolio_user = User(
         name=payload.contact_name,
         email=payload.contact_email,
-        password=payload.temporary_password,
+        password=hash_password(payload.temporary_password),
         role=UserRole.COMPANY,
     )
     db.add(portfolio_user)
@@ -1248,8 +1763,8 @@ def create_company(payload: CompanyCreateRequest, db: Session = Depends(get_db))
     )
 
 
-@app.post('/cycles', response_model=CycleInfo, dependencies=[Depends(require_manager)])
-def create_cycle(payload: CycleCreateRequest, db: Session = Depends(get_db)):
+@app.post('/cycles', response_model=CycleInfo)
+def create_cycle(payload: CycleCreateRequest, manager: User = Depends(require_manager), db: Session = Depends(get_db)):
     max_cycle_year = datetime.now(timezone.utc).year + MAX_REPORTING_CYCLE_FUTURE_YEARS
     if payload.cycle_year < MIN_REPORTING_CYCLE_YEAR or payload.cycle_year > max_cycle_year:
         raise HTTPException(
@@ -1287,14 +1802,17 @@ def create_cycle(payload: CycleCreateRequest, db: Session = Depends(get_db)):
             'prefill_company_count': latest_submissions,
         }),
         status='active' if payload.activate_on_create else 'draft',
+        created_by_user_id=manager.id,
     )
     db.add(cycle)
+    db.flush()
+    log_audit_event(db, 'cycle_created', manager, cycle_id=cycle.id, metadata={'cycle_year': cycle.cycle_year})
     db.commit()
     db.refresh(cycle)
     return serialize_cycle(cycle)
 
 
-@app.get('/cycles', response_model=List[CycleInfo], dependencies=[Depends(require_manager)])
+@app.get('/cycles', response_model=List[CycleInfo], dependencies=[Depends(get_authenticated_user)])
 def list_cycles(db: Session = Depends(get_db)):
     max_cycle_year = datetime.now(timezone.utc).year + MAX_REPORTING_CYCLE_FUTURE_YEARS
     cycles = (
@@ -1308,8 +1826,8 @@ def list_cycles(db: Session = Depends(get_db)):
     )
     return [serialize_cycle(cycle) for cycle in cycles]
 
-@app.patch('/cycles/{cycle_id}/status', response_model=CycleInfo, dependencies=[Depends(require_manager)])
-def update_cycle_status(cycle_id: int, payload: CycleStatusUpdateRequest, db: Session = Depends(get_db)):
+@app.patch('/cycles/{cycle_id}/status', response_model=CycleInfo)
+def update_cycle_status(cycle_id: int, payload: CycleStatusUpdateRequest, manager: User = Depends(require_manager), db: Session = Depends(get_db)):
     cycle = db.query(CollectionCycle).filter(CollectionCycle.id == cycle_id).first()
     if not cycle:
         raise HTTPException(status_code=404, detail='Cycle not found')
@@ -1322,9 +1840,33 @@ def update_cycle_status(cycle_id: int, payload: CycleStatusUpdateRequest, db: Se
                 active_cycle.status = 'draft'
 
     cycle.status = next_status
+    log_audit_event(db, 'cycle_status_changed', manager, cycle_id=cycle.id, metadata={'status': next_status})
     db.commit()
     db.refresh(cycle)
     return serialize_cycle(cycle)
+
+
+@app.delete('/cycles/{cycle_id}')
+def delete_cycle(cycle_id: int, manager: User = Depends(require_manager), db: Session = Depends(get_db)):
+    cycle = db.query(CollectionCycle).filter(CollectionCycle.id == cycle_id).first()
+    if not cycle:
+        raise HTTPException(status_code=404, detail='Cycle not found')
+    submission_count = db.query(Submission).filter(Submission.cycle_id == cycle.id).count()
+    if submission_count:
+        raise HTTPException(status_code=409, detail=f'Cycle contains {submission_count} submissions and cannot be deleted; archive it instead')
+    dependent_count = (
+        db.query(SubmissionDraft).filter(SubmissionDraft.cycle_id == cycle.id).count()
+        + db.query(SubmissionEvidence).filter(SubmissionEvidence.cycle_id == cycle.id).count()
+        + db.query(ReminderLog).filter(ReminderLog.cycle_id == cycle.id).count()
+    )
+    if dependent_count:
+        raise HTTPException(status_code=409, detail='Cycle contains draft, evidence, or reminder records and cannot be deleted; archive it instead')
+    cycle_year = cycle.cycle_year
+    db.query(AuditEvent).filter(AuditEvent.cycle_id == cycle.id).update({'cycle_id': None}, synchronize_session=False)
+    log_audit_event(db, 'cycle_deleted', manager, metadata={'cycle_id': cycle.id, 'cycle_year': cycle_year})
+    db.delete(cycle)
+    db.commit()
+    return {'message': f'FY{cycle_year} deleted'}
 
 
 @app.post('/company/{company_id}/onboarding/complete', dependencies=[Depends(require_manager)])
@@ -1486,6 +2028,18 @@ def add_submission(
         raise HTTPException(status_code=423, detail=edit_state['lock_reason'])
 
     incoming_payload = submission.model_dump()
+    if submission.reporting_year is not None and submission.reporting_year != target_cycle.cycle_year:
+        raise HTTPException(status_code=422, detail=f'reporting_year must match active cycle FY{target_cycle.cycle_year}')
+    incoming_payload['reporting_year'] = target_cycle.cycle_year
+    attached_metric_keys = {
+        item.metric_key for item in db.query(SubmissionEvidence).filter(
+            SubmissionEvidence.company_id == company_id,
+            SubmissionEvidence.cycle_id == target_cycle.id,
+        ).all()
+    }
+    missing_evidence = sorted(REQUIRED_EVIDENCE_METRICS - attached_metric_keys)
+    if missing_evidence:
+        raise HTTPException(status_code=422, detail=f"Required evidence missing for metrics: {', '.join(missing_evidence)}")
     baseline_submission = latest_for_cycle
     if baseline_submission is None:
         baseline_submission = (
@@ -1622,6 +2176,33 @@ def company_historical_context(
     prior_submission = _build_prior_submission(submission, db) if submission else None
     return _build_historical_context_payload(company, submission, prior_submission)
 
+def create_submission_status_notifications(db: Session, submission: Submission, next_status: str) -> None:
+    company = db.query(Company).filter(Company.id == submission.company_id).first()
+    if not company:
+        return
+    cycle_year = submission.cycle.cycle_year if submission.cycle else 'current'
+    if next_status == 'rejected':
+        create_notification(
+            db,
+            notification_type='rejected',
+            title='Submission rejected',
+            message=f'{company.name} FY{cycle_year} submission was rejected and requires manager follow-up.',
+            role='manager',
+            company_id=company.id,
+            dedupe_key=f'submission-rejected-{submission.id}',
+        )
+    if next_status == 'resubmission requested':
+        create_notification(
+            db,
+            notification_type='resubmission',
+            title='Resubmission requested',
+            message=f'Updates are required for {company.name} FY{cycle_year}. Review manager comments and resubmit.',
+            user_id=company.user_id,
+            company_id=company.id,
+            dedupe_key=f'submission-resubmission-{submission.id}',
+        )
+
+
 @app.patch('/submissions/{submission_id}/status', response_model=SubmissionInfo, dependencies=[Depends(require_manager)])
 def update_submission_status(
     submission_id: int,
@@ -1638,6 +2219,7 @@ def update_submission_status(
 
     enforce_transition(submission.status, next_status)
     submission.status = next_status
+    create_submission_status_notifications(db, submission, next_status)
     db.commit()
     db.refresh(submission)
     return submission
@@ -1895,6 +2477,7 @@ def review_submission(submission_id: int, payload: ReviewSubmissionRequest, db: 
     submission.status = next_status
     if next_status == 'resubmission requested':
         seed_draft_from_submission(db, submission)
+    create_submission_status_notifications(db, submission, next_status)
     reporting_year = submission.cycle.cycle_year if submission.cycle else datetime.utcnow().year
     review_action = ReviewAction(
         company_id=submission.company_id,
@@ -1908,6 +2491,65 @@ def review_submission(submission_id: int, payload: ReviewSubmissionRequest, db: 
     db.commit()
     db.refresh(submission)
     return {"message": "Review logged successfully", "status": submission.status}
+
+
+@app.get('/submissions/{submission_id}/metric-comments')
+def list_metric_comments(
+    submission_id: int,
+    user: User = Depends(get_authenticated_user),
+    db: Session = Depends(get_db),
+):
+    submission = db.query(Submission).filter(Submission.id == submission_id).first()
+    if not submission:
+        raise HTTPException(status_code=404, detail='Submission not found')
+    if normalize_role(user.role) == 'company':
+        company = db.query(Company).filter(Company.id == submission.company_id).first()
+        if not company or company.user_id != user.id:
+            raise HTTPException(status_code=403, detail='Metric comments are restricted to your company')
+    elif normalize_role(user.role) != 'manager':
+        raise HTTPException(status_code=403, detail='Metric comments are restricted to managers and company users')
+    comments = db.query(MetricReviewComment).filter(MetricReviewComment.submission_id == submission.id).order_by(MetricReviewComment.metric_key.asc()).all()
+    return [{
+        'id': item.id,
+        'submission_id': item.submission_id,
+        'metric_key': item.metric_key,
+        'comment': item.comment,
+        'reviewer_user_id': item.reviewer_user_id,
+        'updated_at': item.updated_at.isoformat() if item.updated_at else None,
+    } for item in comments]
+
+
+@app.put('/submissions/{submission_id}/metric-comments')
+def upsert_metric_comment(
+    submission_id: int,
+    payload: MetricReviewCommentRequest,
+    manager: User = Depends(require_manager),
+    db: Session = Depends(get_db),
+):
+    submission = db.query(Submission).filter(Submission.id == submission_id).first()
+    if not submission:
+        raise HTTPException(status_code=404, detail='Submission not found')
+    item = db.query(MetricReviewComment).filter(
+        MetricReviewComment.submission_id == submission.id,
+        MetricReviewComment.metric_key == payload.metric_key,
+    ).first()
+    if item is None:
+        item = MetricReviewComment(submission_id=submission.id, metric_key=payload.metric_key)
+        db.add(item)
+    item.comment = payload.comment.strip()
+    item.reviewer_user_id = manager.id
+    item.updated_at = datetime.utcnow()
+    log_audit_event(db, 'metric_comment_updated', manager, submission_id=submission.id, field_name=payload.metric_key)
+    db.commit()
+    db.refresh(item)
+    return {
+        'id': item.id,
+        'submission_id': item.submission_id,
+        'metric_key': item.metric_key,
+        'comment': item.comment,
+        'reviewer_user_id': item.reviewer_user_id,
+        'updated_at': item.updated_at.isoformat() if item.updated_at else None,
+    }
 
 
 @app.get('/submissions/{submission_id}/history', response_model=List[SubmissionHistoryEntry], dependencies=[Depends(require_manager)])

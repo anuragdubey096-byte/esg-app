@@ -1,6 +1,9 @@
 import argparse
+import base64
 import csv
+import hashlib
 import json
+import os
 import re
 from pathlib import Path
 
@@ -24,6 +27,18 @@ EXPECTED_FILES = {
     'submissions_previous': 'esg_submissions_previous_year.csv',
     'submissions_current': 'esg_submissions_current_year.csv',
 }
+
+
+def hash_password(password: str) -> str:
+    """Hash seed credentials before they ever reach persistent storage."""
+    iterations = 310_000
+    salt = os.urandom(16)
+    digest = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, iterations)
+    return 'pbkdf2_sha256${}${}${}'.format(
+        iterations,
+        base64.urlsafe_b64encode(salt).decode('ascii'),
+        base64.urlsafe_b64encode(digest).decode('ascii'),
+    )
 
 
 def load_csv_rows(csv_path: Path):
@@ -78,7 +93,7 @@ def import_default_personas(db):
             db.add(User(
                 name=p['name'],
                 email=p['email'],
-                password='password123',
+                password=hash_password('password123'),
                 role=p['role']
             ))
     db.commit()
@@ -96,7 +111,7 @@ def import_companies(db, data_dir: Path):
             company_user = User(
                 name=contact_name,
                 email=contact_email,
-                password='password123',
+                password=hash_password('password123'),
                 role='company',
             )
             db.add(company_user)

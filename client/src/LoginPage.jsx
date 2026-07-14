@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import LoginForm from './components/auth/LoginForm'
 import LoginLayout from './components/auth/LoginLayout'
 import { API_BASE_URL } from './lib/api'
@@ -5,6 +6,29 @@ import { API_BASE_URL } from './lib/api'
 const backendUrl = API_BASE_URL
 
 export default function LoginPage({ onLogin }) {
+  const initialResetToken = new URLSearchParams(window.location.search).get('reset_token') || ''
+  const [resetToken, setResetToken] = useState(initialResetToken)
+  const [newPassword, setNewPassword] = useState('')
+  const [resetMessage, setResetMessage] = useState('')
+
+  const completePasswordReset = async (event) => {
+    event.preventDefault()
+    setResetMessage('Updating password...')
+    const response = await fetch(`${backendUrl}/auth/reset-password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: resetToken, new_password: newPassword }),
+    })
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok) {
+      setResetMessage(payload.detail || 'Unable to reset password.')
+      return
+    }
+    window.history.replaceState({}, '', window.location.pathname)
+    setResetToken('')
+    setNewPassword('')
+    setResetMessage(payload.message || 'Password updated. Sign in now.')
+  }
   const authenticate = async ({ email, password }) => {
     const controller = new AbortController()
     const timeoutId = window.setTimeout(() => controller.abort(), 20000)
@@ -73,12 +97,28 @@ export default function LoginPage({ onLogin }) {
 
   return (
     <LoginLayout>
-      <LoginForm
-        authenticate={authenticate}
-        onForgotPassword={forgotPassword}
-        onSsoSignIn={ssoSignIn}
-        onAuthenticated={onLogin}
-      />
+      {resetToken ? (
+        <form className="login-form" onSubmit={completePasswordReset}>
+          <h2>Set a new password</h2>
+          <p>Use at least 10 characters.</p>
+          <label>
+            New password
+            <input type="password" minLength={10} maxLength={256} value={newPassword} onChange={(event) => setNewPassword(event.target.value)} required autoComplete="new-password" />
+          </label>
+          <button type="submit">Update password</button>
+          {resetMessage ? <p role="status">{resetMessage}</p> : null}
+        </form>
+      ) : (
+        <>
+          <LoginForm
+            authenticate={authenticate}
+            onForgotPassword={forgotPassword}
+            onSsoSignIn={ssoSignIn}
+            onAuthenticated={onLogin}
+          />
+          {resetMessage ? <p role="status">{resetMessage}</p> : null}
+        </>
+      )}
     </LoginLayout>
   )
 }

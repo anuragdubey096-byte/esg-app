@@ -1,15 +1,16 @@
 import json
+import hashlib
 import os
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, Header, HTTPException
+from fastapi import APIRouter, Body, Cookie, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from database import SessionLocal
-from models import CollectionCycle, Company, ReminderLog, ReviewAction, Submission, User, ValidationFlag
+from models import AuthSession, CollectionCycle, Company, ReminderLog, ReviewAction, Submission, User, ValidationFlag
 
 try:
     from openai import OpenAI
@@ -116,12 +117,35 @@ def _normalize_role(role: Any) -> str:
     return normalized
 
 
-def get_user_role(x_user_role: str | None = Header(default=None)) -> str:
-    return _normalize_role(x_user_role)
+def get_authenticated_user(
+    authorization: str | None = Header(default=None),
+    session_cookie: str | None = Cookie(default=None, alias='esg_session'),
+    db: Session = Depends(get_db),
+) -> User:
+    bearer = authorization.split(' ', 1)[1].strip() if authorization and authorization.lower().startswith('bearer ') else ''
+    raw_token = bearer or str(session_cookie or '').strip()
+    if not raw_token:
+        raise HTTPException(status_code=401, detail='Authentication required')
+    token_hash = hashlib.sha256(raw_token.encode('utf-8')).hexdigest()
+    session = db.query(AuthSession).filter(
+        AuthSession.token_hash == token_hash,
+        AuthSession.revoked_at.is_(None),
+        AuthSession.expires_at > datetime.utcnow(),
+    ).first()
+    if not session:
+        raise HTTPException(status_code=401, detail='Session expired or invalid')
+    user = db.query(User).filter(User.id == session.user_id).first()
+    if not user:
+        raise HTTPException(status_code=401, detail='Session user no longer exists')
+    return user
 
 
-def get_user_email(x_user_email: str | None = Header(default=None)) -> str | None:
-    return x_user_email.strip().lower() if x_user_email else None
+def get_user_role(user: User = Depends(get_authenticated_user)) -> str:
+    return _normalize_role(user.role)
+
+
+def get_user_email(user: User = Depends(get_authenticated_user)) -> str:
+    return user.email.strip().lower()
 
 
 def _parse_submission_payload(submission: Submission | None) -> dict[str, Any]:

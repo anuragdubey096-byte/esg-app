@@ -1,14 +1,16 @@
 import json
+import hashlib
 from enum import Enum
+from datetime import datetime
 from typing import Optional, Dict
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Cookie, Depends, Header, HTTPException
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.orm import Session
 
 # Re-using your existing database setup and models
 from database import SessionLocal
-from models import Submission
+from models import AuthSession, CollectionCycle, Company, Submission, User
 
 router = APIRouter()
 
@@ -19,6 +21,26 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+def get_authenticated_user(
+    authorization: str | None = Header(default=None),
+    session_cookie: str | None = Cookie(default=None, alias='esg_session'),
+    db: Session = Depends(get_db),
+) -> User:
+    bearer = authorization.split(' ', 1)[1].strip() if authorization and authorization.lower().startswith('bearer ') else ''
+    raw_token = bearer or str(session_cookie or '').strip()
+    if not raw_token:
+        raise HTTPException(status_code=401, detail='Authentication required')
+    session = db.query(AuthSession).filter(
+        AuthSession.token_hash == hashlib.sha256(raw_token.encode('utf-8')).hexdigest(),
+        AuthSession.revoked_at.is_(None),
+        AuthSession.expires_at > datetime.utcnow(),
+    ).first()
+    user = db.query(User).filter(User.id == session.user_id).first() if session else None
+    if not user:
+        raise HTTPException(status_code=401, detail='Session expired or invalid')
+    return user
 
 
 # ==========================================
@@ -75,6 +97,8 @@ class ESGSubmissionCreate(BaseModel):
     # ==========================================
     @model_validator(mode='after')
     def validate_business_logic(self):
+        if not 2000 <= self.reporting_year <= datetime.utcnow().year + 5:
+            raise ValueError(f'reporting_year must be between 2000 and {datetime.utcnow().year + 5}')
         # 1. Conditional Validation: Document References
         if self.social.whs_policy_in_place and not self.social.whs_document_reference:
             raise ValueError("WHS document reference is required when a WHS policy is in place.")
@@ -107,10 +131,26 @@ class ESGSubmissionCreate(BaseModel):
 # Task 3: FastAPI Endpoint
 # ==========================================
 @router.post("/submissions")
-def submit_esg_data(payload: ESGSubmissionCreate, db: Session = Depends(get_db)):
+def submit_esg_data(
+    payload: ESGSubmissionCreate,
+    user: User = Depends(get_authenticated_user),
+    db: Session = Depends(get_db),
+):
+    company = db.query(Company).filter(Company.id == payload.company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail='Company not found')
+    role = str(user.role.value if hasattr(user.role, 'value') else user.role).lower()
+    if role != 'manager' and company.user_id != user.id:
+        raise HTTPException(status_code=403, detail='Company access denied')
+    cycle = db.query(CollectionCycle).filter(CollectionCycle.cycle_year == payload.reporting_year).first()
+    if not cycle:
+        raise HTTPException(status_code=422, detail='No reporting cycle exists for reporting_year')
+    if db.query(Submission).filter(Submission.company_id == company.id, Submission.cycle_id == cycle.id).first():
+        raise HTTPException(status_code=409, detail='A submission already exists for this company and reporting cycle')
     # Convert Pydantic payload to JSON string. (prefilled_data is ignored via exclude=True)
     submission_record = Submission(
         company_id=payload.company_id,
+        cycle_id=cycle.id,
         esg_data=payload.model_dump_json(),
         status='submitted'
     )

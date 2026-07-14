@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field, model_validator
 
 class LoginRequest(BaseModel):
     email: str
-    password: str
+    password: str = Field(min_length=8, max_length=256)
 
 
 class ForgotPasswordRequest(BaseModel):
@@ -15,6 +15,11 @@ class ForgotPasswordRequest(BaseModel):
 
 class ForgotPasswordResponse(BaseModel):
     message: str
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str = Field(min_length=20, max_length=512)
+    new_password: str = Field(min_length=10, max_length=256)
 
 
 class SSOLoginRequest(BaseModel):
@@ -32,52 +37,53 @@ class UserResponse(BaseModel):
 
 
 class SubmissionCreateRequest(BaseModel):
-    scope_1_emissions: float = Field(ge=0)
+    reporting_year: Optional[int] = Field(default=None, ge=2000)
+    scope_1_emissions: float = Field(ge=0, le=1_000_000_000_000)
     scope_1_emissions_confidence: str
-    scope_2_location_based: float = Field(ge=0)
+    scope_2_location_based: float = Field(ge=0, le=1_000_000_000_000)
     scope_2_location_based_confidence: str
-    scope_2_market_based: float = Field(ge=0)
+    scope_2_market_based: float = Field(ge=0, le=1_000_000_000_000)
     scope_2_market_based_confidence: str
-    scope_3_emissions: float = Field(ge=0)
+    scope_3_emissions: float = Field(ge=0, le=1_000_000_000_000)
     scope_3_emissions_confidence: str
-    total_ghg_emissions: float = Field(ge=0)
+    total_ghg_emissions: float = Field(ge=0, le=1_000_000_000_000)
     total_ghg_emissions_confidence: str
     reduction_target_percent: float = Field(ge=0, le=100)
     reduction_target_percent_confidence: str
-    reduction_target_year: int = Field(ge=2026)
+    reduction_target_year: int = Field(ge=2026, le=2100)
     reduction_target_year_confidence: str
     reduction_strategy_description: Optional[str] = None
-    total_energy_consumption: float = Field(ge=0)
+    total_energy_consumption: float = Field(ge=0, le=1_000_000_000_000_000)
     total_energy_consumption_confidence: str
-    renewable_energy_consumption: float = Field(ge=0)
+    renewable_energy_consumption: float = Field(ge=0, le=1_000_000_000_000_000)
     renewable_energy_consumption_confidence: str
-    total_water_withdrawal: float = Field(ge=0)
+    total_water_withdrawal: float = Field(ge=0, le=1_000_000_000_000_000)
     total_water_withdrawal_confidence: str
-    water_recycled_reused: float = Field(ge=0)
+    water_recycled_reused: float = Field(ge=0, le=1_000_000_000_000_000)
     water_recycled_reused_confidence: str
-    total_waste_generated: float = Field(ge=0)
+    total_waste_generated: float = Field(ge=0, le=1_000_000_000_000_000)
     total_waste_generated_confidence: str
-    waste_diverted_from_landfill: float = Field(ge=0)
+    waste_diverted_from_landfill: float = Field(ge=0, le=1_000_000_000_000_000)
     waste_diverted_from_landfill_confidence: str
-    hazardous_waste_generated: float = Field(ge=0)
+    hazardous_waste_generated: float = Field(ge=0, le=1_000_000_000_000_000)
     hazardous_waste_generated_confidence: str
     air_quality_control_measures: str
     air_quality_control_measures_confidence: str
-    nox_sox_emissions: float = Field(ge=0)
+    nox_sox_emissions: float = Field(ge=0, le=1_000_000_000_000)
     nox_sox_emissions_confidence: str
 
     whs_policy_in_place: str
     whs_policy_in_place_confidence: str
     whs_policy_document_reference: Optional[str] = None
-    trifr: float = Field(ge=0)
+    trifr: float = Field(ge=0, le=1000)
     trifr_confidence: str
-    total_fatalities: int = Field(ge=0)
+    total_fatalities: int = Field(ge=0, le=100_000_000)
     total_fatalities_confidence: str
-    total_lost_time_injuries: int = Field(ge=0)
+    total_lost_time_injuries: int = Field(ge=0, le=100_000_000)
     total_lost_time_injuries_confidence: str
-    total_incidents_reported: int = Field(ge=0)
+    total_incidents_reported: int = Field(ge=0, le=100_000_000)
     total_incidents_reported_confidence: str
-    total_employees_fte: int = Field(gt=0)
+    total_employees_fte: int = Field(gt=0, le=100_000_000)
     total_employees_fte_confidence: str
     employee_turnover_rate: float = Field(ge=0, le=100)
     employee_turnover_rate_confidence: str
@@ -85,7 +91,7 @@ class SubmissionCreateRequest(BaseModel):
     female_representation_percent_confidence: str
     female_leadership_representation_percent: float = Field(ge=0, le=100)
     female_leadership_representation_percent_confidence: str
-    community_investment_spend: float = Field(ge=0)
+    community_investment_spend: float = Field(ge=0, le=1_000_000_000_000_000)
     community_investment_spend_confidence: str
 
     esg_policy_in_place: str
@@ -98,13 +104,13 @@ class SubmissionCreateRequest(BaseModel):
     cybersecurity_policy_in_place: str
     cybersecurity_policy_in_place_confidence: str
     cybersecurity_policy_document_reference: Optional[str] = None
-    cyber_incidents_in_reporting_period: int = Field(ge=0)
+    cyber_incidents_in_reporting_period: int = Field(ge=0, le=100_000_000)
     cyber_incidents_in_reporting_period_confidence: str
     anti_bribery_corruption_policy: str
     anti_bribery_corruption_policy_confidence: str
-    confirmed_cases_of_corruption: int = Field(ge=0)
+    confirmed_cases_of_corruption: int = Field(ge=0, le=100_000_000)
     confirmed_cases_of_corruption_confidence: str
-    total_board_members: int = Field(gt=0)
+    total_board_members: int = Field(gt=0, le=100_000)
     total_board_members_confidence: str
     independent_board_members_percent: float = Field(ge=0, le=100)
     independent_board_members_percent_confidence: str
@@ -118,6 +124,9 @@ class SubmissionCreateRequest(BaseModel):
 
     @model_validator(mode='after')
     def validate_submission(self):
+        current_year = datetime.now(timezone.utc).year
+        if self.reporting_year is not None and not 2000 <= self.reporting_year <= current_year + 5:
+            raise ValueError(f'reporting_year must be between 2000 and {current_year + 5}')
         allowed_yes_no = {'Yes', 'No'}
         confidence_values = {'Measured', 'Estimated', 'Not Available'}
 
@@ -399,10 +408,16 @@ class CycleInfo(BaseModel):
     status: str
     carry_forward_prefill: bool
     prefill_company_count: int
+    submission_count: int = 0
 
 
 class CycleStatusUpdateRequest(BaseModel):
-    status: Literal['draft', 'active', 'closed']
+    status: Literal['draft', 'active', 'closed', 'archived']
+
+
+class MetricReviewCommentRequest(BaseModel):
+    metric_key: str = Field(min_length=2, max_length=120, pattern=r'^[a-z0-9_]+$')
+    comment: str = Field(min_length=2, max_length=4000)
 
 
 class SubmissionUnlockRequest(BaseModel):
