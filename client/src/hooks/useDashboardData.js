@@ -9,7 +9,7 @@ const STATUS_TO_UI = {
   submitted: 'Submitted',
   'under review': 'Under Review',
   approved: 'Approved',
-  rejected: 'Resubmission Requested',
+  rejected: 'Rejected',
   'resubmission requested': 'Resubmission Requested',
 }
 
@@ -77,42 +77,69 @@ export function parseSubmissionPayload(submission) {
 
 export function getProgressFromStatus(status) {
   if (status === 'Approved') return 100
+  if (status === 'Rejected') return 100
   if (status === 'Under Review') return 84
-  if (status === 'Submitted') return 85
+  if (status === 'Submitted') return 72
   if (status === 'Resubmission Requested') return 58
-  if (status === 'In Progress') return 46
+  if (status === 'In Progress') return 45
   return 8
 }
 
-export function calculateESGScore(status, payload) {
-  const baseline = {
-    'Not Started': 34,
-    'In Progress': 52,
-    Submitted: 68,
-    'Under Review': 75,
-    Approved: 82,
-    'Resubmission Requested': 48,
-  }[status] || 50
+function metricNumber(value) {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : 0
+}
 
-  if (!payload) return baseline
+function metricYes(value) {
+  return String(value || '').trim().toLowerCase() === 'yes'
+}
 
-  let score = baseline
+function clampScore(value) {
+  return Math.max(0, Math.min(100, value))
+}
 
-  const reductionTarget = Number(payload.reduction_target_percent || 0)
-  const femaleRepresentation = Number(payload.female_representation_percent || 0)
-  const independentBoard = Number(payload.independent_board_members_percent || 0)
-  const trifr = Number(payload.trifr || 0)
-  const corruptionCases = Number(payload.confirmed_cases_of_corruption || 0)
-  const totalEmissions = Number(payload.total_ghg_emissions || 0)
+export function calculateESGPillarScores(payload) {
+  if (!payload || typeof payload !== 'object') return null
+  const scope1 = metricNumber(payload.scope_1_emissions)
+  const scope2 = metricNumber(payload.scope_2_location_based)
+  const scope3 = metricNumber(payload.scope_3_emissions)
+  const energy = metricNumber(payload.total_energy_consumption)
+  const renewable = metricNumber(payload.renewable_energy_consumption)
+  const renewableRatio = energy > 0 ? renewable / energy : 0
+  const femaleRepresentation = metricNumber(payload.female_representation_percent)
+  const trifr = metricNumber(payload.trifr)
+  const turnover = metricNumber(payload.employee_turnover_rate)
+  const independentBoard = metricNumber(payload.independent_board_members_percent)
+  const corruptionCases = metricNumber(payload.confirmed_cases_of_corruption)
 
-  score += Math.min(12, reductionTarget * 0.28)
-  score += Math.min(10, femaleRepresentation * 0.12)
-  score += Math.min(8, independentBoard * 0.1)
-  score += Math.max(0, 7 - trifr * 2)
-  score += corruptionCases === 0 ? 4 : -Math.min(8, corruptionCases * 2)
-  score -= Math.min(10, totalEmissions / 500)
+  const environmental = clampScore(
+    30
+    + Math.max(0, 35 - ((scope1 + scope2 + scope3) / 60))
+    + Math.min(20, metricNumber(payload.reduction_target_percent) * 0.25)
+    + Math.min(15, renewableRatio * 100 * 0.2)
+  )
+  const social = clampScore(
+    25
+    + Math.min(25, femaleRepresentation * 0.35)
+    + Math.max(0, 20 - trifr * 2.5)
+    + Math.max(0, 15 - turnover * 0.3)
+    + (metricYes(payload.whs_policy_in_place) ? 15 : 0)
+  )
+  const governance = clampScore(
+    (metricYes(payload.esg_policy_in_place) ? 20 : 0)
+    + (metricYes(payload.board_level_esg_oversight) ? 20 : 0)
+    + (metricYes(payload.cybersecurity_policy_in_place) ? 20 : 0)
+    + (metricYes(payload.anti_bribery_corruption_policy) ? 20 : 0)
+    + Math.min(20, independentBoard * 0.4)
+    - Math.min(10, corruptionCases * 2)
+  )
+  const composite = clampScore((0.45 * environmental) + (0.30 * social) + (0.25 * governance))
+  return { environmental, social, governance, composite }
+}
 
-  return Math.max(0, Math.min(100, Math.round(score)))
+export function calculateESGScore(_status, payload) {
+  const scores = calculateESGPillarScores(payload)
+  return scores ? Number(scores.composite.toFixed(1)) : null
 }
 
 function parseDateString(dateString) {
@@ -160,6 +187,7 @@ export function getRiskLevel({ status, esgScore, deadline }) {
     if (diff <= 7) return status === 'Not Started' ? 'High' : 'Medium'
   }
 
+  if (esgScore === null || esgScore === undefined || !Number.isFinite(Number(esgScore))) return 'Unknown'
   if (esgScore < 55) return 'High'
   if (esgScore < 70) return 'Medium'
   return 'Low'
@@ -195,7 +223,7 @@ export default function useDashboardData(user) {
         setSummary(null)
       } else if (dashboardData && Array.isArray(dashboardData.companies)) {
         setCompanies(dashboardData.companies)
-        setSummary(dashboardData)
+        setSummary(dashboardData.summary || dashboardData)
       } else if (dashboardData && typeof dashboardData === 'object') {
         setCompanies([])
         setSummary(dashboardData)
@@ -204,7 +232,7 @@ export default function useDashboardData(user) {
         setSummary(null)
       }
 
-      if (String(user?.role || '').toLowerCase() === 'manager') {
+      if (['manager', 'company'].includes(String(user?.role || '').toLowerCase())) {
         try {
           const cycleResponse = await fetch(`${BACKEND_URL}/cycles`, {
             headers: {

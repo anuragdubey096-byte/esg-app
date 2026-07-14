@@ -15,6 +15,7 @@ import {
 } from 'recharts'
 import AttentionInbox from '../components/AttentionInbox'
 import DataTable from '../components/DataTable'
+import ExecutivePageHeader from '../components/ExecutivePageHeader'
 import KpiCard from '../components/KpiCard'
 import SectionCard from '../components/SectionCard'
 import useDashboardData from '../hooks/useDashboardData'
@@ -26,8 +27,10 @@ const funnelColors = {
   'Not Started': '#ef4444',
   'In Progress': '#f59e0b',
   Submitted: '#0ea5e9',
+  'Under Review': '#8b5cf6',
   Approved: '#10b981',
   Rejected: '#f97316',
+  'Resubmission Requested': '#dc2626',
 }
 
 function buildInvestorAttentionItems(analytics, dataQuality) {
@@ -166,7 +169,18 @@ export default function InvestorOverviewPage() {
 
   return (
     <div className="page-grid">
-      <section className="kpi-grid">
+      <ExecutivePageHeader
+        eyebrow="Investor portfolio intelligence"
+        title="Portfolio ESG overview"
+        description="Review portfolio performance, reporting coverage, data quality, and material ESG exposures from one decision-ready view."
+        meta={[
+          { label: 'Companies', value: analytics.total_companies || 0 },
+          { label: 'Reporting', value: analytics.reporting_companies || 0 },
+          { label: 'Data confidence', value: `${Number(dataQuality.confidence || 0).toFixed(1)}%` },
+        ]}
+      />
+
+      <section className="executive-kpi-grid" aria-label="Investor portfolio metrics">
         <KpiCard title="Portfolio ESG Score" value={`${Number(analytics.portfolio_esg_score || 0).toFixed(1)}/100`} />
         <KpiCard title="E / S / G" value={`${scoreBreakdown.E || 0} / ${scoreBreakdown.S || 0} / ${scoreBreakdown.G || 0}`} />
         <KpiCard

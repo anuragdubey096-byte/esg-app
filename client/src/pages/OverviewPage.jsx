@@ -8,7 +8,7 @@ import ReportingProgress from '../components/ReportingProgress'
 import SectionCard from '../components/SectionCard'
 import StatusBadge from '../components/StatusBadge'
 import useCollaborationWorkspace from '../hooks/useCollaborationWorkspace'
-import useDashboardData, { getLatestSubmission, normalizeStatus } from '../hooks/useDashboardData'
+import useDashboardData, { getDaysToDeadline, getLatestSubmission, getPreferredCycle, normalizeStatus } from '../hooks/useDashboardData'
 import useLiveActivity from '../hooks/useLiveActivity'
 import useNarrativeLifecycle from '../hooks/useNarrativeLifecycle'
 import useNarrativeSummary from '../hooks/useNarrativeSummary'
@@ -19,13 +19,15 @@ function formatDays(value) {
   return `${value} days remaining`
 }
 
-function buildFallbackSummary(companies) {
+function buildFallbackSummary(companies, cycles = []) {
+  const preferredCycle = getPreferredCycle(cycles)
   const status_breakdown = {
     'Not Started': 0,
     'In Progress': 0,
     'Submitted': 0,
     'Under Review': 0,
     'Approved': 0,
+    'Rejected': 0,
     'Resubmission Requested': 0,
   }
 
@@ -40,11 +42,11 @@ function buildFallbackSummary(companies) {
   return {
     status_breakdown,
     cycle_banner: {
-      active_cycle_year: null,
-      submission_open_date: null,
-      submission_deadline: null,
-      days_remaining: null,
-      cycle_status: 'closed',
+      active_cycle_year: preferredCycle?.cycle_year || null,
+      submission_open_date: preferredCycle?.submission_open_date || null,
+      submission_deadline: preferredCycle?.submission_deadline || null,
+      days_remaining: getDaysToDeadline(cycles),
+      cycle_status: preferredCycle?.status || 'closed',
     },
     upcoming_deadlines: [],
     progress_rows: [],
@@ -159,7 +161,7 @@ function buildOverviewAttentionItems({ cycleBanner, isCompany, isManager, primar
 
 export default function OverviewPage() {
   const { user } = useOutletContext()
-  const { companies, summary, loading, error } = useDashboardData(user)
+  const { companies, cycles, summary, loading, error } = useDashboardData(user)
   const role = String(user?.role || '').toLowerCase()
   const isManager = role === 'manager'
   const isCompany = role === 'company'
@@ -194,8 +196,8 @@ export default function OverviewPage() {
     if (summary && typeof summary === 'object' && summary.status_breakdown) {
       return summary
     }
-    return buildFallbackSummary(companies)
-  }, [companies, summary])
+    return buildFallbackSummary(companies, cycles)
+  }, [companies, cycles, summary])
   const statusBreakdown = managerSummary.status_breakdown || {}
   const cycleBanner = managerSummary.cycle_banner || {}
   const upcomingDeadlines = managerSummary.upcoming_deadlines || []
@@ -211,7 +213,9 @@ export default function OverviewPage() {
     const total = Object.values(statusBreakdown).reduce((sum, value) => sum + Number(value || 0), 0)
     const approved = Number(statusBreakdown.Approved || 0)
     const reviewQueue = Number(statusBreakdown.Submitted || 0) + Number(statusBreakdown['Under Review'] || 0)
-    const actionRequired = Number(statusBreakdown['Resubmission Requested'] || 0) + Number(statusBreakdown['Not Started'] || 0)
+    const actionRequired = Number(statusBreakdown['Resubmission Requested'] || 0)
+      + Number(statusBreakdown.Rejected || 0)
+      + Number(statusBreakdown['Not Started'] || 0)
     return {
       total,
       approved,
@@ -341,7 +345,12 @@ export default function OverviewPage() {
 
       <AttentionInbox items={attentionItems} role={role || 'manager'} />
 
-      <SectionCard title="AI Portfolio Narrative" subtitle="OpenAI-generated management summary from latest approved portfolio data">
+      <SectionCard
+        title={isCompany ? 'AI Company Narrative' : 'AI Portfolio Narrative'}
+        subtitle={isCompany
+          ? 'Current company reporting summary based on submitted ESG data'
+          : 'Management summary based on latest approved portfolio data'}
+      >
         {narrative.loading ? <p>Generating summary...</p> : null}
         {narrative.error ? <p>{narrative.error}</p> : null}
         {!narrative.loading && !narrative.error && narrative.data ? (
@@ -497,23 +506,27 @@ export default function OverviewPage() {
         </SectionCard>
       ) : null}
 
-      <SectionCard title="Upcoming Deadlines (Next 7 Days)" subtitle="Only non-submitted companies appear here">
-        <DataTable
-          columns={deadlineColumns}
-          rows={upcomingDeadlines}
-          pageSize={8}
-          emptyMessage="No upcoming deadlines in the next 7 days."
-        />
-      </SectionCard>
+      {isManager ? (
+        <>
+          <SectionCard title="Upcoming Deadlines (Next 7 Days)" subtitle="Only non-submitted companies appear here">
+            <DataTable
+              columns={deadlineColumns}
+              rows={upcomingDeadlines}
+              pageSize={8}
+              emptyMessage="No upcoming deadlines in the next 7 days."
+            />
+          </SectionCard>
 
-      <SectionCard title="Manager Progress Table" subtitle="Dynamic company-level tracking and available actions">
-        <DataTable
-          columns={progressColumns}
-          rows={managerSummary.progress_rows || []}
-          pageSize={10}
-          emptyMessage="No company progress rows available."
-        />
-      </SectionCard>
+          <SectionCard title="Manager Progress Table" subtitle="Dynamic company-level tracking and available actions">
+            <DataTable
+              columns={progressColumns}
+              rows={managerSummary.progress_rows || []}
+              pageSize={10}
+              emptyMessage="No company progress rows available."
+            />
+          </SectionCard>
+        </>
+      ) : null}
 
       <SectionCard
         title="Live Activity"

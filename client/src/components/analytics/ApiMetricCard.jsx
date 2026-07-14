@@ -155,7 +155,7 @@ export default function ApiMetricCard({
     return `${formatted} ${unit}`
   }, [decimals, error, loading, metricValue, missingEndpoint, unit, valueType])
 
-  let metaText = unit ? `Unit: ${unit}` : ''
+  let metaText = ''
   let metaClass = 'neutral'
 
   if (loading) {
@@ -175,7 +175,6 @@ export default function ApiMetricCard({
     const trendValue = trend.percent === null ? '' : ` ${Math.abs(trend.percent).toFixed(1)}%`
     const trendLabel = trend.label ? ` ${trend.label}` : ''
     metaText = `${symbol}${trendValue}${trendLabel}`.trim()
-    if (unit) metaText = `${metaText} | ${unit}`
     metaClass = trend.direction === 'up' ? 'positive' : trend.direction === 'down' ? 'negative' : 'neutral'
   }
 

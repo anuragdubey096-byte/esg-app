@@ -62,6 +62,8 @@ Root project env vars:
 - `BLOB_READ_WRITE_TOKEN`: Blob storage token for report and narrative exports.
 - `FRONTEND_ORIGIN`: your Vercel URL for CORS.
 - `ANTHROPIC_API_KEY`: required for Claude narrative generation.
+- `APP_ENV=production`: marks the deployment as production.
+- `SEED_SAMPLE_DATA=false`: prevents demo users and submissions from being inserted into a durable production database. If omitted, sample data is still available for local or ephemeral demo databases.
 
 Build settings:
 - Root `vercel.json` builds the React client from `client/` and serves it from `client/dist`.

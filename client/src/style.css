@@ -841,6 +841,8 @@ p {
 .reporting-legend-dot.progress { background: #d97706; }
 .reporting-status-segment.resubmission,
 .reporting-legend-dot.resubmission { background: #dc2626; }
+.reporting-status-segment.rejected,
+.reporting-legend-dot.rejected { background: #991b1b; }
 .reporting-status-segment.not-started,
 .reporting-legend-dot.not-started { background: #94a3b8; }
 
@@ -1100,6 +1102,12 @@ p {
   color: #102a43;
   font-size: clamp(1.35rem, 2vw, 1.85rem);
   letter-spacing: -0.03em;
+}
+
+.metric-unit-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.7rem;
 }
 
 .analytics-scope-controls {
@@ -2661,6 +2669,10 @@ p {
 
   .executive-kpi-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .metric-unit-grid {
+    grid-template-columns: 1fr;
   }
 
   .analytics-scope-controls {

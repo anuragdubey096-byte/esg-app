@@ -20,7 +20,7 @@ import ExecutivePageHeader from '../components/ExecutivePageHeader'
 import KpiCard from '../components/KpiCard'
 import SectionCard from '../components/SectionCard'
 import AdminAnalyticsSections from '../components/analytics/AdminAnalyticsSections'
-import useDashboardData, { getLatestSubmission, parseSubmissionPayload } from '../hooks/useDashboardData'
+import useDashboardData, { calculateESGPillarScores, getLatestSubmission, parseSubmissionPayload } from '../hooks/useDashboardData'
 
 const analyticsTabs = ['Environmental', 'Social', 'Governance', 'Benchmarking']
 
@@ -37,10 +37,6 @@ function toAverage(total, count) {
 
 function toPct(value) {
   return Math.max(0, Math.min(100, Number(value || 0)))
-}
-
-function clamp(value, min = 0, max = 100) {
-  return Math.max(min, Math.min(max, value))
 }
 
 function isYes(value) {
@@ -113,13 +109,10 @@ export default function AnalyticsPage() {
       const water = toNumber(payload.total_water_withdrawal)
       const waste = toNumber(payload.total_waste_generated)
       const trifr = toNumber(payload.trifr)
-      const turnover = toNumber(payload.employee_turnover_rate)
       const femaleRep = toPct(payload.female_representation_percent)
       const femaleLeadership = toPct(payload.female_leadership_representation_percent)
       const independentBoard = toPct(payload.independent_board_members_percent)
-      const boardFemale = toPct(payload.female_board_members_percent)
       const employees = toNumber(payload.total_employees_fte)
-      const reductionTarget = toPct(payload.reduction_target_percent)
 
       const policyFields = [
         payload.esg_policy_in_place,
@@ -128,13 +121,13 @@ export default function AnalyticsPage() {
         payload.board_level_esg_oversight,
       ]
       const policyYesCount = policyFields.filter((value) => isYes(value)).length
-      const policyScore = (policyYesCount / policyFields.length) * 100
       const renewableShare = energy > 0 ? (renewable / energy) * 100 : 0
       const emissionsIntensity = employees > 0 ? emissions / employees : 0
-      const environmentScore = clamp((renewableShare * 0.45) + (reductionTarget * 0.35) + Math.max(0, 30 - (emissions / 9000) * 10))
-      const socialScore = clamp((femaleRep * 0.32) + (femaleLeadership * 0.28) + Math.max(0, 24 - trifr * 5) + Math.max(0, 16 - turnover * 0.45))
-      const governanceScore = clamp((policyScore * 0.72) + (independentBoard * 0.2) + (boardFemale * 0.08))
-      const compositeScore = clamp((environmentScore * 0.45) + (socialScore * 0.3) + (governanceScore * 0.25))
+      const pillarScores = calculateESGPillarScores(payload)
+      const environmentScore = pillarScores?.environmental || 0
+      const socialScore = pillarScores?.social || 0
+      const governanceScore = pillarScores?.governance || 0
+      const compositeScore = pillarScores?.composite || 0
 
       emissionsScopeTotals.scope1 += scope1
       emissionsScopeTotals.scope2 += scope2

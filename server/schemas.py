@@ -318,6 +318,11 @@ class InvestorTrendPoint(BaseModel):
     total_emissions: float
 
 
+class InvestorScoreTrendPoint(BaseModel):
+    period: str
+    score: float
+
+
 class InvestorPerformer(BaseModel):
     company_name: str
     sector: str
@@ -329,6 +334,7 @@ class InvestorDashboardResponse(InvestorSummary):
     score_breakdown: Dict[str, float]
     emissions_totals: Dict[str, float]
     emissions_trend: List[InvestorTrendPoint]
+    score_trend: List[InvestorScoreTrendPoint] = []
     resource_totals: Dict[str, float]
     diversity_safety: Dict[str, float]
     governance_adoption_percent: float

@@ -6,6 +6,7 @@ import StatusBadge from '../components/StatusBadge'
 import useDashboardData, {
   calculateESGScore,
   getLatestSubmission,
+  getSortedSubmissions,
   getSubmissionReportingYear,
   normalizeStatus,
   parseSubmissionPayload,
@@ -109,8 +110,11 @@ export default function ReviewHubPage() {
 
   const submissionRows = useMemo(() => {
     return companies.filter(c => getLatestSubmission(c)).map(c => {
-      const latest = getLatestSubmission(c)
+      const submissions = getSortedSubmissions(c)
+      const latest = submissions[submissions.length - 1]
+      const previous = submissions.length > 1 ? submissions[submissions.length - 2] : null
       const payload = parseSubmissionPayload(latest)
+      const previousPayload = parseSubmissionPayload(previous)
       const status = normalizeStatus(latest?.status || 'Not Started')
       return {
         id: c.id,
@@ -119,6 +123,7 @@ export default function ReviewHubPage() {
         geography: c.geography,
         status,
         esgScore: calculateESGScore(status, payload),
+        priorEsgScore: calculateESGScore(normalizeStatus(previous?.status || ''), previousPayload),
         payload,
         submissionId: latest?.id || null,
         submissionYear: getSubmissionReportingYear(latest) || null,
@@ -134,7 +139,8 @@ export default function ReviewHubPage() {
       sector: '--',
       geography: '--',
       status: 'Not Started',
-      esgScore: 0,
+      esgScore: null,
+      priorEsgScore: null,
       payload: {},
       submissionId: null,
       submissionYear: null,
@@ -601,13 +607,13 @@ export default function ReviewHubPage() {
         <div className="two-col-grid compact">
           <article className="compare-card">
             <p className="eyebrow">Current Year</p>
-            <h4>ESG Score {selectedCompany.esgScore}</h4>
+            <h4>ESG Score {selectedCompany.esgScore ?? 'N/A'}</h4>
             <p>Submission status: {selectedCompany.status}</p>
           </article>
           <article className="compare-card muted">
             <p className="eyebrow">Previous Year</p>
-            <h4>ESG Score {Math.max(0, selectedCompany.esgScore - 5)}</h4>
-            <p>Submission status: Approved</p>
+            <h4>ESG Score {selectedCompany.priorEsgScore ?? 'N/A'}</h4>
+            <p>Submission status: {selectedCompany.priorEsgScore == null ? 'No prior submission' : 'Historical'}</p>
           </article>
         </div>
 

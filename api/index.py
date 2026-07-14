@@ -59,8 +59,8 @@ try:
         # Mounted sub-apps may not always receive lifespan startup hooks
         # in this serverless wrapper, so trigger bootstrap explicitly.
         main_startup_event()
-    except Exception:
-        pass
+    except Exception as startup_error:
+        print(f'[startup] database bootstrap failed: {startup_error}', file=sys.stderr)
     wrapper_app = FastAPI(title='ESG API Bootstrap')
     # Support both `/api/*` (production frontend) and root paths (local tooling)
     # by mounting the backend app under both prefixes.

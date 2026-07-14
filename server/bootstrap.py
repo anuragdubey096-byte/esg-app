@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 from database import SessionLocal, engine
@@ -8,8 +9,20 @@ from models import Base, CollectionCycle, Company, Submission, User, ReviewActio
 DB_PATH = Path(__file__).resolve().parent / 'db.sqlite'
 
 
+def sample_seed_enabled() -> bool:
+    configured = str(os.getenv('SEED_SAMPLE_DATA') or '').strip().lower()
+    if configured:
+        return configured in {'1', 'true', 'yes', 'on'}
+    environment = str(os.getenv('APP_ENV') or '').strip().lower()
+    has_durable_database = bool(str(os.getenv('DATABASE_URL') or '').strip())
+    if has_durable_database and (os.getenv('VERCEL') or environment in {'production', 'prod'}):
+        return False
+    return True
+
+
 def build_sample_submission(
     *,
+    reporting_year=None,
     scope_1=10.0,
     scope_2_location=20.0,
     scope_2_market=18.0,
@@ -32,6 +45,7 @@ def build_sample_submission(
 ):
     total_ghg = scope_1 + scope_2_location + scope_3
     return {
+        'reporting_year': reporting_year,
         'scope_1_emissions': scope_1,
         'scope_1_emissions_confidence': 'Measured',
         'scope_2_location_based': scope_2_location,
@@ -113,6 +127,8 @@ def build_sample_submission(
 
 
 def seed_sample_data(db):
+    if not sample_seed_enabled():
+        return
     sample_users = [
         ('Portfolio Contact', 'company@example.com', 'password123', UserRole.COMPANY),
         ('Manager Alice', 'manager@example.com', 'password123', UserRole.MANAGER),
@@ -159,6 +175,7 @@ def seed_sample_data(db):
                     company_id=solar_company.id,
                     esg_data=json.dumps(
                         build_sample_submission(
+                            reporting_year=2025,
                             scope_1=8.5,
                             scope_2_location=14.0,
                             scope_2_market=13.0,
@@ -189,6 +206,7 @@ def seed_sample_data(db):
                     company_id=solar_company.id,
                     esg_data=json.dumps(
                         build_sample_submission(
+                            reporting_year=2026,
                             scope_1=12.0,
                             scope_2_location=21.0,
                             scope_2_market=19.0,
@@ -219,6 +237,7 @@ def seed_sample_data(db):
                     company_id=healthy_company.id,
                     esg_data=json.dumps(
                         build_sample_submission(
+                            reporting_year=2026,
                             scope_1=8.5,
                             scope_2_location=16.0,
                             scope_2_market=14.5,

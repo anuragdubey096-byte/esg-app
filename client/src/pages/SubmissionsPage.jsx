@@ -449,7 +449,7 @@ export default function SubmissionsPage() {
     { key: 'status', label: 'Status', sortable: true, render: (row) => <StatusBadge value={row.status} /> },
     { key: 'progress', label: 'Progress %', sortable: true, render: (row) => `${row.progress}%` },
     { key: 'deadline', label: 'Deadline', sortable: true },
-    { key: 'esgScore', label: 'ESG Score', sortable: true },
+    { key: 'esgScore', label: 'ESG Score', sortable: true, render: (row) => row.esgScore ?? 'N/A' },
     { key: 'risk', label: 'Risk Indicator', sortable: true, render: (row) => <StatusBadge value={row.risk} /> },
   ]
 

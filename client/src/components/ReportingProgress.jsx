@@ -1,5 +1,6 @@
 const STATUS_CONFIG = [
   { key: 'Approved', className: 'approved' },
+  { key: 'Rejected', className: 'rejected' },
   { key: 'Submitted', className: 'submitted' },
   { key: 'Under Review', className: 'review' },
   { key: 'In Progress', className: 'progress' },

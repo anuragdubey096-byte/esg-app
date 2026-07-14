@@ -16,6 +16,7 @@ import {
   YAxis,
 } from 'recharts'
 import DataTable from '../components/DataTable'
+import ExecutivePageHeader from '../components/ExecutivePageHeader'
 import KpiCard from '../components/KpiCard'
 import SectionCard from '../components/SectionCard'
 import LPAnalyticsSections from '../components/analytics/LPAnalyticsSections'
@@ -27,8 +28,10 @@ const funnelColors = {
   'Not Started': '#ef4444',
   'In Progress': '#f59e0b',
   Submitted: '#0ea5e9',
+  'Under Review': '#8b5cf6',
   Approved: '#10b981',
   Rejected: '#f97316',
+  'Resubmission Requested': '#dc2626',
 }
 
 function toNumber(value) {
@@ -144,7 +147,18 @@ export default function InvestorAnalyticsPage() {
 
   return (
     <div className="page-grid">
-      <section className="kpi-grid">
+      <ExecutivePageHeader
+        eyebrow="Investor analytics"
+        title="Portfolio performance analytics"
+        description="Compare verified portfolio indicators, historical emissions, ESG pillars, reporting quality, and performance outliers."
+        meta={[
+          { label: 'Coverage', value: `${coveragePercent}%` },
+          { label: 'Companies', value: toNumber(analytics.total_companies) },
+          { label: 'Historical periods', value: emissionsTrend.length },
+        ]}
+      />
+
+      <section className="executive-kpi-grid" aria-label="Investor analytics metrics">
         <KpiCard title="Portfolio ESG Score" value={`${toNumber(analytics.portfolio_esg_score).toFixed(1)}/100`} />
         <KpiCard title="Reporting Coverage" value={`${coveragePercent}%`} trendLabel={`${toNumber(analytics.reporting_companies)}/${toNumber(analytics.total_companies)} companies`} />
         <KpiCard title="Total Emissions" value={`${toNumber(analytics.emissions_totals?.total).toLocaleString()} tCO2e`} />
@@ -179,7 +193,7 @@ export default function InvestorAnalyticsPage() {
 
       <section className="two-col-grid">
         <SectionCard title="Emissions Trend" subtitle="Portfolio total emissions over recent periods">
-          <div className="chart-wrap">
+          {emissionsTrend.length ? <div className="chart-wrap">
             <ResponsiveContainer width="100%" height={300}>
               <LineChart data={emissionsTrend}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} />
@@ -189,7 +203,12 @@ export default function InvestorAnalyticsPage() {
                 <Line type="monotone" dataKey="total_emissions" stroke="#0f766e" strokeWidth={3} dot={{ r: 3 }} />
               </LineChart>
             </ResponsiveContainer>
-          </div>
+          </div> : (
+            <div className="analytics-empty-scope" role="status">
+              <strong>No historical reporting periods yet</strong>
+              <p>The trend will appear after submissions include reporting years.</p>
+            </div>
+          )}
         </SectionCard>
 
         <SectionCard title="Emissions Mix" subtitle="Scope distribution across portfolio">
@@ -245,17 +264,11 @@ export default function InvestorAnalyticsPage() {
 
       <section className="two-col-grid">
         <SectionCard title="Resource Analytics" subtitle="Energy, water, and waste totals">
-          <div className="chart-wrap">
-            <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={resourceData}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                <XAxis dataKey="metric" />
-                <YAxis />
-                <Tooltip />
-                <Legend />
-                <Bar dataKey="value" fill="#2563eb" radius={[8, 8, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
+          <div className="metric-unit-grid">
+            {resourceData.map((item) => {
+              const unit = item.metric === 'Energy' ? 'MWh' : item.metric === 'Water' ? 'm³' : 'tonnes'
+              return <KpiCard key={item.metric} title={item.metric} value={`${item.value.toLocaleString()} ${unit}`} />
+            })}
           </div>
         </SectionCard>
 
@@ -276,16 +289,11 @@ export default function InvestorAnalyticsPage() {
 
       <section className="two-col-grid">
         <SectionCard title="Social & Safety Indicators" subtitle="Portfolio averages and anomaly pressure">
-          <div className="chart-wrap">
-            <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={socialData}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                <XAxis dataKey="metric" />
-                <YAxis />
-                <Tooltip />
-                <Bar dataKey="value" fill="#7c3aed" radius={[8, 8, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
+          <div className="metric-unit-grid">
+            {socialData.map((item) => {
+              const unit = item.metric.includes('%') ? '%' : item.metric.includes('TRIFR') ? 'TRIFR' : 'flags'
+              return <KpiCard key={item.metric} title={item.metric.replace(' %', '')} value={`${item.value.toLocaleString()} ${unit}`} />
+            })}
           </div>
         </SectionCard>
 

@@ -483,7 +483,7 @@ def ensure_review_action_audit_columns(db: Session):
     if not table_has_column(db, 'review_actions', 'submission_id'):
         db.execute(text('ALTER TABLE review_actions ADD COLUMN submission_id INTEGER'))
     if not table_has_column(db, 'review_actions', 'created_at'):
-        db.execute(text('ALTER TABLE review_actions ADD COLUMN created_at DATETIME'))
+        db.execute(text('ALTER TABLE review_actions ADD COLUMN created_at TIMESTAMP'))
     db.commit()
 
 
@@ -1987,7 +1987,7 @@ def normalize_manager_bucket(status: str | None) -> str:
         'submitted': 'Submitted',
         'under review': 'Under Review',
         'approved': 'Approved',
-        'rejected': 'Resubmission Requested',
+        'rejected': 'Rejected',
         'resubmission requested': 'Resubmission Requested',
         'pre-acquisition': 'Not Started',
         'active': 'In Progress',
@@ -2002,12 +2002,20 @@ def get_progress_from_bucket(bucket: str) -> int:
         'Submitted': 72,
         'Under Review': 84,
         'Approved': 100,
+        'Rejected': 100,
         'Resubmission Requested': 58,
     }.get(bucket, 8)
 
 
 def build_manager_summary(db: Session, companies: List[Company]) -> dict:
-    cycle = get_active_cycle(db) or get_latest_cycle(db) or get_or_create_reserved_cycle(db)
+    cycle = get_active_cycle(db)
+    if cycle is None:
+        cycle = (
+            db.query(CollectionCycle)
+            .filter(CollectionCycle.cycle_year > 0)
+            .order_by(CollectionCycle.cycle_year.desc())
+            .first()
+        )
     cycle_deadline = cycle.submission_deadline if cycle else None
     cycle_days_remaining = get_days_to_deadline(cycle_deadline)
     status_breakdown = {
@@ -2016,6 +2024,7 @@ def build_manager_summary(db: Session, companies: List[Company]) -> dict:
         'Submitted': 0,
         'Under Review': 0,
         'Approved': 0,
+        'Rejected': 0,
         'Resubmission Requested': 0,
     }
     upcoming_deadlines = []
@@ -2097,7 +2106,7 @@ def build_report_rows(db: Session, portfolio: str, period: str):
             'completion_percent': get_progress_from_bucket(bucket),
             'total_ghg_emissions': round(safe_number(payload.get('total_ghg_emissions')), 2),
             'female_representation_percent': round(safe_number(payload.get('female_representation_percent')), 2),
-            'esg_score': round(clamp(50 + safe_number(payload.get('reduction_target_percent')) * 0.25), 2),
+            'esg_score': calculate_submission_scores(payload)['composite'] if payload else None,
             'period': period,
             'cycle_year': active_cycle.cycle_year,
         })
@@ -2398,16 +2407,58 @@ def clamp(value: float, minimum: float = 0, maximum: float = 100) -> float:
     return max(minimum, min(maximum, value))
 
 
+def calculate_submission_scores(payload: dict) -> dict:
+    scope_1 = safe_number(payload.get('scope_1_emissions'))
+    scope_2 = safe_number(payload.get('scope_2_location_based'))
+    scope_3 = safe_number(payload.get('scope_3_emissions'))
+    energy = safe_number(payload.get('total_energy_consumption'))
+    renewable = safe_number(payload.get('renewable_energy_consumption'))
+    renewable_ratio = (renewable / energy) if energy > 0 else 0
+    female_rep = safe_number(payload.get('female_representation_percent'))
+    trifr = safe_number(payload.get('trifr'))
+    turnover = safe_number(payload.get('employee_turnover_rate'))
+    independent_board = safe_number(payload.get('independent_board_members_percent'))
+    corruption_cases = safe_number(payload.get('confirmed_cases_of_corruption'))
+
+    e_score = clamp(
+        30
+        + max(0, 35 - ((scope_1 + scope_2 + scope_3) / 60))
+        + min(20, safe_number(payload.get('reduction_target_percent')) * 0.25)
+        + min(15, renewable_ratio * 100 * 0.2)
+    )
+    s_score = clamp(
+        25
+        + min(25, female_rep * 0.35)
+        + max(0, 20 - trifr * 2.5)
+        + max(0, 15 - turnover * 0.3)
+        + (15 if str(payload.get('whs_policy_in_place', '')).strip().lower() == 'yes' else 0)
+    )
+    g_score = clamp(
+        (20 if str(payload.get('esg_policy_in_place', '')).strip().lower() == 'yes' else 0)
+        + (20 if str(payload.get('board_level_esg_oversight', '')).strip().lower() == 'yes' else 0)
+        + (20 if str(payload.get('cybersecurity_policy_in_place', '')).strip().lower() == 'yes' else 0)
+        + (20 if str(payload.get('anti_bribery_corruption_policy', '')).strip().lower() == 'yes' else 0)
+        + min(20, independent_board * 0.4)
+        - min(10, corruption_cases * 2)
+    )
+    return {
+        'E': round(e_score, 2),
+        'S': round(s_score, 2),
+        'G': round(g_score, 2),
+        'composite': round((0.45 * e_score) + (0.30 * s_score) + (0.25 * g_score), 2),
+    }
+
+
 def normalize_status_label(status: str | None) -> str:
     normalized = str(status or '').strip().lower()
     mapping = {
         'not started': 'Not Started',
         'in progress': 'In Progress',
         'submitted': 'Submitted',
-        'under review': 'Submitted',
+        'under review': 'Under Review',
         'approved': 'Approved',
         'rejected': 'Rejected',
-        'resubmission requested': 'In Progress',
+        'resubmission requested': 'Resubmission Requested',
         'pre-acquisition': 'Not Started',
         'active': 'In Progress',
     }
@@ -2424,21 +2475,52 @@ def parse_submission(submission: Submission | None) -> dict:
         return {}
 
 
-def build_emissions_trend(total_emissions: float) -> list[dict]:
-    now = datetime.utcnow()
-    periods = []
-    for offset in range(5, -1, -1):
-        month_value = datetime(now.year, max(1, now.month - offset), 1)
-        periods.append(month_value.strftime('%b'))
+def get_submission_reporting_year(submission: Submission, payload: dict) -> int | None:
+    try:
+        payload_year = int(payload.get('reporting_year') or 0)
+    except (TypeError, ValueError):
+        payload_year = 0
+    if payload_year > 0:
+        return payload_year
+    if submission.cycle and submission.cycle.cycle_year:
+        return int(submission.cycle.cycle_year)
+    return None
 
-    trend = []
-    for index, period in enumerate(periods):
-        factor = 1 + ((len(periods) - index - 1) * 0.04)
-        trend.append({
-            'period': period,
-            'total_emissions': round(total_emissions * factor, 2),
+
+def build_historical_portfolio_series(companies: List[Company]) -> tuple[list[dict], list[dict]]:
+    latest_by_company_year: dict[tuple[int, int], tuple[Submission, dict]] = {}
+    for company in companies:
+        for submission in company.submissions or []:
+            payload = parse_submission(submission)
+            year = get_submission_reporting_year(submission, payload)
+            if not payload or year is None:
+                continue
+            key = (company.id, year)
+            current = latest_by_company_year.get(key)
+            if current is None or submission.id > current[0].id:
+                latest_by_company_year[key] = (submission, payload)
+
+    by_year: dict[int, dict] = {}
+    for (_, year), (_, payload) in latest_by_company_year.items():
+        bucket = by_year.setdefault(year, {'emissions': 0.0, 'score_total': 0.0, 'score_count': 0})
+        bucket['emissions'] += (
+            safe_number(payload.get('scope_1_emissions'))
+            + safe_number(payload.get('scope_2_location_based'))
+            + safe_number(payload.get('scope_3_emissions'))
+        )
+        bucket['score_total'] += calculate_submission_scores(payload)['composite']
+        bucket['score_count'] += 1
+
+    emissions = []
+    scores = []
+    for year in sorted(by_year):
+        bucket = by_year[year]
+        emissions.append({'period': str(year), 'total_emissions': round(bucket['emissions'], 2)})
+        scores.append({
+            'period': str(year),
+            'score': round(bucket['score_total'] / max(bucket['score_count'], 1), 2),
         })
-    return trend
+    return emissions, scores
 
 
 def build_investor_analytics(db: Session) -> dict:
@@ -2448,8 +2530,10 @@ def build_investor_analytics(db: Session) -> dict:
         'Not Started': 0,
         'In Progress': 0,
         'Submitted': 0,
+        'Under Review': 0,
         'Approved': 0,
         'Rejected': 0,
+        'Resubmission Requested': 0,
     }
 
     required_fields = [
@@ -2513,10 +2597,6 @@ def build_investor_analytics(db: Session) -> dict:
         waste = safe_number(payload.get('total_waste_generated'))
         female_rep = safe_number(payload.get('female_representation_percent'))
         trifr = safe_number(payload.get('trifr'))
-        independent_board = safe_number(payload.get('independent_board_members_percent'))
-        turnover = safe_number(payload.get('employee_turnover_rate'))
-        corruption_cases = safe_number(payload.get('confirmed_cases_of_corruption'))
-
         total_scope_1 += scope_1
         total_scope_2 += scope_2
         total_scope_3 += scope_3
@@ -2526,31 +2606,12 @@ def build_investor_analytics(db: Session) -> dict:
         total_female_rep += female_rep
         total_trifr += trifr
 
-        renewable_ratio = (renewable / energy) if energy > 0 else 0
         scope_total = scope_1 + scope_2 + scope_3
-
-        e_score = clamp(
-            30
-            + max(0, 35 - (scope_total / 60))
-            + min(20, safe_number(payload.get('reduction_target_percent')) * 0.25)
-            + min(15, renewable_ratio * 100 * 0.2)
-        )
-        s_score = clamp(
-            25
-            + min(25, female_rep * 0.35)
-            + max(0, 20 - trifr * 2.5)
-            + max(0, 15 - turnover * 0.3)
-            + (15 if str(payload.get('whs_policy_in_place', '')).strip().lower() == 'yes' else 0)
-        )
-        g_score = clamp(
-            (20 if str(payload.get('esg_policy_in_place', '')).strip().lower() == 'yes' else 0)
-            + (20 if str(payload.get('board_level_esg_oversight', '')).strip().lower() == 'yes' else 0)
-            + (20 if str(payload.get('cybersecurity_policy_in_place', '')).strip().lower() == 'yes' else 0)
-            + (20 if str(payload.get('anti_bribery_corruption_policy', '')).strip().lower() == 'yes' else 0)
-            + min(20, independent_board * 0.4)
-            - min(10, corruption_cases * 2)
-        )
-        esg_score = round((0.45 * e_score) + (0.30 * s_score) + (0.25 * g_score), 2)
+        scores = calculate_submission_scores(payload)
+        e_score = scores['E']
+        s_score = scores['S']
+        g_score = scores['G']
+        esg_score = scores['composite']
 
         score_e_total += e_score
         score_s_total += s_score
@@ -2608,6 +2669,7 @@ def build_investor_analytics(db: Session) -> dict:
 
     top_performers = sorted(company_scores, key=lambda item: item['esg_score'], reverse=True)[:5]
     bottom_performers = sorted(company_scores, key=lambda item: item['esg_score'])[:5]
+    emissions_trend, score_trend = build_historical_portfolio_series(companies)
 
     return {
         'total_companies': len(companies),
@@ -2630,7 +2692,8 @@ def build_investor_analytics(db: Session) -> dict:
             'scope_3': round(total_scope_3, 2),
             'total': round(portfolio_total_emissions, 2),
         },
-        'emissions_trend': build_emissions_trend(portfolio_total_emissions),
+        'emissions_trend': emissions_trend,
+        'score_trend': score_trend,
         'resource_totals': {
             'energy': round(total_energy, 2),
             'water': round(total_water, 2),
@@ -2990,28 +3053,42 @@ def _build_lp_key_metrics(analytics: dict) -> list[dict]:
     emissions_totals = analytics.get('emissions_totals') or {}
     resource_totals = analytics.get('resource_totals') or {}
     data_quality = analytics.get('data_quality') or {}
+    score_trend = analytics.get('score_trend') or []
+    emissions_trend = analytics.get('emissions_trend') or []
+
+    def trend_percent(rows: list[dict], key: str) -> float | None:
+        if len(rows) < 2:
+            return None
+        current = safe_number(rows[-1].get(key))
+        previous = safe_number(rows[-2].get(key))
+        if previous == 0:
+            return None
+        return round(((current - previous) / abs(previous)) * 100, 2)
+
+    score_change = trend_percent(score_trend, 'score')
+    emissions_change = trend_percent(emissions_trend, 'total_emissions')
     return [
         {
             'metric_name': 'Portfolio ESG Score',
             'current_value': f"{float(analytics.get('portfolio_esg_score') or 0):.1f}",
             'unit': 'score',
-            'trend_percent': 0.0,
-            'trend_direction': 'neutral',
+            'trend_percent': score_change,
+            'trend_direction': 'up' if score_change is not None and score_change > 0 else 'down' if score_change is not None and score_change < 0 else 'neutral',
             'last_updated': datetime.now(timezone.utc).strftime('%Y-%m-%d'),
         },
         {
             'metric_name': 'Total GHG Emissions',
             'current_value': f"{float(emissions_totals.get('total') or 0):.1f}",
             'unit': 'tCO2e',
-            'trend_percent': 0.0,
-            'trend_direction': 'neutral',
+            'trend_percent': emissions_change,
+            'trend_direction': 'up' if emissions_change is not None and emissions_change > 0 else 'down' if emissions_change is not None and emissions_change < 0 else 'neutral',
             'last_updated': datetime.now(timezone.utc).strftime('%Y-%m-%d'),
         },
         {
             'metric_name': 'Energy Consumption',
             'current_value': f"{float(resource_totals.get('energy') or 0):.1f}",
             'unit': 'MWh',
-            'trend_percent': 0.0,
+            'trend_percent': None,
             'trend_direction': 'neutral',
             'last_updated': datetime.now(timezone.utc).strftime('%Y-%m-%d'),
         },
@@ -3019,7 +3096,7 @@ def _build_lp_key_metrics(analytics: dict) -> list[dict]:
             'metric_name': 'Data Completeness',
             'current_value': f"{float(data_quality.get('completeness') or 0):.1f}",
             'unit': '%',
-            'trend_percent': 0.0,
+            'trend_percent': None,
             'trend_direction': 'neutral',
             'last_updated': datetime.now(timezone.utc).strftime('%Y-%m-%d'),
         },
@@ -3031,12 +3108,18 @@ def _build_lp_dashboard_payload(db: Session) -> dict:
     companies = int(analytics.get('total_companies') or 0)
     reporting_companies = int(analytics.get('reporting_companies') or 0)
     narrative = _fallback_portfolio_narrative(analytics)
+    score_trend = analytics.get('score_trend') or []
+    current_score = float(analytics.get('portfolio_esg_score') or 0)
+    previous_score = safe_number(score_trend[-2].get('score')) if len(score_trend) > 1 else None
+    yoy_change = None
+    if previous_score not in {None, 0}:
+        yoy_change = round(((current_score - previous_score) / abs(previous_score)) * 100, 2)
     return {
         'portfolio_scorecard': {
-            'overall_esg_score': float(analytics.get('portfolio_esg_score') or 0),
-            'overall_esg_score_previous': float(analytics.get('portfolio_esg_score') or 0),
-            'yoy_change_percent': 0.0,
-            'three_year_trend': [float(analytics.get('portfolio_esg_score') or 0)] * 4,
+            'overall_esg_score': current_score,
+            'overall_esg_score_previous': previous_score,
+            'yoy_change_percent': yoy_change,
+            'three_year_trend': [float(item.get('score') or 0) for item in score_trend[-3:]],
             'pillars': [
                 {'name': 'E', 'current_score': float((analytics.get('score_breakdown') or {}).get('E') or 0)},
                 {'name': 'S', 'current_score': float((analytics.get('score_breakdown') or {}).get('S') or 0)},
@@ -3898,9 +3981,20 @@ def health_ready():
 @app.get('/analytics/manager', dependencies=[Depends(require_manager)])
 def analytics_manager(db: Session = Depends(get_db)):
     companies = db.query(Company).order_by(Company.name.asc()).all()
+    action_plan_total = db.query(ActionPlan).count()
+    action_plan_complete = db.query(ActionPlan).filter(func.lower(ActionPlan.status).in_(['complete', 'completed', 'done'])).count()
+    active_unlocks = db.query(SubmissionUnlock).filter(
+        SubmissionUnlock.active.is_(True),
+        SubmissionUnlock.expires_at > datetime.utcnow(),
+    ).count()
     return {
         'summary': build_manager_summary(db, companies),
         'analytics': build_investor_analytics(db),
+        'operations': {
+            'action_plan_completion_rate': round((action_plan_complete / action_plan_total) * 100, 2) if action_plan_total else None,
+            'active_correction_windows': active_unlocks,
+            'reminders_logged': db.query(ReminderLog).count(),
+        },
     }
 
 

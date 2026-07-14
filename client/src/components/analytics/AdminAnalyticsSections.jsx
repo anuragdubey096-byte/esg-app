@@ -50,9 +50,14 @@ const cycleOverviewMetrics = [
   {
     title: 'Days to Deadline',
     endpoint: '/analytics/manager',
-    valuePath: 'summary.cycle_banner.days_remaining',
-    unit: 'days',
-    valueType: 'integer',
+    valueType: 'text',
+    selectValue: (payload) => {
+      const days = toNumber(payload?.summary?.cycle_banner?.days_remaining)
+      if (days === null) return null
+      if (days < 0) return `${Math.abs(days)} days overdue`
+      if (days === 0) return 'Due today'
+      return `${days} days remaining`
+    },
   },
   {
     title: 'Submissions Requiring Action',
@@ -107,12 +112,11 @@ const dataQualityMetrics = [
     title: 'Measured vs Estimated',
     endpoint: '/analytics/manager',
     valueType: 'text',
-    unit: 'measured/estimated %',
     selectValue: (payload) => {
       const measured = toNumber(payload?.analytics?.data_quality?.confidence)
       if (measured === null) return null
       const estimated = Math.max(0, 100 - measured)
-      return `${measured.toFixed(1)} / ${estimated.toFixed(1)}`
+      return `${measured.toFixed(1)}% measured / ${estimated.toFixed(1)}% estimated`
     },
   },
 ]
@@ -121,7 +125,7 @@ const portfolioPerformanceMetrics = [
   {
     title: 'ESG Scoring Leaderboard',
     endpoint: '/analytics/manager',
-    unit: 'top score',
+    unit: '/100',
     valueType: 'number',
     decimals: 1,
     selectValue: (payload) => {
@@ -134,14 +138,12 @@ const portfolioPerformanceMetrics = [
     title: 'Pillar Breakdown (E / S / G)',
     endpoint: '/analytics/manager',
     valueType: 'text',
-    unit: 'score',
     selectValue: scoreBreakdownLabel,
   },
   {
     title: 'Sector Benchmarks',
     endpoint: '/analytics/manager',
     valueType: 'text',
-    unit: 'sectors',
     selectValue: (payload) => {
       const sectors = payload?.analytics?.underperforming_sectors
       if (!Array.isArray(sectors) || !sectors.length) return null
@@ -150,37 +152,33 @@ const portfolioPerformanceMetrics = [
   },
   {
     title: 'Action Plan Completion Rate',
-    endpoint: null,
-    valueType: 'number',
-    unit: '%',
-    emptyLabel: 'Endpoint unavailable for action plan completion rate',
+    endpoint: '/analytics/manager',
+    valuePath: 'operations.action_plan_completion_rate',
+    valueType: 'percent',
+    decimals: 1,
+    emptyLabel: 'No action plans have been created',
   },
 ]
 
 const operationsMetrics = [
   {
     title: 'Reminder Log',
-    endpoint: '/live/activity?limit=100',
+    endpoint: '/analytics/manager',
     unit: 'events',
     valueType: 'integer',
-    selectValue: (payload) => {
-      const events = Array.isArray(payload) ? payload : payload?.events || payload?.items
-      if (!Array.isArray(events)) return null
-      return events.filter((item) => String(item?.event_type || '').toLowerCase() === 'reminder_sent').length
-    },
+    valuePath: 'operations.reminders_logged',
   },
   {
-    title: 'Auditor Access',
-    endpoint: null,
-    valueType: 'text',
-    unit: 'status',
-    emptyLabel: 'Endpoint unavailable for auditor access tracking',
+    title: 'Active Correction Windows',
+    endpoint: '/analytics/manager',
+    valuePath: 'operations.active_correction_windows',
+    valueType: 'integer',
+    unit: 'windows',
   },
   {
     title: 'Template Version',
     endpoint: '/cycles',
     valueType: 'text',
-    unit: 'active cycle',
     selectValue: (payload) => {
       if (!Array.isArray(payload) || !payload.length) return null
       const active = payload.find((cycle) => String(cycle?.status || '').toLowerCase() === 'active') || payload[0]
