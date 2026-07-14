@@ -59,7 +59,6 @@ else:
         'pool_timeout': 10,
         'connect_args': {
             'connect_timeout': 10,
-            'options': '-c statement_timeout=30000 -c lock_timeout=5000',
         },
     })
 

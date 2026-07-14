@@ -474,6 +474,8 @@ def table_has_column(db: Session, table_name: str, column_name: str) -> bool:
 
 def ensure_submission_cycle_column(db: Session):
     if db.bind.dialect.name == 'postgresql':
+        db.execute(text("SET LOCAL lock_timeout = '5s'"))
+        db.execute(text("SET LOCAL statement_timeout = '30s'"))
         db.execute(text('ALTER TABLE submissions ADD COLUMN IF NOT EXISTS cycle_id INTEGER'))
         db.commit()
         return
@@ -485,6 +487,8 @@ def ensure_submission_cycle_column(db: Session):
 
 def ensure_review_action_audit_columns(db: Session):
     if db.bind.dialect.name == 'postgresql':
+        db.execute(text("SET LOCAL lock_timeout = '5s'"))
+        db.execute(text("SET LOCAL statement_timeout = '30s'"))
         db.execute(text('ALTER TABLE review_actions ADD COLUMN IF NOT EXISTS submission_id INTEGER'))
         db.execute(text('ALTER TABLE review_actions ADD COLUMN IF NOT EXISTS created_at TIMESTAMP'))
         db.commit()
