@@ -2223,6 +2223,87 @@ p {
   align-items: center;
 }
 
+.review-history-list {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.review-history-item {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1rem minmax(0, 1fr);
+  gap: 0.75rem;
+  padding: 0.8rem 0;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.review-history-item:last-child { border-bottom: 0; }
+
+.review-history-marker {
+  width: 0.7rem;
+  height: 0.7rem;
+  margin-top: 0.3rem;
+  border: 2px solid #fff;
+  border-radius: 999px;
+  background: #2563eb;
+  box-shadow: 0 0 0 2px #bfdbfe;
+}
+
+.review-history-marker.unlock {
+  background: #d97706;
+  box-shadow: 0 0 0 2px #fde68a;
+}
+
+.review-history-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.review-history-heading time,
+.review-history-item small,
+.review-history-empty {
+  color: #64748b;
+  font-size: 0.75rem;
+}
+
+.review-history-item p {
+  margin: 0.35rem 0 0.2rem;
+  color: #334155;
+  font-size: 0.82rem;
+}
+
+.resubmission-dialog label {
+  display: grid;
+  gap: 0.35rem;
+  margin-top: 0.85rem;
+  color: #334155;
+  font-size: 0.8rem;
+  font-weight: 650;
+}
+
+.resubmission-dialog textarea,
+.resubmission-dialog select {
+  width: 100%;
+  border: 1px solid #cbd5e1;
+  border-radius: 9px;
+  padding: 0.65rem 0.75rem;
+  background: #fff;
+  color: #0f172a;
+  font: inherit;
+  font-weight: 400;
+}
+
+.resubmission-dialog textarea:focus,
+.resubmission-dialog select:focus {
+  border-color: #0f8f88;
+  outline: 3px solid rgba(15, 143, 136, 0.14);
+}
+
 .alert-card-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

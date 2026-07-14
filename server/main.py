@@ -17,7 +17,7 @@ from xml.etree import ElementTree
 from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Form, Header, Query, Body, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import func, text
+from sqlalchemy import func, inspect, text
 from sqlalchemy.orm import Session
 
 from bootstrap import seed_sample_data
@@ -52,6 +52,7 @@ from schemas import (
     GHGCalculatorRequest,
     GHGCalculatorResponse,
     ReviewSubmissionRequest,
+    SubmissionHistoryEntry,
     ValidationDecisionRequest,
     InvestorSummary,
     InvestorDashboardResponse,
@@ -468,14 +469,21 @@ def _provision_company_for_user(db: Session, user: User) -> Company:
 
 
 def table_has_column(db: Session, table_name: str, column_name: str) -> bool:
-    pragma_rows = db.execute(text(f'PRAGMA table_info({table_name})')).mappings().all()
-    return any(row.get('name') == column_name for row in pragma_rows)
+    return any(column['name'] == column_name for column in inspect(db.bind).get_columns(table_name))
 
 
 def ensure_submission_cycle_column(db: Session):
     if table_has_column(db, 'submissions', 'cycle_id'):
         return
     db.execute(text('ALTER TABLE submissions ADD COLUMN cycle_id INTEGER'))
+    db.commit()
+
+
+def ensure_review_action_audit_columns(db: Session):
+    if not table_has_column(db, 'review_actions', 'submission_id'):
+        db.execute(text('ALTER TABLE review_actions ADD COLUMN submission_id INTEGER'))
+    if not table_has_column(db, 'review_actions', 'created_at'):
+        db.execute(text('ALTER TABLE review_actions ADD COLUMN created_at DATETIME'))
     db.commit()
 
 
@@ -936,6 +944,7 @@ def startup_event():
     try:
         ensure_submission_cycle_column(db)
         Base.metadata.create_all(bind=engine)
+        ensure_review_action_audit_columns(db)
         seed_sample_data(db)
         migrate_legacy_user_roles(db)
         fix_cycle_statuses_and_active_conflicts(db)
@@ -1674,6 +1683,7 @@ def review_submission(submission_id: int, payload: ReviewSubmissionRequest, db: 
     reporting_year = submission.cycle.cycle_year if submission.cycle else datetime.utcnow().year
     review_action = ReviewAction(
         company_id=submission.company_id,
+        submission_id=submission.id,
         reporting_year=reporting_year,
         review_status=next_status,
         reviewer_role=payload.reviewer_role or 'manager',
@@ -1683,6 +1693,52 @@ def review_submission(submission_id: int, payload: ReviewSubmissionRequest, db: 
     db.commit()
     db.refresh(submission)
     return {"message": "Review logged successfully", "status": submission.status}
+
+
+@app.get('/submissions/{submission_id}/history', response_model=List[SubmissionHistoryEntry], dependencies=[Depends(require_manager)])
+def get_submission_history(submission_id: int, db: Session = Depends(get_db)):
+    submission = db.query(Submission).filter(Submission.id == submission_id).first()
+    if not submission:
+        raise HTTPException(status_code=404, detail='Submission not found')
+
+    reporting_year = submission.cycle.cycle_year if submission.cycle else datetime.utcnow().year
+    reviews = (
+        db.query(ReviewAction)
+        .filter(
+            ReviewAction.company_id == submission.company_id,
+            ReviewAction.reporting_year == reporting_year,
+            (ReviewAction.submission_id == submission.id) | (ReviewAction.submission_id.is_(None)),
+        )
+        .all()
+    )
+    unlocks = db.query(SubmissionUnlock).filter(SubmissionUnlock.submission_id == submission.id).all()
+
+    entries = [
+        SubmissionHistoryEntry(
+            id=f'review-{review.id}',
+            event_type='review',
+            status=normalize_submission_status(review.review_status),
+            comment=review.review_comment,
+            actor=review.reviewer_role,
+            created_at=review.created_at.isoformat() if review.created_at else None,
+        )
+        for review in reviews
+    ]
+    entries.extend(
+        SubmissionHistoryEntry(
+            id=f'unlock-{unlock.id}',
+            event_type='unlock',
+            status='editing unlocked',
+            comment=unlock.reason,
+            actor=unlock.unlocked_by_user.email if unlock.unlocked_by_user else 'manager',
+            created_at=unlock.created_at.isoformat() if unlock.created_at else None,
+            expires_at=unlock.expires_at.isoformat() if unlock.expires_at else None,
+            active=unlock.active and bool(unlock.expires_at and unlock.expires_at > datetime.utcnow()),
+        )
+        for unlock in unlocks
+    )
+    entries.sort(key=lambda entry: entry.created_at or '', reverse=True)
+    return entries
 
 @app.post('/submissions/{submission_id}/validate', dependencies=[Depends(require_manager)])
 def validate_submission(submission_id: int, db: Session = Depends(get_db)):
@@ -2154,6 +2210,7 @@ def unlock_submission(
         seed_draft_from_submission(db, submission)
         db.add(ReviewAction(
             company_id=submission.company_id,
+            submission_id=submission.id,
             reporting_year=cycle.cycle_year,
             review_status='resubmission requested',
             reviewer_role='manager',

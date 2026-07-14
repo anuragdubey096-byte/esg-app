@@ -75,10 +75,12 @@ class ReviewAction(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     company_id = Column(Integer, ForeignKey('companies.id'), nullable=False)
+    submission_id = Column(Integer, ForeignKey('submissions.id'), nullable=True, index=True)
     reporting_year = Column(Integer, nullable=False)
     review_status = Column(String, nullable=False)
     reviewer_role = Column(String, nullable=False)
     review_comment = Column(String, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
     company = relationship('Company', back_populates='review_actions')
 

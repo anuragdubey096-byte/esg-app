@@ -84,6 +84,12 @@ function buildCommentKey(companyId, metricKey) {
   return `${companyId || 'none'}::${metricKey || 'unknown'}`
 }
 
+function formatHistoryDate(value) {
+  if (!value) return 'Previously recorded'
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString()
+}
+
 export default function ReviewHubPage() {
   const { user } = useOutletContext()
   const { companies, refresh } = useDashboardData(user)
@@ -93,6 +99,13 @@ export default function ReviewHubPage() {
   const [metricCommentsByCell, setMetricCommentsByCell] = useState({})
   const [historicalContext, setHistoricalContext] = useState(null)
   const [historicalLoading, setHistoricalLoading] = useState(false)
+  const [submissionHistory, setSubmissionHistory] = useState([])
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyRevision, setHistoryRevision] = useState(0)
+  const [resubmissionDialogOpen, setResubmissionDialogOpen] = useState(false)
+  const [resubmissionReason, setResubmissionReason] = useState('')
+  const [resubmissionHours, setResubmissionHours] = useState(72)
+  const [resubmissionSaving, setResubmissionSaving] = useState(false)
 
   const submissionRows = useMemo(() => {
     return companies.filter(c => getLatestSubmission(c)).map(c => {
@@ -212,6 +225,42 @@ export default function ReviewHubPage() {
       cancelled = true
     }
   }, [selectedCompany?.id, selectedCompany?.submissionId, user?.email, user?.role])
+
+  useEffect(() => {
+    let cancelled = false
+    const loadSubmissionHistory = async () => {
+      if (!selectedCompany?.submissionId) {
+        setSubmissionHistory([])
+        return
+      }
+      setHistoryLoading(true)
+      try {
+        const response = await fetch(`${BACKEND_URL}/submissions/${selectedCompany.submissionId}/history`, {
+          headers: {
+            'x-user-role': user?.role || '',
+            'x-user-email': user?.email || '',
+          },
+        })
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({}))
+          throw new Error(payload.detail || `Submission history failed (${response.status})`)
+        }
+        const payload = await response.json()
+        if (!cancelled) setSubmissionHistory(Array.isArray(payload) ? payload : [])
+      } catch (error) {
+        if (!cancelled) {
+          setSubmissionHistory([])
+          setActionMessage(error.message || 'Unable to load submission history.')
+        }
+      } finally {
+        if (!cancelled) setHistoryLoading(false)
+      }
+    }
+    loadSubmissionHistory()
+    return () => {
+      cancelled = true
+    }
+  }, [historyRevision, selectedCompany?.submissionId, user?.email, user?.role])
 
   const dataRows = useMemo(() => {
     const payloadForValidation = selectedCompany.payload && typeof selectedCompany.payload === 'object'
@@ -349,9 +398,37 @@ export default function ReviewHubPage() {
         review_comment: commentText || 'Reviewed via Review Hub',
       })
       await refresh()
+      setHistoryRevision((current) => current + 1)
       setActionMessage(successMessage)
     } catch (error) {
       setActionMessage(error.message || 'Unable to update review action right now.')
+    }
+  }
+
+  const handleRequestResubmission = async (event) => {
+    event.preventDefault()
+    const reason = resubmissionReason.trim()
+    if (!reason) {
+      setActionMessage('A correction reason is required before resubmission can be requested.')
+      return
+    }
+    if (!selectedCompany.submissionId) return
+
+    setResubmissionSaving(true)
+    try {
+      await managerPost(`/submissions/${selectedCompany.submissionId}/unlock`, 'POST', {
+        reason,
+        expiry_hours: Number(resubmissionHours),
+      })
+      await refresh()
+      setHistoryRevision((current) => current + 1)
+      setResubmissionDialogOpen(false)
+      setResubmissionReason('')
+      setActionMessage(`Corrections requested. Editing is unlocked for ${resubmissionHours} hours.`)
+    } catch (error) {
+      setActionMessage(error.message || 'Unable to request resubmission right now.')
+    } finally {
+      setResubmissionSaving(false)
     }
   }
 
@@ -564,13 +641,85 @@ export default function ReviewHubPage() {
 
         <DataTable columns={columns} rows={dataRows} pageSize={7} />
 
+        <SectionCard title="Submission History" subtitle="Review decisions and correction windows for this reporting cycle">
+          {historyLoading ? <p className="review-history-empty">Loading submission history...</p> : null}
+          {!historyLoading && !submissionHistory.length ? (
+            <p className="review-history-empty">No review activity has been recorded yet.</p>
+          ) : null}
+          {!historyLoading && submissionHistory.length ? (
+            <ol className="review-history-list">
+              {submissionHistory.map((entry) => (
+                <li key={entry.id} className="review-history-item">
+                  <span className={`review-history-marker ${entry.event_type}`} aria-hidden="true" />
+                  <div>
+                    <div className="review-history-heading">
+                      <StatusBadge value={entry.status} />
+                      <time dateTime={entry.created_at || undefined}>{formatHistoryDate(entry.created_at)}</time>
+                    </div>
+                    <p>{entry.comment || 'No comment provided.'}</p>
+                    <small>
+                      {entry.event_type === 'unlock' ? 'Correction window' : 'Review decision'} by {entry.actor || 'manager'}
+                      {entry.expires_at ? ` · Expires ${formatHistoryDate(entry.expires_at)}` : ''}
+                      {entry.event_type === 'unlock' ? ` · ${entry.active ? 'Active' : 'Expired'}` : ''}
+                    </small>
+                  </div>
+                </li>
+              ))}
+            </ol>
+          ) : null}
+        </SectionCard>
+
         <div className="action-row">
           <button type="button" className="button good" onClick={() => handleReviewAction('approved', 'Submission approved and logged.')}>Approve</button>
-          <button type="button" className="button warning" onClick={() => handleReviewAction('resubmission requested', 'Resubmission request sent and logged.')}>Request Resubmission</button>
+          <button type="button" className="button warning" onClick={() => setResubmissionDialogOpen(true)}>Request Resubmission</button>
           <button type="button" className="button" onClick={handleAddComment}>Add Comment</button>
           {actionMessage ? <p className="action-message">{actionMessage}</p> : null}
         </div>
       </SectionCard>
+
+      {resubmissionDialogOpen ? (
+        <div className="submission-dialog-backdrop" role="presentation" onMouseDown={() => !resubmissionSaving && setResubmissionDialogOpen(false)}>
+          <form
+            className="submission-dialog resubmission-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="resubmission-dialog-title"
+            onMouseDown={(event) => event.stopPropagation()}
+            onSubmit={handleRequestResubmission}
+          >
+            <p className="submission-progress-eyebrow">Manager action</p>
+            <h3 id="resubmission-dialog-title">Request corrections</h3>
+            <p>The company will receive an editable draft based on its latest submission.</p>
+            <label>
+              Correction reason
+              <textarea
+                value={resubmissionReason}
+                onChange={(event) => setResubmissionReason(event.target.value)}
+                placeholder="Describe the metrics or evidence that must be corrected"
+                rows={4}
+                required
+                autoFocus
+              />
+            </label>
+            <label>
+              Editing window
+              <select value={resubmissionHours} onChange={(event) => setResubmissionHours(Number(event.target.value))}>
+                <option value={24}>24 hours</option>
+                <option value={72}>3 days</option>
+                <option value={168}>7 days</option>
+                <option value={336}>14 days</option>
+                <option value={720}>30 days</option>
+              </select>
+            </label>
+            <div className="submission-dialog-actions">
+              <button type="button" onClick={() => setResubmissionDialogOpen(false)} disabled={resubmissionSaving}>Cancel</button>
+              <button type="submit" className="confirm" disabled={resubmissionSaving || !resubmissionReason.trim()}>
+                {resubmissionSaving ? 'Requesting...' : 'Request corrections'}
+              </button>
+            </div>
+          </form>
+        </div>
+      ) : null}
     </div>
   )
 }

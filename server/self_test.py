@@ -275,6 +275,19 @@ def run_self_test():
         unlock_payload = unlock_response.json() if unlock_response.status_code == 200 else {}
         check('POST /submissions/{id}/unlock', unlock_response.status_code == 200 and unlock_payload.get('active') is True, unlock_response.text)
 
+        submission_history = client.get(f'/submissions/{submission_id}/history', headers=manager_headers)
+        history_payload = submission_history.json() if submission_history.status_code == 200 else []
+        check(
+            'GET /submissions/{id}/history returns review and unlock audit events',
+            submission_history.status_code == 200
+            and any(item.get('event_type') == 'review' and item.get('created_at') for item in history_payload)
+            and any(item.get('event_type') == 'unlock' and item.get('expires_at') for item in history_payload),
+            submission_history.text,
+        )
+
+        company_history_attempt = client.get(f'/submissions/{submission_id}/history', headers=company_headers)
+        check('submission audit history restricted to managers', company_history_attempt.status_code == 403, company_history_attempt.text)
+
         unlocked_submit = client.post(f'/company/{company_id}/submissions', json=submission_payload, headers=manager_headers)
         unlocked_submission = unlocked_submit.json() if unlocked_submit.status_code == 200 else {}
         check(

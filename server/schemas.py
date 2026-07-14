@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
@@ -239,13 +240,26 @@ class ReviewSubmissionRequest(BaseModel):
 
 class ReviewActionInfo(BaseModel):
     id: int
+    submission_id: Optional[int] = None
     reporting_year: int
     review_status: str
     reviewer_role: str
     review_comment: Optional[str] = None
+    created_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
+
+
+class SubmissionHistoryEntry(BaseModel):
+    id: str
+    event_type: str
+    status: str
+    comment: Optional[str] = None
+    actor: Optional[str] = None
+    created_at: Optional[str] = None
+    expires_at: Optional[str] = None
+    active: Optional[bool] = None
 
 class ValidationFlagInfo(BaseModel):
     id: int
