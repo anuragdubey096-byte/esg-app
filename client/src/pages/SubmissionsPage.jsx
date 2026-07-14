@@ -4,7 +4,10 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, Responsive
 import DataTable from '../components/DataTable'
 import SectionCard from '../components/SectionCard'
 import StatusBadge from '../components/StatusBadge'
+import MetricEvidenceUploader from '../components/MetricEvidenceUploader'
+import SubmissionConfirmDialog from '../components/SubmissionConfirmDialog'
 import SubmissionFormProgress from '../components/SubmissionFormProgress'
+import SubmissionReviewScreen from '../components/SubmissionReviewScreen'
 import { CONFIDENCE_OPTIONS, ESG_FORM_SECTIONS, createInitialFormValues } from '../esgFormConfig'
 import { validateSubmissionData } from '../esgValidation'
 import useDashboardData, {
@@ -221,27 +224,6 @@ function createPrefilledFormValues(company) {
   return base
 }
 
-function getSubmissionDraftKey(companyId) {
-  return `esgSubmissionDraft.${companyId}`
-}
-
-function loadSubmissionDraft(companyId, fallbackValues) {
-  try {
-    const storedDraft = JSON.parse(localStorage.getItem(getSubmissionDraftKey(companyId)) || 'null')
-    if (!storedDraft?.values || typeof storedDraft.values !== 'object') return null
-
-    return {
-      values: Object.keys(fallbackValues).reduce((values, key) => ({
-        ...values,
-        [key]: storedDraft.values[key] ?? fallbackValues[key],
-      }), {}),
-      savedAt: storedDraft.savedAt || '',
-    }
-  } catch {
-    return null
-  }
-}
-
 function createInitialCarbonInputs() {
   return {
     fuel_liters: '',
@@ -284,6 +266,12 @@ export default function SubmissionsPage() {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [saveStatus, setSaveStatus] = useState('idle')
   const [lastSavedAt, setLastSavedAt] = useState('')
+  const [draftMeta, setDraftMeta] = useState(null)
+  const [draftLoading, setDraftLoading] = useState(false)
+  const [lastSyncedValues, setLastSyncedValues] = useState(createInitialFormValues)
+  const [evidenceFiles, setEvidenceFiles] = useState([])
+  const [workspaceView, setWorkspaceView] = useState('edit')
+  const [showSubmitConfirmation, setShowSubmitConfirmation] = useState(false)
   const formValuesRef = useRef(formValues)
   const [activeTab, setActiveTab] = useState(ESG_FORM_SECTIONS.length ? ESG_FORM_SECTIONS[0].key : '')
   const [historicalContext, setHistoricalContext] = useState(null)
@@ -518,6 +506,9 @@ export default function SubmissionsPage() {
     return ''
   }
 
+  const selectedCompany = companies.find((item) => item.id === selectedCompanyId) || null
+  const selectedCompanyRow = rows.find((item) => item.id === selectedCompanyId) || null
+
   useEffect(() => {
     if (!isCompany) return
     if (!companies.length) return
@@ -528,19 +519,57 @@ export default function SubmissionsPage() {
 
   useEffect(() => {
     if (!isCompany) return
-    if (!selectedCompanyId) return
-    const company = companies.find((item) => item.id === selectedCompanyId)
+    const company = selectedCompany
     if (!company) return
-    const prefilledValues = createPrefilledFormValues(company)
-    const draft = loadSubmissionDraft(company.id, prefilledValues)
-    setFormValues(draft?.values || prefilledValues)
-    setFormErrors([])
-    setSaveStatus(draft ? 'saved' : 'idle')
-    setLastSavedAt(draft?.savedAt ? new Date(draft.savedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '')
-  }, [companies, isCompany, selectedCompanyId])
+    let cancelled = false
+    const loadDraft = async () => {
+      const prefilledValues = createPrefilledFormValues(company)
+      setDraftLoading(true)
+      setSaveStatus('saving')
+      try {
+        const response = await fetch(`${BACKEND_URL}/company/${company.id}/draft`, {
+          headers: {
+            'x-user-role': user?.role || '',
+            'x-user-email': user?.email || '',
+          },
+        })
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({}))
+          throw new Error(payload.detail || `Draft loading failed (${response.status})`)
+        }
+        const draft = await response.json()
+        if (cancelled) return
+        const draftValues = draft.payload && typeof draft.payload === 'object' ? draft.payload : {}
+        const mergedValues = Object.keys(prefilledValues).reduce((values, key) => ({
+          ...values,
+          [key]: draftValues[key] === null || draftValues[key] === undefined ? prefilledValues[key] : String(draftValues[key]),
+        }), {})
+        setFormValues(mergedValues)
+        setLastSyncedValues(mergedValues)
+        setDraftMeta(draft)
+        setEvidenceFiles(Array.isArray(draft.evidence) ? draft.evidence : [])
+        setFormErrors([])
+        setSaveStatus(draft.updated_at ? 'saved' : 'idle')
+        setLastSavedAt(draft.updated_at ? new Date(draft.updated_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '')
+        setWorkspaceView('edit')
+      } catch (draftError) {
+        if (cancelled) return
+        setFormValues(prefilledValues)
+        setDraftMeta(null)
+        setEvidenceFiles([])
+        setSaveStatus('error')
+        setFormMessage(draftError.message || 'Unable to load the synced draft.')
+      } finally {
+        if (!cancelled) setDraftLoading(false)
+      }
+    }
+    loadDraft()
+    return () => {
+      cancelled = true
+    }
+  }, [isCompany, selectedCompany?.id, selectedCompanyRow?.status, selectedCompanyRow?.submissionId, user?.email, user?.role])
 
-  const selectedCompany = companies.find((item) => item.id === selectedCompanyId) || null
-  const selectedCompanyRow = rows.find((item) => item.id === selectedCompanyId) || null
+  const formLocked = Boolean(draftMeta?.locked)
   const varianceContext = useMemo(
     () => computeVarianceContext(formValues, historicalContext?.prior_values || {}),
     [formValues, historicalContext?.prior_values]
@@ -563,8 +592,10 @@ export default function SubmissionsPage() {
   }, [formValues])
 
   const handleFieldChange = (event) => {
+    if (formLocked) return
     const { name, value } = event.target
     const nextFormValues = { ...formValues, [name]: value }
+    formValuesRef.current = nextFormValues
     setFormValues(nextFormValues)
     setSaveStatus('dirty')
     if (formErrors.length > 0) {
@@ -602,14 +633,18 @@ export default function SubmissionsPage() {
 
       const data = await response.json()
       setCarbonResult(data)
-      setFormValues((previous) => ({
-        ...previous,
-        scope_1_emissions: String(data.scope_1_tco2e ?? previous.scope_1_emissions ?? ''),
-        scope_2_location_based: String(data.scope_2_tco2e ?? previous.scope_2_location_based ?? ''),
-        scope_2_market_based: String(data.scope_2_market_tco2e ?? previous.scope_2_market_based ?? ''),
-        scope_3_emissions: String(data.scope_3_tco2e ?? previous.scope_3_emissions ?? ''),
-        total_ghg_emissions: String(data.total_tco2e ?? previous.total_ghg_emissions ?? ''),
-      }))
+      setFormValues((previous) => {
+        const nextFormValues = {
+          ...previous,
+          scope_1_emissions: String(data.scope_1_tco2e ?? previous.scope_1_emissions ?? ''),
+          scope_2_location_based: String(data.scope_2_tco2e ?? previous.scope_2_location_based ?? ''),
+          scope_2_market_based: String(data.scope_2_market_tco2e ?? previous.scope_2_market_based ?? ''),
+          scope_3_emissions: String(data.scope_3_tco2e ?? previous.scope_3_emissions ?? ''),
+          total_ghg_emissions: String(data.total_tco2e ?? previous.total_ghg_emissions ?? ''),
+        }
+        formValuesRef.current = nextFormValues
+        return nextFormValues
+      })
       setSaveStatus('dirty')
       setFormMessage(`Carbon calculation applied. Total emissions: ${data.total_tco2e} tCO2e`)
     } catch (calcError) {
@@ -663,29 +698,37 @@ export default function SubmissionsPage() {
     }
   }, [selectedCompany?.id, selectedCompanyRow?.submissionId, user?.email, user?.role])
 
-  const saveDraft = useCallback(({ silent = false } = {}) => {
-    if (!isCompany || !selectedCompany?.id) return false
+  const saveDraft = useCallback(async ({ silent = false } = {}) => {
+    if (!isCompany || !selectedCompany?.id || draftMeta?.locked) return false
 
     setSaveStatus('saving')
     try {
-      const savedAt = new Date()
-      localStorage.setItem(getSubmissionDraftKey(selectedCompany.id), JSON.stringify({
-        values: formValuesRef.current,
-        savedAt: savedAt.toISOString(),
-      }))
+      const response = await fetch(`${BACKEND_URL}/company/${selectedCompany.id}/draft`, {
+        method: 'PUT',
+        headers: authJsonHeaders,
+        body: JSON.stringify({ payload: formValuesRef.current }),
+      })
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}))
+        throw new Error(payload.detail || `Draft save failed (${response.status})`)
+      }
+      const savedDraft = await response.json()
+      const savedAt = savedDraft.updated_at ? new Date(savedDraft.updated_at) : new Date()
       const savedTime = savedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      setDraftMeta((current) => ({ ...current, ...savedDraft }))
+      setLastSyncedValues({ ...formValuesRef.current })
       setLastSavedAt(savedTime)
       setSaveStatus('saved')
-      if (!silent) setFormMessage(`Draft saved at ${savedTime}.`)
+      if (!silent) setFormMessage(`Draft synced across devices at ${savedTime}.`)
       return true
     } catch (saveError) {
       setSaveStatus('error')
       if (!silent) setFormMessage(saveError.message || 'Unable to save draft.')
       return false
     }
-  }, [isCompany, selectedCompany?.id])
+  }, [authJsonHeaders, draftMeta?.locked, isCompany, selectedCompany?.id])
 
-  const submitPortfolioESG = async (event) => {
+  const openSubmissionReview = async (event) => {
     event.preventDefault()
     if (!selectedCompany) return
 
@@ -696,6 +739,16 @@ export default function SubmissionsPage() {
       setFormMessage(`Resolve ${errors.length} validation item${errors.length === 1 ? '' : 's'} before submitting.`)
       return
     }
+
+    const saved = await saveDraft()
+    if (!saved) return
+    setFormErrors([])
+    setWorkspaceView('review')
+    setFormMessage('')
+  }
+
+  const submitPortfolioESG = async () => {
+    if (!selectedCompany || draftMeta?.locked) return
 
     setFormErrors([])
     setIsSubmitting(true)
@@ -715,7 +768,7 @@ export default function SubmissionsPage() {
       setFormMessage(`ESG submission saved for ${selectedCompany.name}.`)
       setSaveStatus('saved')
       setLastSavedAt(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))
-      localStorage.removeItem(getSubmissionDraftKey(selectedCompany.id))
+      setShowSubmitConfirmation(false)
       await refresh()
     } catch (submitError) {
       setFormMessage(submitError.message)
@@ -724,13 +777,51 @@ export default function SubmissionsPage() {
     }
   }
 
+  const uploadMetricEvidence = async (metricKey, file) => {
+    if (!selectedCompany || draftMeta?.locked) throw new Error(draftMeta?.lock_reason || 'This submission is locked.')
+    const formData = new FormData()
+    formData.append('file', file)
+    formData.append('metric_key', metricKey)
+    const response = await fetch(`${BACKEND_URL}/company/${selectedCompany.id}/upload-evidence`, {
+      method: 'POST',
+      headers: {
+        'x-user-role': user?.role || '',
+        'x-user-email': user?.email || '',
+      },
+      body: formData,
+    })
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}))
+      throw new Error(payload.detail || `Evidence upload failed (${response.status})`)
+    }
+    const uploaded = await response.json()
+    setEvidenceFiles((current) => [uploaded, ...current])
+  }
+
+  const removeMetricEvidence = async (evidenceId) => {
+    if (!selectedCompany || draftMeta?.locked) return
+    const response = await fetch(`${BACKEND_URL}/company/${selectedCompany.id}/evidence/${evidenceId}`, {
+      method: 'DELETE',
+      headers: {
+        'x-user-role': user?.role || '',
+        'x-user-email': user?.email || '',
+      },
+    })
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}))
+      setFormMessage(payload.detail || 'Unable to remove evidence.')
+      return
+    }
+    setEvidenceFiles((current) => current.filter((item) => item.id !== evidenceId))
+  }
+
   useEffect(() => {
-    if (saveStatus !== 'dirty' || !isCompany || !selectedCompany) return undefined
+    if (saveStatus !== 'dirty' || !isCompany || !selectedCompany || draftMeta?.locked) return undefined
     const autoSaveTimer = setTimeout(() => {
       saveDraft({ silent: true })
     }, 15000)
     return () => clearTimeout(autoSaveTimer)
-  }, [isCompany, saveDraft, saveStatus, selectedCompany?.id])
+  }, [draftMeta?.locked, isCompany, saveDraft, saveStatus, selectedCompany?.id])
 
   if (loading) {
     return (
@@ -785,9 +876,10 @@ export default function SubmissionsPage() {
           </div>
 
           {selectedCompany ? (
-            <form onSubmit={submitPortfolioESG} className="workspace-form space-y-4">
+            <form onSubmit={openSubmissionReview} className="workspace-form space-y-4">
               <SubmissionFormProgress
                 activeKey={activeTab}
+                disabled={formLocked || draftLoading}
                 errorCount={formErrors.length}
                 lastSavedAt={lastSavedAt}
                 onChange={setActiveTab}
@@ -796,6 +888,30 @@ export default function SubmissionsPage() {
                 saveStatus={saveStatus}
                 sections={sectionProgress}
               />
+
+              {formLocked ? (
+                <div className="submission-lock-banner" role="status">
+                  <div>
+                    <strong>Submission locked</strong>
+                    <p>{draftMeta?.lock_reason || 'A manager must request resubmission before this report can be edited.'}</p>
+                  </div>
+                  <StatusBadge value={draftMeta?.submission_status || selectedCompanyRow?.status || 'Submitted'} />
+                </div>
+              ) : null}
+
+              {draftLoading ? <p className="submission-draft-loading" role="status">Loading synced draft and evidence...</p> : null}
+
+              {workspaceView === 'review' ? (
+                <SubmissionReviewScreen
+                  evidence={evidenceFiles}
+                  errors={validatePortfolioForm(formValues, varianceContext)}
+                  formValues={formValues}
+                  onBack={() => setWorkspaceView('edit')}
+                  onConfirm={() => setShowSubmitConfirmation(true)}
+                  sections={ESG_FORM_SECTIONS}
+                />
+              ) : (
+              <fieldset className="submission-edit-fieldset" disabled={formLocked || draftLoading}>
 
               {formErrors.length > 0 ? (
                 <div className="submission-validation-summary" role="alert" aria-labelledby="submission-validation-title">
@@ -1059,6 +1175,13 @@ export default function SubmissionsPage() {
                             </select>
                           </div>
                         ) : null}
+                        <MetricEvidenceUploader
+                          disabled={formLocked || draftLoading}
+                          evidence={evidenceFiles.filter((item) => item.metric_key === field.name)}
+                          metricKey={field.name}
+                          onRemove={removeMetricEvidence}
+                          onUpload={uploadMetricEvidence}
+                        />
                       </div>
                       )
                     })}
@@ -1082,33 +1205,6 @@ export default function SubmissionsPage() {
                   </div>
                 </div>
               ))}
-
-              {(formValues.whs_policy_in_place === 'Yes' || formValues.esg_policy_in_place === 'Yes' || formValues.cybersecurity_policy_in_place === 'Yes' || formValues.anti_bribery_corruption_policy === 'Yes') && (
-                <div className="rounded-xl border border-slate-200 bg-white p-4 mt-4 workspace-panel workspace-evidence-panel">
-                  <label className="mb-1 block text-sm font-medium text-slate-700">Upload Evidence (Policies/Certificates)</label>
-                  <div className="grid gap-3 mt-2 md:grid-cols-[1fr_auto]">
-                    <input type="file" id="evidence_file" className="text-sm border border-slate-300 rounded-md p-1 w-full bg-slate-50" />
-                    <button type="button" className="button" onClick={async () => {
-                      const fileInput = document.getElementById('evidence_file');
-                      if (!fileInput?.files?.[0]) return alert('Select a file first');
-                      const formData = new FormData();
-                      formData.append('file', fileInput.files[0]);
-                      try {
-                        const res = await fetch(`${BACKEND_URL}/company/${selectedCompany.id}/upload-evidence`, {
-                          method: 'POST',
-                          headers: {
-                            'x-user-role': user?.role || '',
-                            'x-user-email': user?.email || '',
-                          },
-                          body: formData
-                        });
-                        if (res.ok) alert('Evidence uploaded successfully');
-                        else alert('Upload failed');
-                      } catch(e) { alert(e.message) }
-                    }}>Upload File</button>
-                  </div>
-                </div>
-              )}
 
               <div className="rounded-xl border border-slate-200 bg-white p-4 mt-4 workspace-panel">
                 <h4 className="mb-4 text-base font-semibold text-slate-800">Action Plans & Improvement Initiatives</h4>
@@ -1193,25 +1289,34 @@ export default function SubmissionsPage() {
               </div>
 
               <div className="flex flex-wrap items-center gap-3 workspace-actions">
-                <button className="button" type="submit" disabled={isSubmitting}>
-                  {isSubmitting ? 'Submitting...' : 'Submit ESG Form'}
+                <button className="button" type="submit" disabled={isSubmitting || formLocked || draftLoading}>
+                  Review submission
                 </button>
                 <button
                   className="button"
                   type="button"
                   onClick={() => {
                     if (!selectedCompany) return
-                    localStorage.removeItem(getSubmissionDraftKey(selectedCompany.id))
-                    setFormValues(createPrefilledFormValues(selectedCompany))
+                    setFormValues({ ...lastSyncedValues })
                     setFormErrors([])
-                    setSaveStatus('idle')
-                    setLastSavedAt('')
+                    setSaveStatus(lastSavedAt ? 'saved' : 'idle')
                   }}
                 >
-                  Reset to latest saved
+                  Reset unsaved changes
                 </button>
                 {formMessage ? <p className="action-message">{formMessage}</p> : null}
               </div>
+              </fieldset>
+              )}
+
+              {showSubmitConfirmation ? (
+                <SubmissionConfirmDialog
+                  companyName={selectedCompany.name}
+                  onCancel={() => setShowSubmitConfirmation(false)}
+                  onConfirm={submitPortfolioESG}
+                  submitting={isSubmitting}
+                />
+              ) : null}
             </form>
           ) : (
             <p>No company linked to this account yet.</p>

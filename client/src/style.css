@@ -1574,6 +1574,318 @@ p {
   font-weight: 750;
 }
 
+.submission-edit-fieldset {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.submission-edit-fieldset:disabled {
+  opacity: 0.72;
+}
+
+.submission-lock-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid #f0c36d;
+  border-radius: 13px;
+  background: #fffbeb;
+  color: #78350f;
+}
+
+.submission-lock-banner strong {
+  font-size: 0.88rem;
+}
+
+.submission-lock-banner p {
+  margin-top: 0.15rem;
+  font-size: 0.73rem;
+}
+
+.submission-draft-loading {
+  padding: 0.7rem 0.85rem;
+  border: 1px solid #bfdbfe;
+  border-radius: 10px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 0.72rem;
+  font-weight: 750;
+}
+
+.metric-evidence {
+  display: grid;
+  gap: 0.45rem;
+  margin-top: 0.75rem;
+  padding-top: 0.7rem;
+  border-top: 1px dashed #d8e2ec;
+}
+
+.metric-evidence-upload {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 0.45rem;
+}
+
+.metric-evidence-upload label {
+  grid-column: 1 / -1;
+  color: #52667a;
+  font-size: 0.65rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.metric-evidence-upload input {
+  min-width: 0;
+  padding: 0.36rem !important;
+  font-size: 0.66rem !important;
+}
+
+.metric-evidence-upload button,
+.metric-evidence-list button {
+  border: 1px solid #cbd9e6;
+  border-radius: 8px;
+  background: #fff;
+  color: #17567c;
+  cursor: pointer;
+  font-size: 0.64rem;
+  font-weight: 750;
+}
+
+.metric-evidence-upload button {
+  min-height: 34px;
+  padding: 0.35rem 0.55rem;
+}
+
+.metric-evidence-upload button:disabled,
+.metric-evidence-list button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.metric-evidence-message,
+.metric-evidence-empty {
+  color: var(--ink-muted);
+  font-size: 0.64rem;
+}
+
+.metric-evidence-list {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.metric-evidence-list li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.5rem;
+  border-radius: 8px;
+  background: #effaf6;
+  color: #166534;
+}
+
+.metric-evidence-list li > div {
+  min-width: 0;
+  display: grid;
+}
+
+.metric-evidence-list strong,
+.metric-evidence-list small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.metric-evidence-list strong { font-size: 0.67rem; }
+.metric-evidence-list small { font-size: 0.59rem; }
+.metric-evidence-list button { padding: 0.25rem 0.4rem; }
+
+.submission-review {
+  display: grid;
+  gap: 1rem;
+}
+
+.submission-review-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem;
+  border: 1px solid #cbddec;
+  border-radius: 14px;
+  background: linear-gradient(120deg, #f0fdfa, #eff6ff);
+}
+
+.submission-review-header h3 {
+  color: var(--ink-strong);
+  font-size: 1.05rem;
+}
+
+.submission-review-header p:not(.submission-progress-eyebrow) {
+  margin-top: 0.2rem;
+  color: var(--ink-muted);
+  font-size: 0.75rem;
+}
+
+.submission-review-header button,
+.submission-review-actions button,
+.submission-dialog-actions button {
+  border: 1px solid #cbd9e6;
+  border-radius: 9px;
+  padding: 0.55rem 0.75rem;
+  background: #fff;
+  color: #174f78;
+  cursor: pointer;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.submission-review-validation {
+  padding: 0.85rem 1rem;
+  border: 1px solid;
+  border-radius: 12px;
+}
+
+.submission-review-validation.ready {
+  border-color: #a7d9c9;
+  background: #effcf6;
+  color: #166534;
+}
+
+.submission-review-validation.has-errors {
+  border-color: #fecaca;
+  background: #fff7f7;
+  color: #991b1b;
+}
+
+.submission-review-validation strong { font-size: 0.78rem; }
+.submission-review-validation p,
+.submission-review-validation li { margin-top: 0.25rem; font-size: 0.7rem; }
+
+.submission-review-sections {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.submission-review-sections article,
+.submission-review-evidence {
+  overflow: hidden;
+  border: 1px solid #d7e3ed;
+  border-radius: 13px;
+  background: #fff;
+}
+
+.submission-review-sections article > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem 0.9rem;
+  border-bottom: 1px solid #e2eaf1;
+  background: #f7fafc;
+}
+
+.submission-review-sections header > div {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.submission-review-sections header span {
+  width: 27px;
+  height: 27px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--brand-secondary);
+  color: #fff;
+  font-size: 0.7rem;
+  font-weight: 850;
+}
+
+.submission-review-sections h4,
+.submission-review-evidence h4 { color: var(--ink-strong); font-size: 0.82rem; }
+.submission-review-sections header > strong { color: var(--ink-muted); font-size: 0.65rem; }
+
+.submission-review-sections dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+}
+
+.submission-review-sections dl > div {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.9fr) minmax(0, 1.1fr);
+  gap: 0.6rem;
+  padding: 0.65rem 0.85rem;
+  border-bottom: 1px solid #edf2f6;
+}
+
+.submission-review-sections dt { color: var(--ink-muted); font-size: 0.67rem; }
+.submission-review-sections dd { min-width: 0; display: grid; gap: 0.1rem; margin: 0; }
+.submission-review-sections dd strong { overflow-wrap: anywhere; color: var(--ink-strong); font-size: 0.7rem; }
+.submission-review-sections dd small { color: var(--ink-muted); font-size: 0.6rem; }
+.submission-review-sections .review-evidence { color: #047857; }
+
+.submission-review-evidence { padding: 0.85rem 1rem; }
+.submission-review-evidence p { margin-top: 0.4rem; color: var(--ink-muted); font-size: 0.7rem; }
+.submission-review-evidence ul { display: grid; gap: 0.4rem; margin: 0.6rem 0 0; padding: 0; list-style: none; }
+.submission-review-evidence li { display: grid; grid-template-columns: minmax(130px, 0.8fr) minmax(0, 1fr) auto; gap: 0.7rem; font-size: 0.68rem; }
+.submission-review-evidence li strong { text-transform: capitalize; }
+.submission-review-evidence li b { color: #047857; }
+
+.submission-review-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.6rem;
+}
+
+.submission-review-actions .confirm,
+.submission-dialog-actions .confirm {
+  border-color: transparent;
+  background: linear-gradient(120deg, var(--brand-primary), var(--brand-secondary));
+  color: #fff;
+}
+
+.submission-review-actions button:disabled,
+.submission-dialog-actions button:disabled { cursor: not-allowed; opacity: 0.55; }
+
+.submission-dialog-backdrop {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgba(15, 23, 42, 0.58);
+  backdrop-filter: blur(3px);
+}
+
+.submission-dialog {
+  width: min(460px, 100%);
+  padding: 1.2rem;
+  border: 1px solid #cbddec;
+  border-radius: 15px;
+  background: #fff;
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.3);
+}
+
+.submission-dialog h3 { margin-top: 0.2rem; color: var(--ink-strong); font-size: 1.1rem; }
+.submission-dialog > p:not(.submission-progress-eyebrow) { margin-top: 0.55rem; color: var(--ink-muted); font-size: 0.78rem; line-height: 1.55; }
+.submission-dialog-actions { display: flex; justify-content: flex-end; gap: 0.6rem; margin-top: 1rem; }
+
 .filter-bar label,
 .report-form label {
   display: grid;
@@ -2212,5 +2524,35 @@ p {
     grid-column: 1 / -1;
     grid-row: 1;
     text-align: center;
+  }
+
+  .submission-lock-banner,
+  .submission-review-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .submission-review-sections dl {
+    grid-template-columns: 1fr;
+  }
+
+  .submission-review-sections dl > div {
+    grid-template-columns: 1fr;
+  }
+
+  .submission-review-evidence li {
+    grid-template-columns: 1fr;
+    gap: 0.15rem;
+  }
+
+  .submission-review-actions,
+  .submission-dialog-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .submission-review-actions button,
+  .submission-dialog-actions button {
+    width: 100%;
   }
 }

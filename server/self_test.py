@@ -85,6 +85,7 @@ def run_self_test():
         response = client.get(f"/dashboard/company/{new_company_user['id']}", headers={'x-user-role': 'company'})
         company_dashboard = response.json() if response.status_code == 200 else []
         company_id = company_dashboard[0]['id'] if company_dashboard else None
+        company_headers = {'x-user-role': 'company', 'x-user-email': company_email}
         check(
             'dashboard/company shows created company',
             response.status_code == 200 and company_id is not None and company_dashboard[0]['name'] == company_name,
@@ -169,7 +170,53 @@ def run_self_test():
             'female_board_members_percent': 33,
             'female_board_members_percent_confidence': 'Measured',
             'submission_notes': 'QA submission',
+            'section_comment_environmental': 'QA variance explanation for environmental metrics.',
+            'section_comment_social': 'QA variance explanation for social metrics.',
+            'section_comment_governance': 'QA variance explanation for governance metrics.',
         }
+
+        first_draft = client.put(
+            f'/company/{company_id}/draft',
+            json={'payload': {'scope_1_emissions': 8, 'submission_notes': 'First synced draft'}},
+            headers=company_headers,
+        )
+        first_draft_payload = first_draft.json() if first_draft.status_code == 200 else {}
+        second_draft = client.put(
+            f'/company/{company_id}/draft',
+            json={'payload': {'scope_1_emissions': 10, 'submission_notes': 'Updated synced draft'}},
+            headers=company_headers,
+        )
+        second_draft_payload = second_draft.json() if second_draft.status_code == 200 else {}
+        check(
+            'draft upserts one row per company/cycle',
+            first_draft.status_code == 200
+            and second_draft.status_code == 200
+            and first_draft_payload.get('id') == second_draft_payload.get('id'),
+            second_draft.text,
+        )
+
+        evidence_upload = client.post(
+            f'/company/{company_id}/upload-evidence',
+            data={'metric_key': 'scope_1_emissions'},
+            files={'file': ('scope-1-proof.pdf', b'qa-evidence', 'application/pdf')},
+            headers=company_headers,
+        )
+        evidence_payload = evidence_upload.json() if evidence_upload.status_code == 200 else {}
+        evidence_download = client.get(
+            f"/company/{company_id}/evidence/{evidence_payload.get('id')}",
+            headers=company_headers,
+        )
+        draft_read = client.get(f'/company/{company_id}/draft', headers=company_headers)
+        draft_read_payload = draft_read.json() if draft_read.status_code == 200 else {}
+        check(
+            'evidence is connected to metric and returned with draft',
+            evidence_upload.status_code == 200
+            and evidence_payload.get('metric_key') == 'scope_1_emissions'
+            and evidence_download.status_code == 200
+            and evidence_download.content == b'qa-evidence'
+            and any(item.get('id') == evidence_payload.get('id') for item in draft_read_payload.get('evidence', [])),
+            evidence_upload.text,
+        )
 
         investor_write_attempt = client.post(f'/company/{company_id}/submissions', json=submission_payload, headers=investor_headers)
         check('investor blocked from submission writes', investor_write_attempt.status_code == 403, investor_write_attempt.text)
@@ -178,6 +225,9 @@ def run_self_test():
         submission = initial_submit.json() if initial_submit.status_code == 200 else {}
         submission_id = submission.get('id')
         check('active cycle accepts submission', initial_submit.status_code == 200 and submission.get('status') == 'submitted', initial_submit.text)
+
+        duplicate_submit = client.post(f'/company/{company_id}/submissions', json=submission_payload, headers=manager_headers)
+        check('submitted form is locked and duplicate row blocked', duplicate_submit.status_code == 423, duplicate_submit.text)
 
         to_under_review = client.patch(f'/submissions/{submission_id}/status', json={'status': 'under review'}, headers=manager_headers)
         check('submitted -> under review', to_under_review.status_code == 200 and to_under_review.json().get('status') == 'under review', to_under_review.text)
@@ -194,6 +244,13 @@ def run_self_test():
             'under review -> resubmission requested',
             resub_requested.status_code == 200 and resub_requested.json().get('status') == 'resubmission requested',
             resub_requested.text,
+        )
+
+        editable_resubmission = client.get(f'/company/{company_id}/draft', headers=company_headers)
+        check(
+            'manager resubmission request unlocks synced draft',
+            editable_resubmission.status_code == 200 and editable_resubmission.json().get('can_edit') is True,
+            editable_resubmission.text,
         )
 
         resubmit = client.post(f'/company/{company_id}/submissions', json=submission_payload, headers=manager_headers)
@@ -219,7 +276,12 @@ def run_self_test():
         check('POST /submissions/{id}/unlock', unlock_response.status_code == 200 and unlock_payload.get('active') is True, unlock_response.text)
 
         unlocked_submit = client.post(f'/company/{company_id}/submissions', json=submission_payload, headers=manager_headers)
-        check('unlock allows temporary write', unlocked_submit.status_code == 200, unlocked_submit.text)
+        unlocked_submission = unlocked_submit.json() if unlocked_submit.status_code == 200 else {}
+        check(
+            'unlock allows temporary write without duplicate submission',
+            unlocked_submit.status_code == 200 and unlocked_submission.get('id') == submission_id,
+            unlocked_submit.text,
+        )
 
         reminder_response = client.post(
             f'/companies/{company_id}/reminders',

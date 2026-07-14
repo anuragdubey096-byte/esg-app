@@ -1,7 +1,7 @@
 import enum
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, Enum, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, Column, DateTime, Enum, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint
 from sqlalchemy.orm import declarative_base, relationship
 
 Base = declarative_base()
@@ -45,6 +45,8 @@ class Company(Base):
 
     owner = relationship('User', back_populates='companies')
     submissions = relationship('Submission', back_populates='company')
+    submission_drafts = relationship('SubmissionDraft', back_populates='company')
+    evidence_files = relationship('SubmissionEvidence', back_populates='company')
     action_plans = relationship('ActionPlan', back_populates='company')
     review_actions = relationship('ReviewAction', back_populates='company')
     validation_flags = relationship('ValidationFlag', back_populates='company')
@@ -111,6 +113,8 @@ class CollectionCycle(Base):
 
     created_by_user = relationship('User', back_populates='cycles')
     submissions = relationship('Submission', back_populates='cycle')
+    submission_drafts = relationship('SubmissionDraft', back_populates='cycle')
+    evidence_files = relationship('SubmissionEvidence', back_populates='cycle')
     submission_unlocks = relationship('SubmissionUnlock', back_populates='cycle')
     reminder_logs = relationship('ReminderLog', back_populates='cycle')
 
@@ -132,6 +136,41 @@ class SubmissionUnlock(Base):
     company = relationship('Company', back_populates='submission_unlocks')
     cycle = relationship('CollectionCycle', back_populates='submission_unlocks')
     unlocked_by_user = relationship('User', back_populates='submission_unlocks')
+
+
+class SubmissionDraft(Base):
+    __tablename__ = 'submission_drafts'
+    __table_args__ = (UniqueConstraint('company_id', 'cycle_id', name='uq_submission_draft_company_cycle'),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=False, index=True)
+    cycle_id = Column(Integer, ForeignKey('collection_cycles.id'), nullable=False, index=True)
+    payload = Column(Text, nullable=False, default='{}')
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    company = relationship('Company', back_populates='submission_drafts')
+    cycle = relationship('CollectionCycle', back_populates='submission_drafts')
+
+
+class SubmissionEvidence(Base):
+    __tablename__ = 'submission_evidence'
+
+    id = Column(Integer, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=False, index=True)
+    cycle_id = Column(Integer, ForeignKey('collection_cycles.id'), nullable=False, index=True)
+    submission_id = Column(Integer, ForeignKey('submissions.id'), nullable=True, index=True)
+    metric_key = Column(String, nullable=False, index=True)
+    filename = Column(String, nullable=False)
+    content_type = Column(String, nullable=True)
+    file_size = Column(Integer, nullable=False, default=0)
+    content = Column(LargeBinary, nullable=False)
+    status = Column(String, nullable=False, default='uploaded')
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    company = relationship('Company', back_populates='evidence_files')
+    cycle = relationship('CollectionCycle', back_populates='evidence_files')
+    submission = relationship('Submission')
 
 
 class ReminderLog(Base):

@@ -8,6 +8,7 @@ const SAVE_LABELS = {
 
 export default function SubmissionFormProgress({
   activeKey,
+  disabled = false,
   errorCount = 0,
   lastSavedAt,
   onChange,
@@ -30,7 +31,7 @@ export default function SubmissionFormProgress({
             <strong>{SAVE_LABELS[saveStatus] || SAVE_LABELS.idle}</strong>
             <small>{lastSavedAt ? `Last saved ${lastSavedAt}` : 'Autosaves after a short pause'}</small>
           </div>
-          <button type="button" onClick={onSave} disabled={saveStatus === 'saving'}>Save draft</button>
+          <button type="button" onClick={onSave} disabled={disabled || saveStatus === 'saving'}>Save draft</button>
         </div>
       </header>
 

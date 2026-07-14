@@ -1,4 +1,4 @@
-from typing import Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -175,6 +175,10 @@ class SubmissionInfo(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class SubmissionDraftRequest(BaseModel):
+    payload: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ActionPlanInfo(BaseModel):

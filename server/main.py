@@ -14,7 +14,7 @@ from urllib import request as urlrequest
 from urllib.error import URLError, HTTPError
 from xml.etree import ElementTree
 
-from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Header, Query, Body, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Form, Header, Query, Body, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, text
@@ -33,6 +33,8 @@ from models import (
     ReviewAction,
     ValidationFlag,
     SubmissionUnlock,
+    SubmissionDraft,
+    SubmissionEvidence,
     ReminderLog,
     NarrativeRecord,
 )
@@ -57,6 +59,7 @@ from schemas import (
     SSOLoginRequest,
     SubmissionCreateRequest,
     SubmissionInfo,
+    SubmissionDraftRequest,
     SubmissionStatusUpdateRequest,
     SubmissionUnlockRequest,
     SubmissionUnlockInfo,
@@ -613,6 +616,97 @@ def normalize_submission_status(value: Any) -> str:
     return normalized
 
 
+def require_company_access(db: Session, company_id: int, role: str, email: str | None) -> Company:
+    company = db.query(Company).filter(Company.id == company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail='Company not found')
+    if role == 'company':
+        request_user = find_request_user(db, email)
+        if not request_user or request_user.id != company.user_id:
+            raise HTTPException(status_code=403, detail='Company users can only access their own submission workspace')
+    return company
+
+
+def latest_submission_for_cycle(db: Session, company_id: int, cycle_id: int) -> Submission | None:
+    return (
+        db.query(Submission)
+        .filter(Submission.company_id == company_id, Submission.cycle_id == cycle_id)
+        .order_by(Submission.id.desc())
+        .first()
+    )
+
+
+def submission_edit_state(db: Session, company_id: int, cycle: CollectionCycle, submission: Submission | None) -> dict[str, Any]:
+    cycle_closed = normalize_cycle_status(cycle.status) == 'closed'
+    if submission is None:
+        can_edit = not cycle_closed
+        return {
+            'can_edit': can_edit,
+            'locked': not can_edit,
+            'lock_reason': 'This reporting cycle is closed.' if not can_edit else None,
+            'submission_status': 'not started',
+        }
+
+    status = normalize_submission_status(submission.status)
+    editable_status = status in {'not started', 'in progress', 'resubmission requested'}
+    active_unlock = has_active_unlock(db, submission.id, company_id, cycle.id)
+    can_edit = editable_status and (not cycle_closed or active_unlock)
+
+    if can_edit:
+        lock_reason = None
+    elif cycle_closed and not active_unlock:
+        lock_reason = 'This reporting cycle is closed. A manager must unlock it before changes can be made.'
+    elif status == 'approved':
+        lock_reason = 'This submission is approved and locked. A manager must request resubmission.'
+    else:
+        lock_reason = 'This submission has been sent for review. A manager must request resubmission before it can be edited.'
+
+    return {
+        'can_edit': can_edit,
+        'locked': not can_edit,
+        'lock_reason': lock_reason,
+        'submission_status': status,
+        'active_unlock': active_unlock,
+    }
+
+
+def serialize_evidence(evidence: SubmissionEvidence) -> dict[str, Any]:
+    return {
+        'id': evidence.id,
+        'company_id': evidence.company_id,
+        'cycle_id': evidence.cycle_id,
+        'submission_id': evidence.submission_id,
+        'metric_key': evidence.metric_key,
+        'filename': evidence.filename,
+        'content_type': evidence.content_type,
+        'file_size': evidence.file_size,
+        'status': evidence.status,
+        'uploaded_at': evidence.created_at.isoformat() if evidence.created_at else None,
+    }
+
+
+def seed_draft_from_submission(db: Session, submission: Submission) -> SubmissionDraft:
+    draft = (
+        db.query(SubmissionDraft)
+        .filter(
+            SubmissionDraft.company_id == submission.company_id,
+            SubmissionDraft.cycle_id == submission.cycle_id,
+        )
+        .first()
+    )
+    if draft is None:
+        draft = SubmissionDraft(
+            company_id=submission.company_id,
+            cycle_id=submission.cycle_id,
+            payload=submission.esg_data or '{}',
+        )
+        db.add(draft)
+    else:
+        draft.payload = submission.esg_data or '{}'
+        draft.updated_at = datetime.utcnow()
+    return draft
+
+
 def enforce_transition(current_status: str, next_status: str):
     current = normalize_submission_status(current_status)
     target = normalize_submission_status(next_status)
@@ -1018,28 +1112,154 @@ def complete_onboarding(company_id: int, db: Session = Depends(get_db)):
     db.commit()
     return {"message": "Onboarding complete. Company is now active in the portfolio."}
 
+
+@app.get('/company/{company_id}/draft', dependencies=[Depends(require_company_or_manager)])
+def get_submission_draft(
+    company_id: int,
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
+    company = require_company_access(db, company_id, role, email)
+    cycle = resolve_submission_cycle(db)
+    submission = latest_submission_for_cycle(db, company.id, cycle.id)
+    draft = (
+        db.query(SubmissionDraft)
+        .filter(SubmissionDraft.company_id == company.id, SubmissionDraft.cycle_id == cycle.id)
+        .first()
+    )
+    edit_state = submission_edit_state(db, company.id, cycle, submission)
+    payload = parse_json_or_default(draft.payload, {}) if draft else {}
+    if not payload and submission and edit_state['can_edit']:
+        payload = parse_submission(submission)
+    evidence = (
+        db.query(SubmissionEvidence)
+        .filter(SubmissionEvidence.company_id == company.id, SubmissionEvidence.cycle_id == cycle.id)
+        .order_by(SubmissionEvidence.created_at.desc(), SubmissionEvidence.id.desc())
+        .all()
+    )
+    return {
+        'id': draft.id if draft else None,
+        'company_id': company.id,
+        'cycle_id': cycle.id,
+        'cycle_year': cycle.cycle_year,
+        'payload': payload,
+        'updated_at': draft.updated_at.isoformat() if draft and draft.updated_at else None,
+        'latest_submission_id': submission.id if submission else None,
+        'evidence': [serialize_evidence(item) for item in evidence],
+        **edit_state,
+    }
+
+
+@app.put('/company/{company_id}/draft', dependencies=[Depends(require_company_or_manager)])
+def upsert_submission_draft(
+    company_id: int,
+    request: SubmissionDraftRequest,
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
+    company = require_company_access(db, company_id, role, email)
+    cycle = resolve_submission_cycle(db)
+    submission = latest_submission_for_cycle(db, company.id, cycle.id)
+    edit_state = submission_edit_state(db, company.id, cycle, submission)
+    if not edit_state['can_edit']:
+        raise HTTPException(status_code=423, detail=edit_state['lock_reason'])
+
+    draft = (
+        db.query(SubmissionDraft)
+        .filter(SubmissionDraft.company_id == company.id, SubmissionDraft.cycle_id == cycle.id)
+        .first()
+    )
+    if draft is None:
+        draft = SubmissionDraft(company_id=company.id, cycle_id=cycle.id, payload='{}')
+        db.add(draft)
+    draft.payload = json.dumps(request.payload)
+    draft.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(draft)
+    return {
+        'id': draft.id,
+        'company_id': company.id,
+        'cycle_id': cycle.id,
+        'cycle_year': cycle.cycle_year,
+        'updated_at': draft.updated_at.isoformat(),
+        'latest_submission_id': submission.id if submission else None,
+        **edit_state,
+    }
+
+
+@app.delete('/company/{company_id}/evidence/{evidence_id}', dependencies=[Depends(require_company_or_manager)])
+def delete_submission_evidence(
+    company_id: int,
+    evidence_id: int,
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
+    company = require_company_access(db, company_id, role, email)
+    cycle = resolve_submission_cycle(db)
+    submission = latest_submission_for_cycle(db, company.id, cycle.id)
+    edit_state = submission_edit_state(db, company.id, cycle, submission)
+    if not edit_state['can_edit']:
+        raise HTTPException(status_code=423, detail=edit_state['lock_reason'])
+    evidence = (
+        db.query(SubmissionEvidence)
+        .filter(
+            SubmissionEvidence.id == evidence_id,
+            SubmissionEvidence.company_id == company.id,
+            SubmissionEvidence.cycle_id == cycle.id,
+        )
+        .first()
+    )
+    if not evidence:
+        raise HTTPException(status_code=404, detail='Evidence not found')
+    db.delete(evidence)
+    db.commit()
+    return {'message': 'Evidence removed', 'id': evidence_id}
+
+
+@app.get('/company/{company_id}/evidence/{evidence_id}', dependencies=[Depends(require_company_or_manager)])
+def download_submission_evidence(
+    company_id: int,
+    evidence_id: int,
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
+    company = require_company_access(db, company_id, role, email)
+    evidence = (
+        db.query(SubmissionEvidence)
+        .filter(SubmissionEvidence.id == evidence_id, SubmissionEvidence.company_id == company.id)
+        .first()
+    )
+    if not evidence:
+        raise HTTPException(status_code=404, detail='Evidence not found')
+    safe_filename = Path(evidence.filename).name.replace('"', '')
+    return Response(
+        content=evidence.content,
+        media_type=evidence.content_type or 'application/octet-stream',
+        headers={'Content-Disposition': f'attachment; filename="{safe_filename}"'},
+    )
+
 @app.post('/company/{company_id}/submissions', response_model=SubmissionInfo, dependencies=[Depends(require_company_or_manager)])
-def add_submission(company_id: int, submission: SubmissionCreateRequest, db: Session = Depends(get_db)):
-    company = db.query(Company).filter(Company.id == company_id).first()
-    if not company:
-        raise HTTPException(status_code=404, detail='Company not found')
+def add_submission(
+    company_id: int,
+    submission: SubmissionCreateRequest,
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
+    company = require_company_access(db, company_id, role, email)
 
     target_cycle = resolve_submission_cycle(db)
     if not target_cycle:
         raise HTTPException(status_code=400, detail='No collection cycle is configured')
 
-    latest_for_cycle = (
-        db.query(Submission)
-        .filter(Submission.company_id == company_id, Submission.cycle_id == target_cycle.id)
-        .order_by(Submission.id.desc())
-        .first()
-    )
-
-    if normalize_cycle_status(target_cycle.status) == 'closed':
-        if not latest_for_cycle:
-            raise HTTPException(status_code=423, detail='This cycle is closed and no unlock is available')
-        if not has_active_unlock(db, latest_for_cycle.id, company_id, target_cycle.id):
-            raise HTTPException(status_code=423, detail='This cycle is closed. Request a manager unlock.')
+    latest_for_cycle = latest_submission_for_cycle(db, company_id, target_cycle.id)
+    edit_state = submission_edit_state(db, company_id, target_cycle, latest_for_cycle)
+    if not edit_state['can_edit']:
+        raise HTTPException(status_code=423, detail=edit_state['lock_reason'])
 
     incoming_payload = submission.model_dump()
     baseline_submission = latest_for_cycle
@@ -1070,21 +1290,35 @@ def add_submission(company_id: int, submission: SubmissionCreateRequest, db: Ses
             detail=f"Variance explanation required for sections: {', '.join(missing_sections)}",
         )
 
-    if latest_for_cycle and normalize_submission_status(latest_for_cycle.status) == 'resubmission requested':
-        enforce_transition(latest_for_cycle.status, 'submitted')
-        latest_for_cycle.esg_data = json.dumps(merged_payload)
-        latest_for_cycle.status = 'submitted'
-        db.commit()
-        db.refresh(latest_for_cycle)
-        return latest_for_cycle
+    if latest_for_cycle:
+        current_status = normalize_submission_status(latest_for_cycle.status)
+        if current_status == 'resubmission requested':
+            enforce_transition(latest_for_cycle.status, 'submitted')
+        submission_record = latest_for_cycle
+        submission_record.esg_data = json.dumps(merged_payload)
+        submission_record.status = 'submitted'
+    else:
+        submission_record = Submission(
+            company_id=company_id,
+            cycle_id=target_cycle.id,
+            esg_data=json.dumps(merged_payload),
+            status='submitted',
+        )
+        db.add(submission_record)
+        db.flush()
 
-    submission_record = Submission(
-        company_id=company_id,
-        cycle_id=target_cycle.id,
-        esg_data=json.dumps(merged_payload),
-        status='submitted',
-    )
-    db.add(submission_record)
+    db.query(SubmissionDraft).filter(
+        SubmissionDraft.company_id == company_id,
+        SubmissionDraft.cycle_id == target_cycle.id,
+    ).delete(synchronize_session=False)
+    db.query(SubmissionEvidence).filter(
+        SubmissionEvidence.company_id == company_id,
+        SubmissionEvidence.cycle_id == target_cycle.id,
+    ).update({'submission_id': submission_record.id, 'status': 'attached'}, synchronize_session=False)
+    db.query(SubmissionUnlock).filter(
+        SubmissionUnlock.submission_id == submission_record.id,
+        SubmissionUnlock.active.is_(True),
+    ).update({'active': False}, synchronize_session=False)
     db.commit()
     db.refresh(submission_record)
     _log_live_event(
@@ -1377,11 +1611,51 @@ def calculate_carbon(payload: GHGCalculatorRequest):
     return _compute_carbon(payload)
 
 @app.post('/company/{company_id}/upload-evidence', dependencies=[Depends(require_company_or_manager)])
-def upload_evidence(company_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
-    company = db.query(Company).filter(Company.id == company_id).first()
-    if not company:
-        raise HTTPException(status_code=404, detail='Company not found')
-    return {"filename": file.filename, "message": "Evidence uploaded successfully"}
+def upload_evidence(
+    company_id: int,
+    file: UploadFile = File(...),
+    metric_key: str = Form(...),
+    db: Session = Depends(get_db),
+    role: str = Depends(get_user_role),
+    email: str | None = Depends(get_user_email),
+):
+    company = require_company_access(db, company_id, role, email)
+    cycle = resolve_submission_cycle(db)
+    submission = latest_submission_for_cycle(db, company.id, cycle.id)
+    edit_state = submission_edit_state(db, company.id, cycle, submission)
+    if not edit_state['can_edit']:
+        raise HTTPException(status_code=423, detail=edit_state['lock_reason'])
+
+    normalized_metric_key = str(metric_key or '').strip().lower()
+    if not re.fullmatch(r'[a-z0-9_]{2,120}', normalized_metric_key):
+        raise HTTPException(status_code=422, detail='A valid metric key is required')
+    filename = Path(file.filename or '').name.strip()
+    if not filename:
+        raise HTTPException(status_code=422, detail='Evidence filename is required')
+
+    file.file.seek(0, os.SEEK_END)
+    file_size = int(file.file.tell())
+    file.file.seek(0)
+    if file_size > 25 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail='Evidence files must be 25 MB or smaller')
+    file_content = file.file.read()
+    file.file.seek(0)
+
+    evidence = SubmissionEvidence(
+        company_id=company.id,
+        cycle_id=cycle.id,
+        submission_id=submission.id if submission else None,
+        metric_key=normalized_metric_key,
+        filename=filename,
+        content_type=file.content_type,
+        file_size=file_size,
+        content=file_content,
+        status='uploaded',
+    )
+    db.add(evidence)
+    db.commit()
+    db.refresh(evidence)
+    return {**serialize_evidence(evidence), 'message': 'Evidence uploaded successfully'}
 
 @app.post('/submissions/{submission_id}/review', dependencies=[Depends(require_manager)])
 def review_submission(submission_id: int, payload: ReviewSubmissionRequest, db: Session = Depends(get_db)):
@@ -1395,6 +1669,8 @@ def review_submission(submission_id: int, payload: ReviewSubmissionRequest, db: 
 
     enforce_transition(submission.status, next_status)
     submission.status = next_status
+    if next_status == 'resubmission requested':
+        seed_draft_from_submission(db, submission)
     reporting_year = submission.cycle.cycle_year if submission.cycle else datetime.utcnow().year
     review_action = ReviewAction(
         company_id=submission.company_id,
@@ -1871,6 +2147,18 @@ def unlock_submission(
         SubmissionUnlock.cycle_id == cycle.id,
         SubmissionUnlock.active.is_(True),
     ).update({'active': False}, synchronize_session=False)
+
+    previous_status = normalize_submission_status(submission.status)
+    if previous_status != 'resubmission requested':
+        submission.status = 'resubmission requested'
+        seed_draft_from_submission(db, submission)
+        db.add(ReviewAction(
+            company_id=submission.company_id,
+            reporting_year=cycle.cycle_year,
+            review_status='resubmission requested',
+            reviewer_role='manager',
+            review_comment=payload.reason,
+        ))
 
     manager_user = find_request_user(db, user_email)
     expires_at = datetime.utcnow() + timedelta(hours=payload.expiry_hours)
@@ -2847,6 +3135,7 @@ def _upsert_section_comments(
 ) -> dict[str, Any]:
     merged = dict(existing_payload or {})
     comments = _extract_section_comments(merged)
+    merged.update(incoming_payload or {})
 
     for section in SECTION_ORDER:
         field_name = _section_comment_field(section)
@@ -2868,7 +3157,8 @@ def _upsert_section_comments(
     for section in SECTION_ORDER:
         field_name = _section_comment_field(section)
         latest_items = comments.get(section) or []
-        merged[field_name] = str((latest_items[-1] or {}).get('text') or incoming_payload.get(field_name) or '').strip()
+        latest_item = latest_items[-1] if latest_items else {}
+        merged[field_name] = str((latest_item or {}).get('text') or incoming_payload.get(field_name) or '').strip()
     return merged
 
 
