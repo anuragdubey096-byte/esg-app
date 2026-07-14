@@ -192,6 +192,7 @@ async def request_timing_middleware(request: Request, call_next):
         **event,
     }), flush=True)
     response.headers['Server-Timing'] = f'app;dur={duration_ms}'
+    response.headers['X-App-Duration-Ms'] = str(duration_ms)
     return response
 
 

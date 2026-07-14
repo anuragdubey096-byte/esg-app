@@ -46,7 +46,8 @@ def main():
 
         status, payload, dashboard_ms, response_headers = call(dashboard_path, headers=headers)
         has_data = bool(payload) and status == 200
-        has_timing = 'server-timing' in {key.lower(): value for key, value in response_headers.items()}
+        normalized_headers = {key.lower(): value for key, value in response_headers.items()}
+        has_timing = 'server-timing' in normalized_headers or 'x-app-duration-ms' in normalized_headers
         passed = has_data and has_timing and dashboard_ms < 15000
         print(json.dumps({
             'role': role,

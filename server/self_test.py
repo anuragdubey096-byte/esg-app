@@ -34,6 +34,7 @@ def run_self_test():
         manager_dashboard = client.get('/dashboard/manager', headers=manager_headers)
         check('GET /dashboard/manager', manager_dashboard.status_code == 200 and 'summary' in manager_dashboard.json(), manager_dashboard.text)
         check('manager dashboard includes timing telemetry', 'app;dur=' in manager_dashboard.headers.get('server-timing', ''), dict(manager_dashboard.headers))
+        check('manager dashboard exposes app duration', float(manager_dashboard.headers.get('x-app-duration-ms', -1)) >= 0, dict(manager_dashboard.headers))
 
         rbac_fail = client.get('/dashboard/manager', headers=investor_headers)
         check('GET /dashboard/manager blocked for investor', rbac_fail.status_code == 403, rbac_fail.text)
@@ -44,6 +45,7 @@ def run_self_test():
         response = client.get('/dashboard/investor', headers=investor_headers)
         check('GET /dashboard/investor', response.status_code == 200 and 'portfolio_esg_score' in response.json(), response.text)
         check('investor dashboard includes timing telemetry', 'app;dur=' in response.headers.get('server-timing', ''), dict(response.headers))
+        check('investor dashboard exposes app duration', float(response.headers.get('x-app-duration-ms', -1)) >= 0, dict(response.headers))
 
         response = client.get('/analytics/portfolio')
         check('GET /analytics/portfolio', response.status_code == 200 and 'portfolio_esg_score' in response.json(), response.text)
@@ -94,6 +96,7 @@ def run_self_test():
             response.text,
         )
         check('company dashboard includes timing telemetry', 'app;dur=' in response.headers.get('server-timing', ''), dict(response.headers))
+        check('company dashboard exposes app duration', float(response.headers.get('x-app-duration-ms', -1)) >= 0, dict(response.headers))
 
         submission_payload = {
             'scope_1_emissions': 10,
