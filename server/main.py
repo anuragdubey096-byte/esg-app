@@ -2405,7 +2405,6 @@ def manager_dashboard(db: Session = Depends(get_db)):
         .options(
             selectinload(Company.submissions),
             selectinload(Company.action_plans),
-            selectinload(Company.review_actions),
             selectinload(Company.validation_flags),
         )
         .order_by(Company.name.asc())
@@ -2413,9 +2412,45 @@ def manager_dashboard(db: Session = Depends(get_db)):
     )
     summary = build_manager_summary(db, companies)
     return {
-        'companies': companies,
+        'companies': serialize_company_details(db, companies),
         'summary': summary,
     }
+
+
+def serialize_company_details(db: Session, companies: List[Company]) -> list[dict]:
+    review_columns = {column['name'] for column in inspect(db.bind).get_columns('review_actions')}
+    submission_expression = 'submission_id' if 'submission_id' in review_columns else 'NULL AS submission_id'
+    created_expression = 'created_at' if 'created_at' in review_columns else 'NULL AS created_at'
+    review_rows = db.execute(text(
+        'SELECT id, company_id, reporting_year, review_status, reviewer_role, review_comment, '
+        f'{submission_expression}, {created_expression} FROM review_actions ORDER BY id ASC'
+    )).mappings().all()
+    reviews_by_company: dict[int, list[dict]] = {}
+    for row in review_rows:
+        reviews_by_company.setdefault(int(row['company_id']), []).append({
+            'id': row['id'],
+            'submission_id': row['submission_id'],
+            'reporting_year': row['reporting_year'],
+            'review_status': row['review_status'],
+            'reviewer_role': row['reviewer_role'],
+            'review_comment': row['review_comment'],
+            'created_at': row['created_at'],
+        })
+
+    return [
+        {
+            'id': company.id,
+            'name': company.name,
+            'sector': company.sector,
+            'geography': company.geography,
+            'current_status': company.current_status,
+            'submissions': company.submissions or [],
+            'action_plans': company.action_plans or [],
+            'review_actions': reviews_by_company.get(company.id, []),
+            'validation_flags': company.validation_flags or [],
+        }
+        for company in companies
+    ]
 
 def safe_number(value, default: float = 0.0) -> float:
     try:
@@ -2552,7 +2587,6 @@ def build_investor_analytics(db: Session) -> dict:
         .options(
             selectinload(Company.submissions),
             selectinload(Company.action_plans),
-            selectinload(Company.review_actions),
             selectinload(Company.validation_flags),
         )
         .all()
@@ -3047,12 +3081,17 @@ def investor_dashboard(db: Session = Depends(get_db)):
     analytics = build_investor_analytics(db)
     submitted_companies = (
         db.query(Company)
+        .options(
+            selectinload(Company.submissions),
+            selectinload(Company.action_plans),
+            selectinload(Company.validation_flags),
+        )
         .join(Submission, Submission.company_id == Company.id)
         .distinct()
         .order_by(Company.name.asc())
         .all()
     )
-    return InvestorDashboardResponse(**analytics, companies=submitted_companies)
+    return InvestorDashboardResponse(**analytics, companies=serialize_company_details(db, submitted_companies))
 
 
 # ==========================================
