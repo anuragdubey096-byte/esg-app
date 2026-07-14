@@ -306,7 +306,7 @@ export default function OverviewPage() {
   }
 
   return (
-    <div className="page-grid">
+    <div className="page-grid dashboard-stage">
       <ExecutivePageHeader
         eyebrow={isCompany ? 'Company reporting workspace' : 'Portfolio command center'}
         title={isCompany ? `${primaryCompany?.name || 'Company'} ESG overview` : 'ESG reporting overview'}
@@ -318,6 +318,15 @@ export default function OverviewPage() {
           { label: 'Cycle', value: cycleBanner.active_cycle_year || 'Not active' },
           { label: 'Window', value: formatDays(cycleBanner.days_remaining) },
         ]}
+        actions={(
+          <div className="dashboard-live-status" aria-label="Dashboard data is live">
+            <span aria-hidden="true" />
+            <div>
+              <strong>Live reporting data</strong>
+              <small>Securely synced</small>
+            </div>
+          </div>
+        )}
       />
 
       <SectionLoadState
@@ -341,21 +350,29 @@ export default function OverviewPage() {
           title={isCompany ? 'Submission Status' : 'Portfolio Companies'}
           value={isCompany ? normalizeStatus(primarySubmission?.status || 'Not Started') : overviewMetrics.total}
           trendLabel={isCompany ? 'current reporting state' : 'in the active reporting view'}
+          icon={isCompany ? 'submissions' : 'insights'}
+          tone="teal"
         />
         <KpiCard
           title={isCompany ? 'Cycle Timing' : 'Approved'}
           value={isCompany ? formatDays(cycleBanner.days_remaining) : overviewMetrics.approved}
           trendLabel={isCompany ? 'submission window' : `${overviewMetrics.completion}% portfolio completion`}
+          icon="actions"
+          tone="blue"
         />
         <KpiCard
           title={isCompany ? 'Open Actions' : 'Review Queue'}
           value={isCompany ? attentionItems.length : overviewMetrics.reviewQueue}
           trendLabel={isCompany ? 'items requiring attention' : 'submitted or under review'}
+          icon="review"
+          tone="amber"
         />
         <KpiCard
           title={isCompany ? 'Data Workspace' : 'Action Required'}
           value={isCompany ? (primarySubmission ? 'Active' : 'Not started') : overviewMetrics.actionRequired}
           trendLabel={isCompany ? 'latest submission availability' : 'not started or correction requested'}
+          icon="risks"
+          tone="rose"
         />
       </section>
 
