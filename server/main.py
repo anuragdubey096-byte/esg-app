@@ -24,7 +24,6 @@ from xml.etree import ElementTree
 
 from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Form, Header, Cookie, Query, Body, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from sqlalchemy import MetaData, Table, delete as sqlalchemy_delete, func, inspect, or_, text
 from sqlalchemy.orm import Session, selectinload
 from pydantic import ValidationError
@@ -113,6 +112,7 @@ from schemas import (
     UserResponse,
 )
 from new_esg_module import router as new_esg_router
+from storage import persist_export, read_export, storage_health
 try:
     from openai import OpenAI
 except ImportError:  # pragma: no cover - optional dependency at runtime
@@ -191,7 +191,33 @@ try:
 except Exception:
     # Keep core API alive even if optional agent router import fails at runtime.
     pass
-app.mount('/exports', StaticFiles(directory=EXPORT_DIR), name='exports')
+
+@app.get('/exports/{file_name}')
+def download_generated_export(file_name: str):
+    safe_name = Path(file_name).name
+    if safe_name != file_name or not re.fullmatch(r'[A-Za-z0-9._-]{1,240}', safe_name):
+        raise HTTPException(status_code=404, detail='Export not found')
+    try:
+        content, stored_content_type = read_export(safe_name, EXPORT_DIR)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail='Export not found') from error
+    except Exception as error:
+        raise HTTPException(status_code=503, detail='Export storage is temporarily unavailable') from error
+
+    suffix_content_types = {
+        '.csv': 'text/csv',
+        '.pdf': 'application/pdf',
+        '.txt': 'text/plain',
+    }
+    content_type = stored_content_type or suffix_content_types.get(Path(safe_name).suffix.lower(), 'application/octet-stream')
+    return Response(
+        content=content,
+        media_type=content_type,
+        headers={
+            'Content-Disposition': f'attachment; filename="{safe_name}"',
+            'Cache-Control': 'private, no-store',
+        },
+    )
 
 
 def _runtime_error_category(error: Exception) -> str:
@@ -3791,6 +3817,11 @@ def export_report(
         write_pdf_export(file_path, formal_report)
         content_type = 'application/pdf'
 
+    try:
+        storage_path = persist_export(file_path, content_type)
+    except Exception as error:
+        raise HTTPException(status_code=503, detail='Unable to persist the generated report') from error
+
     log_audit_event(
         db,
         'report_generated',
@@ -3802,6 +3833,7 @@ def export_report(
             'period': period,
             'portfolio': portfolio,
             'file_name': file_name,
+            'storage_path': storage_path,
         },
     )
     db.commit()
@@ -5888,7 +5920,7 @@ def health():
         'timestamp': _utc_now_iso(),
         'checks': {
             'database': {'ok': True, 'error': None},
-            'storage': {'ok': True, 'mode': 'filesystem', 'error': None},
+            'storage': storage_health(),
             'openai': {'ok': True, 'configured': bool(str(os.getenv('OPENAI_API_KEY') or '').strip()), 'error': None},
         },
         'message': 'Application health snapshot',
@@ -6464,10 +6496,15 @@ def newsletter_export(
         for item in (payload.get('news_highlights') or [])
     ]
     file_path.write_text('\n'.join(body_lines), encoding='utf-8')
+    try:
+        storage_path = persist_export(file_path, 'text/plain')
+    except Exception as error:
+        raise HTTPException(status_code=503, detail='Unable to persist the newsletter export') from error
     return {
         **payload,
         'file_name': file_name,
         'file_path': str(file_path),
+        'storage_path': storage_path,
         'download_url': f'/exports/{file_name}',
         'content_type': 'text/plain',
         'message': 'Newsletter export is ready.',

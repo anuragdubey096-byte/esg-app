@@ -567,6 +567,12 @@ def run_self_test():
             csv_file = Path(csv_payload['file_path'])
             csv_ok = csv_file.exists() and csv_file.stat().st_size > 0 and csv_payload.get('content_type') == 'text/csv'
         check('GET /reports/{type}/export csv', csv_export.status_code == 200 and csv_ok, csv_export.text)
+        csv_download = client.get(csv_payload.get('download_url', '/exports/missing.csv'))
+        check(
+            'GET generated csv download',
+            csv_download.status_code == 200 and csv_download.headers.get('content-type', '').startswith('text/csv'),
+            csv_download.text,
+        )
 
         pdf_export = client.get(f'/reports/sfdr/export?format=pdf&period=FY{cycle_year}&portfolio=All%20Portfolio%20Companies', headers=manager_headers)
         pdf_payload = pdf_export.json() if pdf_export.status_code == 200 else {}
@@ -580,6 +586,12 @@ def run_self_test():
                 and pdf_payload.get('content_type') == 'application/pdf'
             )
         check('GET /reports/{type}/export pdf', pdf_export.status_code == 200 and pdf_ok, pdf_export.text)
+        pdf_download = client.get(pdf_payload.get('download_url', '/exports/missing.pdf'))
+        check(
+            'GET generated pdf download',
+            pdf_download.status_code == 200 and pdf_download.content[:4] == b'%PDF',
+            f"status={pdf_download.status_code}, content_type={pdf_download.headers.get('content-type', '')}",
+        )
 
         manager_after = client.get('/dashboard/manager', headers=manager_headers)
         manager_json = manager_after.json() if manager_after.status_code == 200 else {}
