@@ -29,7 +29,7 @@ const NAV_ITEMS = [
     icon: 'analytics',
     group: 'Portfolio',
     title: 'ESG Analytics',
-    roles: ['manager', 'investor'],
+    roles: ['manager', 'investor', 'company'],
   },
   {
     to: '/strategy',

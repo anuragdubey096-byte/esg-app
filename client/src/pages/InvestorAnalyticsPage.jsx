@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import {
   Bar,
@@ -22,8 +22,9 @@ import SectionCard from '../components/SectionCard'
 import SectionLoadState from '../components/SectionLoadState'
 import useDashboardData from '../hooks/useDashboardData'
 import useNarrativeSummary from '../hooks/useNarrativeSummary'
+import { API_BASE_URL } from '../lib/api'
 
-const investorTabs = ['Climate', 'People & Governance', 'Data Quality', 'Benchmarking']
+const investorTabs = ['Climate', 'People & Governance', 'Data Quality', 'Frameworks', 'Benchmarking']
 
 const funnelColors = {
   'Not Started': '#ef4444',
@@ -45,7 +46,28 @@ export default function InvestorAnalyticsPage() {
   const { summary, loading, error, retrySection, sections, isRefreshing } = useDashboardData(user)
   const narrative = useNarrativeSummary({ user, audience: 'lp', tone: 'board-ready', enabled: Boolean(user) })
   const [activeTab, setActiveTab] = useState(investorTabs[0])
+  const [qualityDetail, setQualityDetail] = useState(null)
+  const [frameworkDetail, setFrameworkDetail] = useState(null)
+  const [detailError, setDetailError] = useState('')
   const analytics = summary || {}
+
+  useEffect(() => {
+    const controller = new AbortController()
+    const headers = { 'x-user-role': user?.role || '', 'x-user-email': user?.email || '' }
+    setDetailError('')
+    Promise.all([
+      fetch(`${API_BASE_URL}/analytics/data-quality`, { headers, signal: controller.signal }),
+      fetch(`${API_BASE_URL}/analytics/framework-mapping`, { headers, signal: controller.signal }),
+    ]).then(async ([qualityResponse, frameworkResponse]) => {
+      if (!qualityResponse.ok || !frameworkResponse.ok) throw new Error('Unable to load detailed investor analytics.')
+      const [qualityPayload, frameworkPayload] = await Promise.all([qualityResponse.json(), frameworkResponse.json()])
+      setQualityDetail(qualityPayload)
+      setFrameworkDetail(frameworkPayload)
+    }).catch((requestError) => {
+      if (requestError.name !== 'AbortError') setDetailError(requestError.message)
+    })
+    return () => controller.abort()
+  }, [user?.email, user?.role])
 
   const {
     coveragePercent,
@@ -209,6 +231,8 @@ export default function InvestorAnalyticsPage() {
         ))}
       </nav>
 
+      {detailError && ['Data Quality', 'Frameworks'].includes(activeTab) ? <p className="action-message" role="alert">{detailError}</p> : null}
+
       <section className="two-col-grid">
         <SectionCard title="Emissions Trend" subtitle="Portfolio total emissions over recent periods" hidden={activeTab !== 'Climate'}>
           {emissionsTrend.length ? <div className="chart-wrap">
@@ -343,6 +367,50 @@ export default function InvestorAnalyticsPage() {
           emptyMessage="No performer data available."
         />
       </SectionCard>
+
+      <section className="space-y-4" hidden={activeTab !== 'Data Quality'}>
+        <section className="executive-kpi-grid">
+          <KpiCard title="Quality Index" value={`${toNumber(qualityDetail?.quality_index).toFixed(1)}/100`} trendLabel="weighted portfolio quality" />
+          <KpiCard title="Completeness" value={`${toNumber(qualityDetail?.completeness).toFixed(1)}%`} trendLabel="required metrics" />
+          <KpiCard title="Measured Confidence" value={`${toNumber(qualityDetail?.measured_confidence).toFixed(1)}%`} trendLabel="measured values" />
+          <KpiCard title="Evidence Coverage" value={`${toNumber(qualityDetail?.evidence_coverage).toFixed(1)}%`} trendLabel="required attachments" />
+          <KpiCard title="Open Flags" value={toNumber(qualityDetail?.open_flags)} trendLabel="validation findings" tone="amber" />
+          <KpiCard title="At-risk Companies" value={toNumber(qualityDetail?.at_risk_companies)} trendLabel="quality intervention" tone="rose" />
+        </section>
+        <DataTable
+          columns={[
+            { key: 'company', label: 'Company', sortable: true }, { key: 'sector', label: 'Sector', sortable: true },
+            { key: 'quality_score', label: 'Quality', sortable: true, render: (row) => `${row.quality_score.toFixed(1)}/100` },
+            { key: 'completeness', label: 'Complete', sortable: true, render: (row) => `${row.completeness.toFixed(1)}%` },
+            { key: 'measured_confidence', label: 'Measured', sortable: true, render: (row) => `${row.measured_confidence.toFixed(1)}%` },
+            { key: 'evidence_coverage', label: 'Evidence', sortable: true, render: (row) => `${row.evidence_coverage.toFixed(1)}%` },
+            { key: 'validation_flags', label: 'Flags', sortable: true }, { key: 'priority', label: 'Priority', sortable: true },
+          ]}
+          rows={qualityDetail?.rows || []}
+          pageSize={10}
+          emptyMessage="No detailed data-quality records are available."
+        />
+      </section>
+
+      <section className="space-y-4" hidden={activeTab !== 'Frameworks'}>
+        <section className="executive-kpi-grid">
+          {(frameworkDetail?.frameworks || []).map((framework) => (
+            <KpiCard key={framework.framework} title={framework.framework} value={`${framework.coverage_percent.toFixed(1)}%`} trendLabel={`${framework.complete_disclosures}/${framework.mapped_disclosures} disclosures complete`} />
+          ))}
+        </section>
+        <DataTable
+          columns={[
+            { key: 'framework', label: 'Framework', sortable: true }, { key: 'reference', label: 'Reference', sortable: true },
+            { key: 'disclosure', label: 'Disclosure', sortable: true },
+            { key: 'companies_reported', label: 'Reported', sortable: true, render: (row) => `${row.companies_reported}/${row.companies_expected}` },
+            { key: 'coverage_percent', label: 'Coverage', sortable: true, render: (row) => `${row.coverage_percent.toFixed(1)}%` },
+            { key: 'status', label: 'Status', sortable: true },
+          ]}
+          rows={frameworkDetail?.disclosures || []}
+          pageSize={10}
+          emptyMessage="No framework coverage records are available."
+        />
+      </section>
 
     </div>
   )

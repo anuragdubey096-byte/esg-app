@@ -18,6 +18,7 @@ const ReportsPage = lazy(() => import('./pages/ReportsPage'))
 const ReviewHubPage = lazy(() => import('./pages/ReviewHubPage'))
 const SubmissionsPage = lazy(() => import('./pages/SubmissionsPage'))
 const StrategyPage = lazy(() => import('./pages/StrategyPage'))
+const CompanyAnalyticsPage = lazy(() => import('./pages/CompanyAnalyticsPage'))
 
 function withRouteLoading(element) {
   return <Suspense fallback={<RouteLoadingState />}>{element}</Suspense>
@@ -28,11 +29,12 @@ export default function Dashboard({ user, onLogout }) {
   const defaultPath = getDefaultDashboardPath(user?.role)
   const normalizedRole = String(user?.role || '').toLowerCase()
   const isInvestor = normalizedRole === 'investor'
+  const isCompany = normalizedRole === 'company'
   const pageByPath = {
     '/overview': isInvestor ? <InvestorOverviewPage /> : <OverviewPage />,
     '/submissions': <SubmissionsPage />,
     '/review-hub': <ReviewHubPage />,
-    '/analytics': isInvestor ? <InvestorAnalyticsPage /> : <AnalyticsPage />,
+    '/analytics': isInvestor ? <InvestorAnalyticsPage /> : (isCompany ? <CompanyAnalyticsPage /> : <AnalyticsPage />),
     '/alerts-risks': <AlertsRisksPage />,
     '/action-plans': <ActionPlansPage />,
     '/reports': <ReportsPage />,
