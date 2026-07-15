@@ -22,7 +22,7 @@ import SectionCard from '../components/SectionCard'
 import useDashboardData, { calculateESGPillarScores, getLatestSubmission, getSortedSubmissions, getSubmissionReportingYear, parseSubmissionPayload } from '../hooks/useDashboardData'
 import { API_BASE_URL } from '../lib/api'
 
-const analyticsTabs = ['Environmental', 'Social', 'Governance', 'Data Quality', 'Benchmarking']
+const analyticsTabs = ['Environmental', 'Social', 'Governance', 'Data Quality', 'Frameworks', 'Benchmarking']
 
 function toNumber(value) {
   if (value === null || value === undefined || value === '') return 0
@@ -61,6 +61,8 @@ export default function AnalyticsPage() {
   const [qualityData, setQualityData] = useState(null)
   const [qualityLoading, setQualityLoading] = useState(true)
   const [qualityError, setQualityError] = useState('')
+  const [frameworkData, setFrameworkData] = useState(null)
+  const [frameworkError, setFrameworkError] = useState('')
 
   useEffect(() => {
     const controller = new AbortController()
@@ -81,6 +83,25 @@ export default function AnalyticsPage() {
       })
       .finally(() => {
         if (!controller.signal.aborted) setQualityLoading(false)
+      })
+    return () => controller.abort()
+  }, [selectedCycle])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    const query = selectedCycle === 'Latest' ? '' : `?cycle_year=${encodeURIComponent(selectedCycle)}`
+    setFrameworkError('')
+    fetch(`${API_BASE_URL}/analytics/framework-mapping${query}`, { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({}))
+          throw new Error(payload.detail || 'Unable to load framework mapping.')
+        }
+        return response.json()
+      })
+      .then(setFrameworkData)
+      .catch((requestError) => {
+        if (requestError.name !== 'AbortError') setFrameworkError(requestError.message)
       })
     return () => controller.abort()
   }, [selectedCycle])
@@ -706,6 +727,44 @@ export default function AnalyticsPage() {
               rows={qualityScope.rows}
               pageSize={10}
               emptyMessage="No company data-quality records are available."
+            />
+          </section>
+        ) : null}
+
+        {activeTab === 'Frameworks' ? (
+          <section className="space-y-4">
+            {frameworkError ? <p className="action-message" role="alert">{frameworkError}</p> : null}
+            <section className="executive-kpi-grid" aria-label="Reporting framework coverage">
+              {(frameworkData?.frameworks || []).map((framework) => (
+                <KpiCard
+                  key={framework.framework}
+                  title={framework.framework}
+                  value={`${framework.coverage_percent.toFixed(1)}%`}
+                  trendLabel={`${framework.complete_disclosures}/${framework.mapped_disclosures} disclosures complete`}
+                  icon="reports"
+                />
+              ))}
+            </section>
+            <div className="analytics-insight-strip">
+              <div>
+                <span>Cross-framework mapping</span>
+                <strong>{frameworkData?.reporting_companies || 0} reporting companies assessed against EDCI, GRI, ISSB and SFDR</strong>
+              </div>
+              <p>Each disclosure is linked to one source metric, making coverage gaps visible without duplicating reported data.</p>
+            </div>
+            <DataTable
+              columns={[
+                { key: 'framework', label: 'Framework', sortable: true },
+                { key: 'reference', label: 'Reference', sortable: true },
+                { key: 'disclosure', label: 'Disclosure', sortable: true },
+                { key: 'metric_key', label: 'Source metric', sortable: true, render: (row) => row.metric_key.replace(/_/g, ' ') },
+                { key: 'companies_reported', label: 'Reported', sortable: true, render: (row) => `${row.companies_reported}/${row.companies_expected}` },
+                { key: 'coverage_percent', label: 'Coverage', sortable: true, render: (row) => `${row.coverage_percent.toFixed(1)}%` },
+                { key: 'status', label: 'Status', sortable: true, render: (row) => <span className={`quality-priority quality-priority-${row.status === 'Mapped' ? 'healthy' : row.status === 'Partial' ? 'monitor' : 'at-risk'}`}>{row.status}</span> },
+              ]}
+              rows={frameworkData?.disclosures || []}
+              pageSize={10}
+              emptyMessage="No framework mapping data is available for this reporting cycle."
             />
           </section>
         ) : null}

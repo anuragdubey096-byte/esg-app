@@ -82,6 +82,18 @@ def run_self_test():
             data_quality_forbidden.text,
         )
 
+        framework_mapping = client.get('/analytics/framework-mapping', headers=manager_headers)
+        framework_payload = framework_mapping.json() if framework_mapping.status_code == 200 else {}
+        check(
+            'GET /analytics/framework-mapping returns auditable disclosure coverage',
+            framework_mapping.status_code == 200
+            and {item.get('framework') for item in framework_payload.get('frameworks', [])} == {'EDCI', 'GRI', 'ISSB', 'SFDR'}
+            and len(framework_payload.get('disclosures', [])) == 20,
+            framework_mapping.text,
+        )
+        framework_forbidden = client.get('/analytics/framework-mapping', headers=role_headers['company'])
+        check('framework mapping blocks company role', framework_forbidden.status_code == 403, framework_forbidden.text)
+
         stamp = int(time.time())
         existing_cycles_response = client.get('/cycles', headers=manager_headers)
         existing_cycle_years = {

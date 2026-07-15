@@ -4732,6 +4732,86 @@ def data_quality_dashboard(
     return build_data_quality_dashboard(db, cycle_year=cycle_year)
 
 
+FRAMEWORK_DISCLOSURES = {
+    'EDCI': [
+        ('GHG emissions', 'scope_1_emissions', 'GHG emissions'),
+        ('Renewable energy', 'renewable_energy_consumption', 'Renewable energy consumption'),
+        ('Workplace safety', 'trifr', 'Work-related injuries'),
+        ('Gender diversity', 'female_representation_percent', 'Gender diversity'),
+        ('Board diversity', 'female_board_members_percent', 'Board diversity'),
+    ],
+    'GRI': [
+        ('GRI 305-1', 'scope_1_emissions', 'Direct GHG emissions'),
+        ('GRI 305-2', 'scope_2_location_based', 'Energy indirect GHG emissions'),
+        ('GRI 303-3', 'total_water_withdrawal', 'Water withdrawal'),
+        ('GRI 306-3', 'total_waste_generated', 'Waste generated'),
+        ('GRI 405-1', 'female_representation_percent', 'Diversity of employees'),
+    ],
+    'ISSB': [
+        ('IFRS S2.29(a)', 'scope_1_emissions', 'Scope 1 emissions'),
+        ('IFRS S2.29(a)', 'scope_2_location_based', 'Scope 2 emissions'),
+        ('IFRS S2.29(a)', 'scope_3_emissions', 'Scope 3 emissions'),
+        ('IFRS S2.33', 'reduction_target_percent', 'Climate targets'),
+        ('IFRS S1.27', 'board_level_esg_oversight', 'Governance oversight'),
+    ],
+    'SFDR': [
+        ('PAI 1', 'total_ghg_emissions', 'GHG emissions'),
+        ('PAI 5', 'renewable_energy_consumption', 'Non-renewable energy share'),
+        ('PAI 9', 'hazardous_waste_generated', 'Hazardous waste'),
+        ('PAI 12', 'female_representation_percent', 'Gender pay and representation'),
+        ('PAI 13', 'female_board_members_percent', 'Board gender diversity'),
+    ],
+}
+
+
+@app.get('/analytics/framework-mapping', dependencies=[Depends(require_manager_or_investor)])
+def framework_mapping_dashboard(
+    cycle_year: int | None = Query(default=None, ge=MIN_REPORTING_CYCLE_YEAR),
+    db: Session = Depends(get_db),
+):
+    companies = db.query(Company).options(selectinload(Company.submissions)).order_by(Company.name.asc()).all()
+    payloads = []
+    for company in companies:
+        submission, payload, reporting_year = _data_quality_submission(company, cycle_year)
+        if submission:
+            payloads.append({'company': company.name, 'year': reporting_year, 'payload': payload})
+
+    framework_rows = []
+    disclosure_rows = []
+    denominator = len(payloads)
+    for framework, mappings in FRAMEWORK_DISCLOSURES.items():
+        available_points = 0
+        possible_points = denominator * len(mappings)
+        for reference, metric_key, disclosure in mappings:
+            populated = sum(1 for row in payloads if row['payload'].get(metric_key) not in (None, ''))
+            available_points += populated
+            disclosure_rows.append({
+                'framework': framework,
+                'reference': reference,
+                'disclosure': disclosure,
+                'metric_key': metric_key,
+                'companies_reported': populated,
+                'companies_expected': denominator,
+                'coverage_percent': round((populated / denominator) * 100, 1) if denominator else 0.0,
+                'status': 'Mapped' if populated == denominator and denominator else ('Partial' if populated else 'Gap'),
+            })
+        framework_rows.append({
+            'framework': framework,
+            'mapped_disclosures': len(mappings),
+            'coverage_percent': round((available_points / possible_points) * 100, 1) if possible_points else 0.0,
+            'complete_disclosures': sum(
+                1 for row in disclosure_rows
+                if row['framework'] == framework and row['status'] == 'Mapped'
+            ),
+        })
+    return {
+        'cycle_year': cycle_year,
+        'reporting_companies': denominator,
+        'frameworks': framework_rows,
+        'disclosures': disclosure_rows,
+    }
+
+
 def _validate_cron_secret(secret: str | None, x_cron_secret: str | None, authorization: str | None) -> None:
     configured_secret = str(os.getenv('CRON_SECRET') or '').strip()
     if not configured_secret:
