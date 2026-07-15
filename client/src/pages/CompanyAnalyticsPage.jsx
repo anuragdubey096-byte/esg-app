@@ -38,14 +38,18 @@ export default function CompanyAnalyticsPage() {
   const { companies, loading, error, retrySection, sections, isRefreshing } = useDashboardData(user)
   const company = companies[0] || null
   const submissions = useMemo(() => getSortedSubmissions(company), [company])
-  const years = useMemo(() => submissions.map(getSubmissionReportingYear).filter(Boolean).reverse(), [submissions])
+  const years = useMemo(() => (
+    [...new Set(submissions.map(getSubmissionReportingYear).filter(Boolean))].reverse()
+  ), [submissions])
   const [selectedYear, setSelectedYear] = useState('Latest')
   const [targets, setTargets] = useState([])
   const [evidence, setEvidence] = useState([])
 
   const selectedSubmission = useMemo(() => {
     if (selectedYear === 'Latest') return submissions[submissions.length - 1] || null
-    return submissions.find((item) => getSubmissionReportingYear(item) === Number(selectedYear)) || null
+    return [...submissions].reverse().find(
+      (item) => getSubmissionReportingYear(item) === Number(selectedYear),
+    ) || null
   }, [selectedYear, submissions])
   const payload = useMemo(() => parseSubmissionPayload(selectedSubmission) || {}, [selectedSubmission])
   const scores = useMemo(() => (selectedSubmission ? calculateESGPillarScores(payload) : null) || {

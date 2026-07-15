@@ -13,6 +13,9 @@ __pycache__/
 .pytest_cache/
 .venv/
 
+# Local editor workspace files
+*.code-workspace
+
 # Runtime logs
 *.log
 *.err.log
