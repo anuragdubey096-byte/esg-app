@@ -207,6 +207,46 @@ class ActionPlanCreateRequest(BaseModel):
     target_completion_date: str
     assigned_owner: str
 
+
+class ESGTargetCreateRequest(BaseModel):
+    pillar: Literal['Environmental', 'Social', 'Governance']
+    metric_key: str = Field(min_length=1, max_length=100)
+    target_name: str = Field(min_length=1, max_length=160)
+    baseline_value: float
+    target_value: float
+    current_value: float
+    unit: str = Field(default='', max_length=40)
+    target_date: str = Field(min_length=10, max_length=10)
+    owner: str = Field(min_length=1, max_length=120)
+    status: Literal['on track', 'at risk', 'achieved', 'not started'] = 'on track'
+    notes: Optional[str] = Field(default=None, max_length=1000)
+
+
+class ESGTargetUpdateRequest(BaseModel):
+    current_value: Optional[float] = None
+    status: Optional[Literal['on track', 'at risk', 'achieved', 'not started']] = None
+    notes: Optional[str] = Field(default=None, max_length=1000)
+
+
+class ESGTargetInfo(BaseModel):
+    id: int
+    company_id: int
+    company_name: str
+    pillar: str
+    metric_key: str
+    target_name: str
+    baseline_value: float
+    target_value: float
+    current_value: float
+    unit: str
+    target_date: str
+    owner: str
+    status: str
+    notes: Optional[str] = None
+    progress_percent: float
+    created_at: str
+    updated_at: str
+
 class CarbonBreakdownItem(BaseModel):
     scope: str
     category: str

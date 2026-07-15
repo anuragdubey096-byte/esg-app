@@ -55,6 +55,7 @@ from models import (
     Submission,
     CollectionCycle,
     ActionPlan,
+    ESGTarget,
     ReviewAction,
     ValidationFlag,
     SubmissionUnlock,
@@ -71,6 +72,9 @@ from models import (
 from schemas import (
     ActionPlanCreateRequest,
     ActionPlanInfo,
+    ESGTargetCreateRequest,
+    ESGTargetInfo,
+    ESGTargetUpdateRequest,
     CompanyCreateRequest,
     CompanyCreateResponse,
     CompanyDetail,
@@ -2256,6 +2260,131 @@ def create_action_plan(company_id: int, payload: ActionPlanCreateRequest, db: Se
     db.commit()
     db.refresh(plan)
     return plan
+
+
+@app.patch('/action-plans/{plan_id}', response_model=ActionPlanInfo, dependencies=[Depends(require_company_or_manager)])
+def update_action_plan_status(
+    plan_id: int,
+    status: str = Body(embed=True),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_authenticated_user),
+):
+    normalized = str(status or '').strip().lower()
+    if normalized not in {'planned', 'in progress', 'completed', 'blocked'}:
+        raise HTTPException(status_code=400, detail='Invalid action plan status')
+    plan = db.query(ActionPlan).filter(ActionPlan.id == plan_id).first()
+    if not plan:
+        raise HTTPException(status_code=404, detail='Action plan not found')
+    company = db.query(Company).filter(Company.id == plan.company_id).first()
+    if normalize_role(user.role) == 'company' and (not company or company.user_id != user.id):
+        raise HTTPException(status_code=403, detail='You can update only your company action plans')
+    plan.status = normalized
+    log_audit_event(db, 'action_plan_updated', user, company_id=plan.company_id, metadata={'plan_id': plan.id, 'status': normalized})
+    db.commit()
+    db.refresh(plan)
+    return plan
+
+
+def _target_progress(target: ESGTarget) -> float:
+    baseline = float(target.baseline_value or 0)
+    goal = float(target.target_value or 0)
+    current = float(target.current_value or 0)
+    if goal == baseline:
+        return 100.0 if current == goal else 0.0
+    if goal > baseline:
+        progress = ((current - baseline) / (goal - baseline)) * 100
+    else:
+        progress = ((baseline - current) / (baseline - goal)) * 100
+    return round(clamp(progress), 1)
+
+
+def _serialize_target(target: ESGTarget, company_name: str) -> dict[str, Any]:
+    return {
+        'id': target.id,
+        'company_id': target.company_id,
+        'company_name': company_name,
+        'pillar': target.pillar,
+        'metric_key': target.metric_key,
+        'target_name': target.target_name,
+        'baseline_value': float(target.baseline_value or 0),
+        'target_value': float(target.target_value or 0),
+        'current_value': float(target.current_value or 0),
+        'unit': target.unit or '',
+        'target_date': target.target_date,
+        'owner': target.owner,
+        'status': target.status,
+        'notes': target.notes,
+        'progress_percent': _target_progress(target),
+        'created_at': target.created_at.isoformat() if target.created_at else '',
+        'updated_at': target.updated_at.isoformat() if target.updated_at else '',
+    }
+
+
+@app.get('/targets', response_model=List[ESGTargetInfo])
+def list_esg_targets(
+    company_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_authenticated_user),
+):
+    query = db.query(ESGTarget, Company.name).join(Company, Company.id == ESGTarget.company_id)
+    if normalize_role(user.role) == 'company':
+        query = query.filter(Company.user_id == user.id)
+    elif company_id is not None:
+        query = query.filter(ESGTarget.company_id == company_id)
+    rows = query.order_by(ESGTarget.target_date.asc(), ESGTarget.id.asc()).all()
+    return [_serialize_target(target, company_name) for target, company_name in rows]
+
+
+@app.post('/company/{company_id}/targets', response_model=ESGTargetInfo)
+def create_esg_target(
+    company_id: int,
+    payload: ESGTargetCreateRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_authenticated_user),
+):
+    if normalize_role(user.role) not in {'manager', 'company'}:
+        raise HTTPException(status_code=403, detail='Only managers and companies can create targets')
+    company = db.query(Company).filter(Company.id == company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail='Company not found')
+    if normalize_role(user.role) == 'company' and company.user_id != user.id:
+        raise HTTPException(status_code=403, detail='You can create targets only for your company')
+    try:
+        datetime.strptime(payload.target_date, '%Y-%m-%d')
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail='target_date must use YYYY-MM-DD') from error
+    target = ESGTarget(company_id=company.id, **payload.model_dump())
+    db.add(target)
+    db.flush()
+    log_audit_event(db, 'esg_target_created', user, company_id=company.id, metadata={'target_id': target.id, 'metric_key': target.metric_key})
+    db.commit()
+    db.refresh(target)
+    return _serialize_target(target, company.name)
+
+
+@app.patch('/targets/{target_id}', response_model=ESGTargetInfo)
+def update_esg_target(
+    target_id: int,
+    payload: ESGTargetUpdateRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_authenticated_user),
+):
+    if normalize_role(user.role) not in {'manager', 'company'}:
+        raise HTTPException(status_code=403, detail='Only managers and companies can update targets')
+    target = db.query(ESGTarget).filter(ESGTarget.id == target_id).first()
+    if not target:
+        raise HTTPException(status_code=404, detail='Target not found')
+    company = db.query(Company).filter(Company.id == target.company_id).first()
+    if normalize_role(user.role) == 'company' and (not company or company.user_id != user.id):
+        raise HTTPException(status_code=403, detail='You can update targets only for your company')
+    updates = payload.model_dump(exclude_unset=True)
+    for key, value in updates.items():
+        setattr(target, key, value)
+    target.updated_at = datetime.utcnow()
+    log_audit_event(db, 'esg_target_updated', user, company_id=target.company_id, metadata={'target_id': target.id, 'fields': sorted(updates)})
+    db.commit()
+    db.refresh(target)
+    return _serialize_target(target, company.name if company else 'Unknown company')
 
 def _compute_carbon(payload: GHGCalculatorRequest) -> GHGCalculatorResponse:
     factors = {

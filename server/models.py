@@ -1,7 +1,7 @@
 import enum
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, Enum, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Column, DateTime, Enum, Float, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint
 from sqlalchemy.orm import declarative_base, relationship
 
 Base = declarative_base()
@@ -48,6 +48,7 @@ class Company(Base):
     submission_drafts = relationship('SubmissionDraft', back_populates='company')
     evidence_files = relationship('SubmissionEvidence', back_populates='company')
     action_plans = relationship('ActionPlan', back_populates='company')
+    esg_targets = relationship('ESGTarget', back_populates='company')
     review_actions = relationship('ReviewAction', back_populates='company')
     validation_flags = relationship('ValidationFlag', back_populates='company')
     submission_unlocks = relationship('SubmissionUnlock', back_populates='company')
@@ -203,6 +204,28 @@ class ActionPlan(Base):
     status = Column(String, nullable=False, default='planned')
 
     company = relationship('Company', back_populates='action_plans')
+
+
+class ESGTarget(Base):
+    __tablename__ = 'esg_targets'
+
+    id = Column(Integer, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=False, index=True)
+    pillar = Column(String, nullable=False)
+    metric_key = Column(String, nullable=False)
+    target_name = Column(String, nullable=False)
+    baseline_value = Column(Float, nullable=False, default=0)
+    target_value = Column(Float, nullable=False)
+    current_value = Column(Float, nullable=False, default=0)
+    unit = Column(String, nullable=False, default='')
+    target_date = Column(String, nullable=False)
+    owner = Column(String, nullable=False)
+    status = Column(String, nullable=False, default='on track')
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    company = relationship('Company', back_populates='esg_targets')
 
 
 class NarrativeRecord(Base):

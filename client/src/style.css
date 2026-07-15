@@ -1728,6 +1728,46 @@ p {
 .quality-priority-watch { background: #fef3c7; color: #92400e; }
 .quality-priority-at-risk { background: #fee2e2; color: #991b1b; }
 
+.target-progress {
+  position: relative;
+  min-width: 110px;
+  height: 24px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e7eef5;
+}
+
+.target-progress span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #0f766e, #14b8a6);
+}
+
+.target-progress strong {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  height: 100%;
+  place-items: center;
+  color: #17324d;
+  font-size: 0.67rem;
+}
+
+.target-form {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.8rem;
+}
+
+.target-form label { display: grid; gap: 0.3rem; }
+.target-form label span { color: #526b80; font-size: 0.7rem; font-weight: 750; }
+.target-form input,
+.target-form select,
+.target-form textarea { width: 100%; }
+.target-form-notes { grid-column: span 2; }
+.target-form .button { align-self: end; }
+
 .chart-wrap h4 {
   margin-bottom: 0.5rem;
 }
@@ -3144,6 +3184,9 @@ p {
   .filter-bar {
     grid-template-columns: 1fr;
   }
+
+  .target-form { grid-template-columns: 1fr; }
+  .target-form-notes { grid-column: auto; }
 
   .executive-page-header,
   .analytics-insight-strip {

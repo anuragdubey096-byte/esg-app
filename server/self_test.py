@@ -159,6 +159,48 @@ def run_self_test():
         check('company dashboard includes timing telemetry', 'app;dur=' in response.headers.get('server-timing', ''), dict(response.headers))
         check('company dashboard exposes app duration', float(response.headers.get('x-app-duration-ms', -1)) >= 0, dict(response.headers))
 
+        target_response = client.post(f'/company/{company_id}/targets', json={
+            'pillar': 'Environmental',
+            'metric_key': 'total_ghg_emissions',
+            'target_name': 'Reduce operational emissions',
+            'baseline_value': 100,
+            'target_value': 70,
+            'current_value': 85,
+            'unit': 'tCO2e',
+            'target_date': '2030-12-31',
+            'owner': 'Sustainability Lead',
+            'status': 'on track',
+            'notes': 'QA target',
+        }, headers=manager_headers)
+        target_payload = target_response.json() if target_response.status_code == 200 else {}
+        check(
+            'POST /company/{id}/targets creates measurable target',
+            target_response.status_code == 200 and target_payload.get('progress_percent') == 50.0,
+            target_response.text,
+        )
+        target_update = client.patch(
+            f"/targets/{target_payload.get('id')}",
+            json={'current_value': 75, 'status': 'on track'},
+            headers=company_headers,
+        )
+        check(
+            'PATCH /targets/{id} updates company target progress',
+            target_update.status_code == 200 and target_update.json().get('progress_percent') == 83.3,
+            target_update.text,
+        )
+        target_list = client.get('/targets', headers=investor_headers)
+        check(
+            'GET /targets exposes read-only target register',
+            target_list.status_code == 200 and any(item.get('id') == target_payload.get('id') for item in target_list.json()),
+            target_list.text,
+        )
+        target_forbidden = client.patch(
+            f"/targets/{target_payload.get('id')}",
+            json={'status': 'achieved'},
+            headers=investor_headers,
+        )
+        check('PATCH /targets blocks investor writes', target_forbidden.status_code == 403, target_forbidden.text)
+
         malformed_preview = client.post(
             '/admin/import/submissions',
             data={'mode': 'preview', 'cycle_id': str(cycle.get('id') or '')},
