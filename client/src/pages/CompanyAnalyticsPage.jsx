@@ -9,7 +9,8 @@ import KpiCard from '../components/KpiCard'
 import SectionCard from '../components/SectionCard'
 import SectionLoadState from '../components/SectionLoadState'
 import useDashboardData, {
-  calculateESGPillarScores, getSortedSubmissions, getSubmissionReportingYear, normalizeStatus, parseSubmissionPayload,
+  calculateESGPillarScores, getAvailableReportingYears, getSortedSubmissions, getSubmissionForReportingYear,
+  getSubmissionReportingYear, normalizeStatus, parseSubmissionPayload,
 } from '../hooks/useDashboardData'
 import { API_BASE_URL } from '../lib/api'
 
@@ -38,19 +39,15 @@ export default function CompanyAnalyticsPage() {
   const { companies, loading, error, retrySection, sections, isRefreshing } = useDashboardData(user)
   const company = companies[0] || null
   const submissions = useMemo(() => getSortedSubmissions(company), [company])
-  const years = useMemo(() => (
-    [...new Set(submissions.map(getSubmissionReportingYear).filter(Boolean))].reverse()
-  ), [submissions])
+  const years = useMemo(() => getAvailableReportingYears(submissions), [submissions])
   const [selectedYear, setSelectedYear] = useState('Latest')
   const [targets, setTargets] = useState([])
   const [evidence, setEvidence] = useState([])
 
-  const selectedSubmission = useMemo(() => {
-    if (selectedYear === 'Latest') return submissions[submissions.length - 1] || null
-    return [...submissions].reverse().find(
-      (item) => getSubmissionReportingYear(item) === Number(selectedYear),
-    ) || null
-  }, [selectedYear, submissions])
+  const selectedSubmission = useMemo(
+    () => getSubmissionForReportingYear(submissions, selectedYear),
+    [selectedYear, submissions],
+  )
   const payload = useMemo(() => parseSubmissionPayload(selectedSubmission) || {}, [selectedSubmission])
   const scores = useMemo(() => (selectedSubmission ? calculateESGPillarScores(payload) : null) || {
     environmental: 0, social: 0, governance: 0, composite: 0,

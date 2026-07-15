@@ -69,6 +69,23 @@ export function getLatestSubmission(company) {
   return sorted[sorted.length - 1]
 }
 
+export function getAvailableReportingYears(submissions = []) {
+  return [...new Set(submissions.map(getSubmissionReportingYear).filter(Boolean))]
+    .sort((left, right) => right - left)
+}
+
+export function getSubmissionForReportingYear(submissions = [], selectedYear = 'Latest') {
+  const sorted = getSortedSubmissions({ submissions })
+  if (!sorted.length) return null
+  if (selectedYear === 'Latest') return sorted[sorted.length - 1]
+
+  const targetYear = toYear(selectedYear)
+  if (!targetYear) return null
+  return [...sorted].reverse().find(
+    (submission) => getSubmissionReportingYear(submission) === targetYear,
+  ) || null
+}
+
 export function parseSubmissionPayload(submission) {
   if (!submission?.esg_data) return null
   try {
