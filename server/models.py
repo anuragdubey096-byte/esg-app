@@ -176,6 +176,22 @@ class SubmissionEvidence(Base):
     submission = relationship('Submission')
 
 
+class AssuranceRecord(Base):
+    __tablename__ = 'assurance_records'
+    __table_args__ = (UniqueConstraint('submission_id', 'metric_key', name='uq_assurance_submission_metric'),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    submission_id = Column(Integer, ForeignKey('submissions.id'), nullable=False, index=True)
+    evidence_id = Column(Integer, ForeignKey('submission_evidence.id'), nullable=True, index=True)
+    metric_key = Column(String, nullable=False, index=True)
+    status = Column(String, nullable=False, default='pending')
+    assurance_level = Column(String, nullable=False, default='limited')
+    conclusion = Column(Text, nullable=True)
+    reviewer_user_id = Column(Integer, ForeignKey('users.id'), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class ReminderLog(Base):
     __tablename__ = 'reminder_logs'
 

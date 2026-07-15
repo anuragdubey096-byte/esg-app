@@ -460,6 +460,13 @@ class MetricReviewCommentRequest(BaseModel):
     comment: str = Field(min_length=2, max_length=4000)
 
 
+class AssuranceDecisionRequest(BaseModel):
+    evidence_id: Optional[int] = None
+    status: Literal['pending', 'in review', 'assured', 'exception']
+    assurance_level: Literal['limited', 'reasonable'] = 'limited'
+    conclusion: str = Field(default='', max_length=4000)
+
+
 class SubmissionUnlockRequest(BaseModel):
     reason: str
     expiry_hours: int = Field(default=24, ge=1, le=720)

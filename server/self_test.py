@@ -355,6 +355,40 @@ def run_self_test():
         submission_id = submission.get('id')
         check('active cycle accepts submission', initial_submit.status_code == 200 and submission.get('status') == 'submitted', initial_submit.text)
 
+        assurance_before = client.get(f'/submissions/{submission_id}/assurance', headers=manager_headers)
+        assurance_before_payload = assurance_before.json() if assurance_before.status_code == 200 else {}
+        assurance_update = client.put(
+            f'/submissions/{submission_id}/assurance/scope_1_emissions',
+            json={
+                'evidence_id': evidence_payload.get('id'),
+                'status': 'assured',
+                'assurance_level': 'limited',
+                'conclusion': 'Meter evidence reconciled to the reported value.',
+            },
+            headers=manager_headers,
+        )
+        assurance_payload = assurance_update.json() if assurance_update.status_code == 200 else {}
+        check(
+            'assurance workflow records metric evidence decisions',
+            assurance_before.status_code == 200
+            and assurance_before_payload.get('total_metrics') == 1
+            and assurance_update.status_code == 200
+            and assurance_payload.get('assured') == 1
+            and assurance_payload.get('completion_percent') == 100.0,
+            assurance_update.text,
+        )
+        assurance_investor = client.get(f'/submissions/{submission_id}/assurance', headers=investor_headers)
+        assurance_investor_write = client.put(
+            f'/submissions/{submission_id}/assurance/scope_1_emissions',
+            json={'status': 'exception', 'assurance_level': 'limited', 'conclusion': 'Blocked'},
+            headers=investor_headers,
+        )
+        check(
+            'investors can read but cannot change assurance decisions',
+            assurance_investor.status_code == 200 and assurance_investor_write.status_code == 403,
+            assurance_investor_write.text,
+        )
+
         duplicate_submit = client.post(f'/company/{company_id}/submissions', json=submission_payload, headers=manager_headers)
         check('submitted form is locked and duplicate row blocked', duplicate_submit.status_code == 423, duplicate_submit.text)
 

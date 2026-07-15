@@ -103,6 +103,8 @@ export default function ReviewHubPage() {
   const [submissionHistory, setSubmissionHistory] = useState([])
   const [historyLoading, setHistoryLoading] = useState(false)
   const [historyRevision, setHistoryRevision] = useState(0)
+  const [assurance, setAssurance] = useState(null)
+  const [assuranceLoading, setAssuranceLoading] = useState(false)
   const [resubmissionDialogOpen, setResubmissionDialogOpen] = useState(false)
   const [resubmissionReason, setResubmissionReason] = useState('')
   const [resubmissionHours, setResubmissionHours] = useState(72)
@@ -270,6 +272,37 @@ export default function ReviewHubPage() {
 
   useEffect(() => {
     let cancelled = false
+    const loadAssurance = async () => {
+      if (!selectedCompany?.submissionId) {
+        setAssurance(null)
+        return
+      }
+      setAssuranceLoading(true)
+      try {
+        const response = await fetch(`${BACKEND_URL}/submissions/${selectedCompany.submissionId}/assurance`, {
+          headers: {
+            'x-user-role': user?.role || '',
+            'x-user-email': user?.email || '',
+          },
+        })
+        if (!response.ok) throw new Error(`Assurance workflow failed (${response.status})`)
+        const payload = await response.json()
+        if (!cancelled) setAssurance(payload)
+      } catch (error) {
+        if (!cancelled) {
+          setAssurance(null)
+          setActionMessage(error.message || 'Unable to load assurance workflow.')
+        }
+      } finally {
+        if (!cancelled) setAssuranceLoading(false)
+      }
+    }
+    loadAssurance()
+    return () => { cancelled = true }
+  }, [selectedCompany?.submissionId, user?.email, user?.role])
+
+  useEffect(() => {
+    let cancelled = false
     if (!selectedCompany?.submissionId) return undefined
     fetch(`${BACKEND_URL}/submissions/${selectedCompany.submissionId}/metric-comments`)
       .then((response) => (response.ok ? response.json() : []))
@@ -423,6 +456,31 @@ export default function ReviewHubPage() {
       setActionMessage(successMessage)
     } catch (error) {
       setActionMessage(error.message || 'Unable to update review action right now.')
+    }
+  }
+
+  const handleAssuranceDecision = async (item, changes) => {
+    if (!selectedCompany.submissionId) return
+    const next = { ...item, ...changes }
+    setAssurance((current) => current ? {
+      ...current,
+      items: current.items.map((row) => row.metric_key === item.metric_key ? next : row),
+    } : current)
+    try {
+      const payload = await managerPost(
+        `/submissions/${selectedCompany.submissionId}/assurance/${item.metric_key}`,
+        'PUT',
+        {
+          evidence_id: next.evidence_id,
+          status: next.status,
+          assurance_level: next.assurance_level,
+          conclusion: next.conclusion || '',
+        },
+      )
+      setAssurance(payload)
+      setActionMessage(`${toMetricLabel(item.metric_key)} assurance decision saved.`)
+    } catch (error) {
+      setActionMessage(error.message || 'Unable to save assurance decision.')
     }
   }
 
@@ -677,6 +735,62 @@ export default function ReviewHubPage() {
         </SectionCard>
 
         <DataTable columns={columns} rows={dataRows} pageSize={7} />
+
+        <SectionCard title="Assurance workflow" subtitle="Evidence-level review, assurance scope, conclusions, and exceptions">
+          {assuranceLoading ? <p className="review-history-empty">Loading assurance records...</p> : null}
+          {!assuranceLoading && assurance ? (
+            <>
+              <div className="summary-grid four">
+                <article className="summary-box"><p>Completion</p><strong>{assurance.completion_percent}%</strong></article>
+                <article className="summary-box"><p>Assured</p><strong>{assurance.assured}</strong></article>
+                <article className="summary-box"><p>In review</p><strong>{assurance.in_review}</strong></article>
+                <article className="summary-box"><p>Exceptions</p><strong>{assurance.exceptions}</strong></article>
+              </div>
+              {!assurance.items?.length ? (
+                <p className="review-history-empty">No metric evidence is attached to this submission yet.</p>
+              ) : (
+                <div className="assurance-list">
+                  {assurance.items.map((item) => (
+                    <article className="assurance-row" key={item.metric_key}>
+                      <div>
+                        <strong>{toMetricLabel(item.metric_key)}</strong>
+                        <small>{item.filename || 'No evidence file'} · {item.evidence_status}</small>
+                      </div>
+                      <label>
+                        Decision
+                        <select value={item.status} onChange={(event) => handleAssuranceDecision(item, { status: event.target.value })}>
+                          <option value="pending">Pending</option>
+                          <option value="in review">In review</option>
+                          <option value="assured">Assured</option>
+                          <option value="exception">Exception</option>
+                        </select>
+                      </label>
+                      <label>
+                        Level
+                        <select value={item.assurance_level} onChange={(event) => handleAssuranceDecision(item, { assurance_level: event.target.value })}>
+                          <option value="limited">Limited</option>
+                          <option value="reasonable">Reasonable</option>
+                        </select>
+                      </label>
+                      <label className="assurance-conclusion">
+                        Conclusion
+                        <input
+                          value={item.conclusion || ''}
+                          placeholder="Record basis or exception"
+                          onChange={(event) => setAssurance((current) => ({
+                            ...current,
+                            items: current.items.map((row) => row.metric_key === item.metric_key ? { ...row, conclusion: event.target.value } : row),
+                          }))}
+                          onBlur={(event) => handleAssuranceDecision(item, { conclusion: event.target.value })}
+                        />
+                      </label>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </>
+          ) : null}
+        </SectionCard>
 
         <SectionCard title="Submission History" subtitle="Review decisions and correction windows for this reporting cycle">
           {historyLoading ? <p className="review-history-empty">Loading submission history...</p> : null}

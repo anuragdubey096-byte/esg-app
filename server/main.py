@@ -61,6 +61,7 @@ from models import (
     SubmissionUnlock,
     SubmissionDraft,
     SubmissionEvidence,
+    AssuranceRecord,
     ReminderLog,
     NarrativeRecord,
     AuthSession,
@@ -82,6 +83,7 @@ from schemas import (
     CycleInfo,
     CycleStatusUpdateRequest,
     MetricReviewCommentRequest,
+    AssuranceDecisionRequest,
     ForgotPasswordRequest,
     ForgotPasswordResponse,
     ResetPasswordRequest,
@@ -2636,6 +2638,113 @@ def review_submission(submission_id: int, payload: ReviewSubmissionRequest, db: 
     db.commit()
     db.refresh(submission)
     return {"message": "Review logged successfully", "status": submission.status}
+
+
+def _assurance_payload(db: Session, submission: Submission) -> dict[str, Any]:
+    evidence = db.query(SubmissionEvidence).filter(SubmissionEvidence.submission_id == submission.id).order_by(SubmissionEvidence.metric_key.asc()).all()
+    records = db.query(AssuranceRecord).filter(AssuranceRecord.submission_id == submission.id).order_by(AssuranceRecord.metric_key.asc()).all()
+    record_by_metric = {item.metric_key: item for item in records}
+    evidence_by_metric = {item.metric_key: item for item in evidence}
+    metric_keys = sorted(set(evidence_by_metric) | set(record_by_metric))
+    items = []
+    for metric_key in metric_keys:
+        item = record_by_metric.get(metric_key)
+        attachment = evidence_by_metric.get(metric_key)
+        items.append({
+            'id': item.id if item else None,
+            'metric_key': metric_key,
+            'evidence_id': attachment.id if attachment else (item.evidence_id if item else None),
+            'filename': attachment.filename if attachment else None,
+            'evidence_status': attachment.status if attachment else 'missing',
+            'status': item.status if item else 'pending',
+            'assurance_level': item.assurance_level if item else 'limited',
+            'conclusion': item.conclusion if item else '',
+            'reviewer_user_id': item.reviewer_user_id if item else None,
+            'updated_at': item.updated_at.isoformat() if item and item.updated_at else None,
+        })
+    counts = Counter(row['status'] for row in items)
+    completed = counts.get('assured', 0) + counts.get('exception', 0)
+    return {
+        'submission_id': submission.id,
+        'company_id': submission.company_id,
+        'total_metrics': len(items),
+        'assured': counts.get('assured', 0),
+        'exceptions': counts.get('exception', 0),
+        'in_review': counts.get('in review', 0),
+        'pending': counts.get('pending', 0),
+        'completion_percent': round((completed / len(items)) * 100, 1) if items else 0.0,
+        'items': items,
+    }
+
+
+@app.get('/submissions/{submission_id}/assurance')
+def get_submission_assurance(
+    submission_id: int,
+    user: User = Depends(get_authenticated_user),
+    db: Session = Depends(get_db),
+):
+    submission = db.query(Submission).filter(Submission.id == submission_id).first()
+    if not submission:
+        raise HTTPException(status_code=404, detail='Submission not found')
+    role = normalize_role(user.role)
+    if role == 'company':
+        company = db.query(Company).filter(Company.id == submission.company_id).first()
+        if not company or company.user_id != user.id:
+            raise HTTPException(status_code=403, detail='Assurance records are restricted to your company')
+    elif role not in {'manager', 'investor'}:
+        raise HTTPException(status_code=403, detail='Assurance records are restricted')
+    return _assurance_payload(db, submission)
+
+
+@app.put('/submissions/{submission_id}/assurance/{metric_key}')
+def upsert_assurance_decision(
+    submission_id: int,
+    metric_key: str,
+    payload: AssuranceDecisionRequest,
+    manager: User = Depends(require_manager),
+    db: Session = Depends(get_db),
+):
+    submission = db.query(Submission).filter(Submission.id == submission_id).first()
+    if not submission:
+        raise HTTPException(status_code=404, detail='Submission not found')
+    normalized_key = str(metric_key or '').strip().lower()
+    if not re.fullmatch(r'[a-z0-9_]{2,120}', normalized_key):
+        raise HTTPException(status_code=422, detail='A valid metric key is required')
+    evidence = None
+    if payload.evidence_id is not None:
+        evidence = db.query(SubmissionEvidence).filter(
+            SubmissionEvidence.id == payload.evidence_id,
+            SubmissionEvidence.submission_id == submission.id,
+            SubmissionEvidence.metric_key == normalized_key,
+        ).first()
+        if not evidence:
+            raise HTTPException(status_code=422, detail='Evidence does not belong to this submission metric')
+    item = db.query(AssuranceRecord).filter(
+        AssuranceRecord.submission_id == submission.id,
+        AssuranceRecord.metric_key == normalized_key,
+    ).first()
+    if item is None:
+        item = AssuranceRecord(submission_id=submission.id, metric_key=normalized_key)
+        db.add(item)
+    item.evidence_id = payload.evidence_id
+    item.status = payload.status
+    item.assurance_level = payload.assurance_level
+    item.conclusion = payload.conclusion.strip()
+    item.reviewer_user_id = manager.id
+    item.updated_at = datetime.utcnow()
+    if evidence:
+        evidence.status = 'verified' if payload.status == 'assured' else ('rejected' if payload.status == 'exception' else 'under review')
+    log_audit_event(
+        db,
+        'assurance_decision_updated',
+        manager,
+        submission_id=submission.id,
+        field_name=normalized_key,
+        metadata={'status': payload.status, 'assurance_level': payload.assurance_level},
+    )
+    db.commit()
+    db.refresh(item)
+    return _assurance_payload(db, submission)
 
 
 @app.get('/submissions/{submission_id}/metric-comments')
