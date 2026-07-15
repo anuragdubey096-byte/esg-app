@@ -321,7 +321,7 @@ class AuditEvent(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     event_type = Column(String, nullable=False, index=True)
-    actor_user_id = Column(Integer, ForeignKey('users.id'), nullable=True)
+    actor_user_id = Column(Integer, ForeignKey('users.id'), nullable=True, index=True)
     actor_email = Column(String, nullable=True, index=True)
     actor_role = Column(String, nullable=True)
     company_id = Column(Integer, ForeignKey('companies.id'), nullable=True, index=True)

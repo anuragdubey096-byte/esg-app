@@ -10,10 +10,22 @@ All notable GreenLedger changes are recorded here. Versions follow Semantic Vers
 - GitHub Actions CI for repository validation, backend regression, frontend tests, and production frontend builds.
 - Automated release metadata and Vercel configuration validation.
 - Short-retention failure logs for backend and frontend CI jobs.
+- Weekly grouped Dependabot updates for frontend, backend, and GitHub Actions dependencies.
+- CI dependency-security gates and a documented security baseline.
+- Alembic schema baseline, additive migration verification, and migration operations guidance.
+- Release-aware structured runtime logs, database-backed readiness checks, alert policy, incident response, and recovery runbooks.
+- A non-production backup/restore drill with integrity and data-marker verification.
 
 ### Changed
 
 - Backend self-tests now exit unsuccessfully when any regression check fails, allowing CI to block broken changes.
+- Updated React Router, FastAPI/Starlette, Vite, Vitest, PostCSS, and the Vite React plugin to remediate all audited dependency findings.
+- Production startup no longer relies on implicit SQLAlchemy table creation; disposable tests and local development retain safe bootstrap behavior.
+
+### Fixed
+
+- Submission validation now handles numeric values stored as strings instead of returning a server error.
+- Health readiness now reflects real database connectivity and required production Blob configuration.
 
 ## [1.1.0] - 2026-07-15
 

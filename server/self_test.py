@@ -6,6 +6,8 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from main import app
+from database import SessionLocal
+from models import Submission
 
 
 def run_self_test():
@@ -553,6 +555,23 @@ def run_self_test():
             headers=investor_headers,
         )
         check('reminder blocked for investor', reminder_forbidden.status_code == 403, reminder_forbidden.text)
+
+        validation_db = SessionLocal()
+        try:
+            validation_submission = validation_db.query(Submission).filter(Submission.id == submission_id).first()
+            validation_data = json.loads(validation_submission.esg_data)
+            for numeric_field in [
+                'total_ghg_emissions', 'total_energy_consumption', 'renewable_energy_consumption',
+                'total_water_withdrawal', 'water_recycled_reused', 'total_waste_generated',
+                'waste_diverted_from_landfill', 'female_representation_percent',
+                'female_leadership_representation_percent',
+            ]:
+                if validation_data.get(numeric_field) is not None:
+                    validation_data[numeric_field] = str(validation_data[numeric_field])
+            validation_submission.esg_data = json.dumps(validation_data)
+            validation_db.commit()
+        finally:
+            validation_db.close()
 
         validate_response = client.post(f'/submissions/{submission_id}/validate', headers=manager_headers)
         check('POST /submissions/{id}/validate', validate_response.status_code == 200 and 'flagged' in validate_response.json(), validate_response.text)

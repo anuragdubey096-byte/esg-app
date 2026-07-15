@@ -232,6 +232,16 @@ def _runtime_error_category(error: Exception) -> str:
     return 'request_exception'
 
 
+def _runtime_context() -> dict[str, str]:
+    return {
+        'version': APP_VERSION,
+        'environment': str(os.getenv('VERCEL_ENV') or os.getenv('APP_ENV') or ('vercel' if os.getenv('VERCEL') else 'local')),
+        'deployment_id': str(os.getenv('VERCEL_DEPLOYMENT_ID') or ''),
+        'commit_sha': str(os.getenv('VERCEL_GIT_COMMIT_SHA') or '')[:40],
+        'region': str(os.getenv('VERCEL_REGION') or ''),
+    }
+
+
 @app.middleware('http')
 async def request_timing_middleware(request: Request, call_next):
     started = time.perf_counter()
@@ -240,6 +250,7 @@ async def request_timing_middleware(request: Request, call_next):
         'route': request.url.path,
         'method': request.method,
         'request_id': request_id,
+        **_runtime_context(),
     }
     try:
         response = await call_next(request)
@@ -349,8 +360,20 @@ app.add_middleware(
     allow_headers=['*'],
 )
 
-# Create database tables automatically when the app starts.
-Base.metadata.create_all(bind=engine)
+def implicit_schema_bootstrap_enabled() -> bool:
+    """Allow create_all only for disposable test state and local development."""
+    configured = str(os.getenv('ALLOW_IMPLICIT_SCHEMA_BOOTSTRAP') or '').strip().lower()
+    if configured:
+        return configured in {'1', 'true', 'yes', 'on'}
+    environment = str(os.getenv('APP_ENV') or '').strip().lower()
+    if environment in {'test', 'testing'}:
+        return True
+    has_durable_database = bool(str(os.getenv('DATABASE_URL') or '').strip())
+    return not has_durable_database and not os.getenv('VERCEL')
+
+
+if implicit_schema_bootstrap_enabled():
+    Base.metadata.create_all(bind=engine)
 
 # A helper to get a database session inside path operations.
 def get_db():
@@ -1339,7 +1362,8 @@ def _log_live_event(
 def startup_event():
     db = SessionLocal()
     try:
-        Base.metadata.create_all(bind=engine)
+        if implicit_schema_bootstrap_enabled():
+            Base.metadata.create_all(bind=engine)
         if not os.getenv('VERCEL'):
             ensure_submission_cycle_column(db)
             ensure_review_action_audit_columns(db)
@@ -2941,8 +2965,8 @@ def validate_submission(submission_id: int, db: Session = Depends(get_db)):
     
     # Check energy consumption consistency
     if 'total_energy_consumption' in data and 'renewable_energy_consumption' in data:
-        total_energy = data['total_energy_consumption']
-        renewable_energy = data['renewable_energy_consumption']
+        total_energy = _safe_float(data['total_energy_consumption'])
+        renewable_energy = _safe_float(data['renewable_energy_consumption'])
         if total_energy is not None and renewable_energy is not None:
             if renewable_energy > total_energy:
                 db.add(ValidationFlag(
@@ -2955,8 +2979,8 @@ def validate_submission(submission_id: int, db: Session = Depends(get_db)):
     
     # Check water recycling consistency
     if 'total_water_withdrawal' in data and 'water_recycled_reused' in data:
-        total_water = data['total_water_withdrawal']
-        recycled_water = data['water_recycled_reused']
+        total_water = _safe_float(data['total_water_withdrawal'])
+        recycled_water = _safe_float(data['water_recycled_reused'])
         if total_water is not None and recycled_water is not None:
             if recycled_water > total_water:
                 db.add(ValidationFlag(
@@ -2969,8 +2993,8 @@ def validate_submission(submission_id: int, db: Session = Depends(get_db)):
     
     # Check waste diversion consistency
     if 'total_waste_generated' in data and 'waste_diverted_from_landfill' in data:
-        total_waste = data['total_waste_generated']
-        diverted_waste = data['waste_diverted_from_landfill']
+        total_waste = _safe_float(data['total_waste_generated'])
+        diverted_waste = _safe_float(data['waste_diverted_from_landfill'])
         if total_waste is not None and diverted_waste is not None:
             if diverted_waste > total_waste:
                 db.add(ValidationFlag(
@@ -3001,8 +3025,8 @@ def validate_submission(submission_id: int, db: Session = Depends(get_db)):
     
     # Check female leadership vs overall female representation (proportionality)
     if 'female_representation_percent' in data and 'female_leadership_representation_percent' in data:
-        female_overall = data['female_representation_percent']
-        female_leadership = data['female_leadership_representation_percent']
+        female_overall = _safe_float(data['female_representation_percent'])
+        female_leadership = _safe_float(data['female_leadership_representation_percent'])
         if female_overall is not None and female_leadership is not None:
             if female_leadership > female_overall + 5:  # Allow 5% tolerance
                 db.add(ValidationFlag(
@@ -3022,7 +3046,7 @@ def validate_submission(submission_id: int, db: Session = Depends(get_db)):
     if prev_submission:
         prev_data = json.loads(prev_submission.esg_data)
         for field in ['total_ghg_emissions', 'total_energy_consumption', 'total_water_withdrawal']:
-            curr_val, prev_val = data.get(field), prev_data.get(field)
+            curr_val, prev_val = _safe_float(data.get(field)), _safe_float(prev_data.get(field))
             if curr_val is not None and prev_val is not None and prev_val > 0:
                 variance = (curr_val - prev_val) / prev_val
                 if abs(variance) > 0.30:
@@ -3821,6 +3845,15 @@ def export_report(
     try:
         storage_path = persist_export(file_path, content_type)
     except Exception as error:
+        print(json.dumps({
+            'level': 'error',
+            'event': 'export_persist_failed',
+            'report_type': report_name,
+            'format': export_format,
+            'error_type': type(error).__name__,
+            'error': str(error)[:600],
+            **_runtime_context(),
+        }), flush=True)
         raise HTTPException(status_code=503, detail='Unable to persist the generated report') from error
 
     log_audit_event(
@@ -5914,15 +5947,33 @@ def _can_access_narrative_record(db: Session, record: NarrativeRecord, role: str
 
 @app.get('/health')
 def health():
+    database_check: dict[str, Any]
+    try:
+        started = time.perf_counter()
+        with engine.connect() as connection:
+            connection.execute(text('SELECT 1'))
+        database_check = {
+            'ok': True,
+            'latency_ms': round((time.perf_counter() - started) * 1000, 2),
+            'error': None,
+        }
+    except Exception as error:
+        database_check = {
+            'ok': False,
+            'latency_ms': None,
+            'error': type(error).__name__,
+        }
+    storage_check = storage_health()
+    ready = bool(database_check['ok'] and storage_check.get('ok'))
     return {
-        'status': 'ok',
+        'status': 'ok' if ready else 'degraded',
         'version': APP_VERSION,
-        'ready': True,
-        'environment': 'vercel' if os.getenv('VERCEL') else 'local',
+        'ready': ready,
+        **_runtime_context(),
         'timestamp': _utc_now_iso(),
         'checks': {
-            'database': {'ok': True, 'error': None},
-            'storage': storage_health(),
+            'database': database_check,
+            'storage': storage_check,
             'openai': {'ok': True, 'configured': bool(str(os.getenv('OPENAI_API_KEY') or '').strip()), 'error': None},
         },
         'message': 'Application health snapshot',
@@ -5930,9 +5981,11 @@ def health():
 
 
 @app.get('/health/ready')
-def health_ready():
+def health_ready(response: Response):
     payload = health()
-    payload['message'] = 'Application is ready to serve requests'
+    if not payload['ready']:
+        response.status_code = 503
+    payload['message'] = 'Application is ready to serve requests' if payload['ready'] else 'Application is not ready to serve requests'
     return payload
 
 

@@ -59,7 +59,7 @@ Do not begin v1.3.0 schema work until automated CI and repeatable database migra
 
 #### GL-100: GitHub Actions CI
 
-**Status:** In progress - workflow implemented and the first GitHub-hosted run passed; branch protection is pending.
+**Status:** Complete - hosted CI is green and `main` requires all three CI jobs with strict status checks.
 
 Implement workflows for pull requests and pushes to `main`:
 
@@ -82,6 +82,8 @@ Implement workflows for pull requests and pushes to `main`:
 
 #### GL-110: Dependency and security baseline
 
+**Status:** Implemented locally - dependency audits are clean; automated checks await hosted CI verification.
+
 - Classify current npm findings by production versus development exposure.
 - Run `npm audit --omit=dev` as the production dependency gate.
 - Review Python packages for known vulnerabilities using an agreed scanner.
@@ -97,6 +99,8 @@ Implement workflows for pull requests and pushes to `main`:
 
 #### GL-120: Database migration discipline
 
+**Status:** Implemented locally - clean upgrade, additive migration, drift check, and downgrade pass; production schema comparison/stamp remains a controlled release task.
+
 - Introduce Alembic or an equivalent reviewed migration mechanism.
 - Baseline the current production schema without destructive recreation.
 - Add upgrade and downgrade/recovery guidance.
@@ -111,6 +115,8 @@ Implement workflows for pull requests and pushes to `main`:
 - Production migration ownership and rollback decision points are documented.
 
 #### GL-130: Observability and recovery baseline
+
+**Status:** In progress - release-aware logs, truthful readiness checks, alert policy, incident response, and a local restore drill are implemented. Production alert delivery and an isolated Postgres restore drill require provider/owner configuration.
 
 - Add structured release/version fields to runtime logs.
 - Monitor health, error rate, latency, database connectivity, and export failures.
@@ -164,7 +170,9 @@ Suggested response metadata:
     "submission_count": 18
   }
 }
+
 ```
+
 
 **Acceptance criteria**
 
@@ -499,9 +507,9 @@ A roadmap item is complete only when:
 
 ## 12. Immediate next actions
 
-1. Approve the v1.1.1 scope and assign owners for GL-100 through GL-130.
-2. Create the GitHub Actions CI workflow without changing production deployment behavior.
-3. Run and classify the current dependency audit.
-4. Select and baseline the database migration tool.
-5. Define measurable latency, error, backup, and recovery targets.
-6. Draft the reporting-scope API contract for v1.2.0 while v1.1.1 is being completed.
+1. Commit and push the v1.1.1 baseline, then require the new dependency-security check after hosted CI passes.
+2. Compare an isolated production Postgres copy with the Alembic baseline before stamping revision `20260715_01` and applying the additive migration.
+3. Select and configure alert delivery, notification owners, and synthetic readiness monitoring.
+4. Confirm the production Postgres backup retention/PITR entitlement and complete a timed isolated restore drill.
+5. Release v1.1.1 only after migration, alert-delivery, and recovery gates are evidenced.
+6. Begin the GL-200 reporting-scope contract after the v1.1.1 release gate is complete.
