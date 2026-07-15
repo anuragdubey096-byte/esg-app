@@ -86,6 +86,7 @@ from schemas import (
     MetricReviewCommentRequest,
     AssuranceDecisionRequest,
     MaterialityTopicRequest,
+    ScenarioAnalysisRequest,
     ForgotPasswordRequest,
     ForgotPasswordResponse,
     ResetPasswordRequest,
@@ -4892,6 +4893,71 @@ def update_materiality_topic(
     db.commit()
     db.refresh(item)
     return _serialize_materiality_topic(item)
+
+
+@app.post('/analytics/scenario-analysis', dependencies=[Depends(require_manager_or_investor)])
+def run_scenario_analysis(
+    payload: ScenarioAnalysisRequest,
+    db: Session = Depends(get_db),
+):
+    companies = db.query(Company).options(selectinload(Company.submissions)).order_by(Company.name.asc()).all()
+    rows = []
+    years_to_horizon = max(payload.horizon_year - datetime.now(timezone.utc).year, 1)
+    pathway_pressure = max(payload.temperature_pathway - 1.5, 0) / 3
+    for company in companies:
+        submission, values, reporting_year = _data_quality_submission(company, None)
+        if not submission:
+            continue
+        emissions = max(_safe_float(values.get('total_ghg_emissions')) or (
+            (_safe_float(values.get('scope_1_emissions')) or 0)
+            + (_safe_float(values.get('scope_2_location_based')) or 0)
+            + (_safe_float(values.get('scope_3_emissions')) or 0)
+        ), 0)
+        energy = max(_safe_float(values.get('total_energy_consumption')) or 0, 0)
+        water = max(_safe_float(values.get('total_water_withdrawal')) or 0, 0)
+        waste = max(_safe_float(values.get('total_waste_generated')) or 0, 0)
+        transition_cost = emissions * payload.carbon_price
+        energy_cost = energy * 100 * (payload.energy_cost_change_percent / 100)
+        physical_cost = ((water * 0.05) + (waste * 25)) * payload.physical_risk_multiplier * (1 + pathway_pressure)
+        annual_exposure = max(transition_cost + energy_cost + physical_cost, 0)
+        cumulative_exposure = annual_exposure * years_to_horizon
+        risk_score = min(100, round(
+            (min(emissions / 10000, 1) * 45)
+            + (min(energy / 50000, 1) * 20)
+            + (min((water + waste) / 100000, 1) * 20)
+            + (pathway_pressure * 15),
+            1,
+        ))
+        rows.append({
+            'company_id': company.id,
+            'company': company.name,
+            'sector': company.sector or 'Unassigned',
+            'reporting_year': reporting_year,
+            'emissions_tco2e': round(emissions, 2),
+            'transition_cost': round(transition_cost, 2),
+            'energy_cost_impact': round(energy_cost, 2),
+            'physical_risk_cost': round(physical_cost, 2),
+            'annual_exposure': round(annual_exposure, 2),
+            'cumulative_exposure': round(cumulative_exposure, 2),
+            'risk_score': risk_score,
+            'risk_tier': 'High' if risk_score >= 70 else ('Medium' if risk_score >= 40 else 'Low'),
+        })
+    total_annual = sum(row['annual_exposure'] for row in rows)
+    return {
+        'scenario': payload.model_dump(),
+        'modelled_companies': len(rows),
+        'annual_exposure': round(total_annual, 2),
+        'cumulative_exposure': round(sum(row['cumulative_exposure'] for row in rows), 2),
+        'high_risk_companies': sum(1 for row in rows if row['risk_tier'] == 'High'),
+        'average_risk_score': round(sum(row['risk_score'] for row in rows) / len(rows), 1) if rows else 0.0,
+        'rows': sorted(rows, key=lambda row: row['annual_exposure'], reverse=True),
+        'methodology': [
+            'Transition exposure applies the selected carbon price to reported Scope 1, 2 and 3 emissions.',
+            'Energy exposure applies the selected cost change to reported energy using a transparent base-cost proxy.',
+            'Physical exposure is a screening proxy based on reported water and waste, adjusted by the physical-risk multiplier.',
+            'Results are decision-support estimates, not forecasts or valuations.',
+        ],
+    }
 
 
 def _validate_cron_secret(secret: str | None, x_cron_secret: str | None, authorization: str | None) -> None:

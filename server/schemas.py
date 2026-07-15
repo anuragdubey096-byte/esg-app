@@ -478,6 +478,15 @@ class MaterialityTopicRequest(BaseModel):
     status: Literal['assessed', 'monitoring', 'action required'] = 'assessed'
 
 
+class ScenarioAnalysisRequest(BaseModel):
+    scenario_name: str = Field(default='Orderly transition', min_length=2, max_length=120)
+    temperature_pathway: float = Field(default=1.5, ge=1.0, le=4.5)
+    carbon_price: float = Field(default=100, ge=0, le=500)
+    energy_cost_change_percent: float = Field(default=20, ge=-50, le=300)
+    physical_risk_multiplier: float = Field(default=1.2, ge=0, le=5)
+    horizon_year: int = Field(default=2030, ge=2026, le=2100)
+
+
 class SubmissionUnlockRequest(BaseModel):
     reason: str
     expiry_hours: int = Field(default=24, ge=1, le=720)

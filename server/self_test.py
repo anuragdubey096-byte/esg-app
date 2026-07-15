@@ -121,6 +121,28 @@ def run_self_test():
         }, headers=investor_headers)
         check('investor cannot change materiality assessment', materiality_forbidden.status_code == 403, materiality_forbidden.text)
 
+        scenario_response = client.post('/analytics/scenario-analysis', json={
+            'scenario_name': 'QA orderly transition',
+            'temperature_pathway': 1.5,
+            'carbon_price': 100,
+            'energy_cost_change_percent': 20,
+            'physical_risk_multiplier': 1.2,
+            'horizon_year': datetime.now(timezone.utc).year + 5,
+        }, headers=investor_headers)
+        scenario_payload = scenario_response.json() if scenario_response.status_code == 200 else {}
+        check(
+            'scenario analysis models transparent portfolio exposure',
+            scenario_response.status_code == 200
+            and isinstance(scenario_payload.get('rows'), list)
+            and scenario_payload.get('annual_exposure', -1) >= 0
+            and len(scenario_payload.get('methodology', [])) >= 4,
+            scenario_response.text,
+        )
+        scenario_forbidden = client.post('/analytics/scenario-analysis', json={
+            'scenario_name': 'Blocked', 'horizon_year': datetime.now(timezone.utc).year + 5,
+        }, headers=role_headers['company'])
+        check('scenario analysis blocks company role', scenario_forbidden.status_code == 403, scenario_forbidden.text)
+
         existing_cycles_response = client.get('/cycles', headers=manager_headers)
         existing_cycle_years = {
             int(item.get('cycle_year')) for item in existing_cycles_response.json()

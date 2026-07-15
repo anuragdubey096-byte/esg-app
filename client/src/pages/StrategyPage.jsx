@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
-import { CartesianGrid, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis, ZAxis } from 'recharts'
+import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis, ZAxis } from 'recharts'
 import DataTable from '../components/DataTable'
 import ExecutivePageHeader from '../components/ExecutivePageHeader'
 import KpiCard from '../components/KpiCard'
@@ -18,12 +18,24 @@ const emptyForm = {
   status: 'assessed',
 }
 
+const defaultScenario = {
+  scenario_name: 'Orderly transition',
+  temperature_pathway: 1.5,
+  carbon_price: 100,
+  energy_cost_change_percent: 20,
+  physical_risk_multiplier: 1.2,
+  horizon_year: 2030,
+}
+
 export default function StrategyPage() {
   const { user } = useOutletContext()
   const [data, setData] = useState({ topics: [], priority_topics: 0, action_required: 0, average_priority: 0 })
   const [form, setForm] = useState(emptyForm)
   const [loading, setLoading] = useState(true)
   const [message, setMessage] = useState('')
+  const [scenarioInputs, setScenarioInputs] = useState(defaultScenario)
+  const [scenarioResult, setScenarioResult] = useState(null)
+  const [scenarioLoading, setScenarioLoading] = useState(false)
   const isManager = String(user?.role || '').toLowerCase() === 'manager'
 
   const headers = useMemo(() => ({
@@ -62,13 +74,81 @@ export default function StrategyPage() {
     await loadTopics()
   }
 
+  const runScenario = async (event) => {
+    event.preventDefault()
+    setScenarioLoading(true)
+    setMessage('')
+    try {
+      const response = await fetch(`${API_BASE_URL}/analytics/scenario-analysis`, {
+        method: 'POST', headers, body: JSON.stringify(scenarioInputs),
+      })
+      if (!response.ok) throw new Error((await response.json().catch(() => ({}))).detail || 'Unable to run scenario.')
+      setScenarioResult(await response.json())
+    } catch (error) {
+      setMessage(error.message)
+    } finally {
+      setScenarioLoading(false)
+    }
+  }
+
   return (
     <div className="page-grid">
       <ExecutivePageHeader
         eyebrow="Strategy & risk"
-        title="Double Materiality Assessment"
-        description="Prioritise ESG topics by outward impact, financial relevance, and stakeholder importance."
+        title="ESG Strategy Lab"
+        description="Prioritise double-materiality topics and stress-test portfolio exposure under transparent climate scenarios."
       />
+
+      <SectionCard title="Climate scenario analysis" subtitle="Adjust transition and physical-risk assumptions; results use current reported portfolio data">
+        <form className="scenario-controls" onSubmit={runScenario}>
+          <label><span>Scenario</span><input value={scenarioInputs.scenario_name} onChange={(event) => setScenarioInputs({ ...scenarioInputs, scenario_name: event.target.value })} /></label>
+          <label><span>Temperature pathway</span><input type="number" min="1" max="4.5" step="0.1" value={scenarioInputs.temperature_pathway} onChange={(event) => setScenarioInputs({ ...scenarioInputs, temperature_pathway: Number(event.target.value) })} /></label>
+          <label><span>Carbon price / tCO2e</span><input type="number" min="0" max="500" value={scenarioInputs.carbon_price} onChange={(event) => setScenarioInputs({ ...scenarioInputs, carbon_price: Number(event.target.value) })} /></label>
+          <label><span>Energy cost change %</span><input type="number" min="-50" max="300" value={scenarioInputs.energy_cost_change_percent} onChange={(event) => setScenarioInputs({ ...scenarioInputs, energy_cost_change_percent: Number(event.target.value) })} /></label>
+          <label><span>Physical-risk multiplier</span><input type="number" min="0" max="5" step="0.1" value={scenarioInputs.physical_risk_multiplier} onChange={(event) => setScenarioInputs({ ...scenarioInputs, physical_risk_multiplier: Number(event.target.value) })} /></label>
+          <label><span>Horizon</span><input type="number" min="2026" max="2100" value={scenarioInputs.horizon_year} onChange={(event) => setScenarioInputs({ ...scenarioInputs, horizon_year: Number(event.target.value) })} /></label>
+          <button className="button primary" disabled={scenarioLoading} type="submit">{scenarioLoading ? 'Running…' : 'Run scenario'}</button>
+        </form>
+
+        {scenarioResult ? (
+          <div className="space-y-4">
+            <section className="executive-kpi-grid">
+              <KpiCard title="Annual Exposure" value={`$${Math.round(scenarioResult.annual_exposure).toLocaleString()}`} trendLabel="modelled cost proxy" icon="risks" tone="amber" />
+              <KpiCard title="Cumulative Exposure" value={`$${Math.round(scenarioResult.cumulative_exposure).toLocaleString()}`} trendLabel={`through ${scenarioResult.scenario.horizon_year}`} icon="analytics" />
+              <KpiCard title="Average Risk" value={`${scenarioResult.average_risk_score}/100`} trendLabel="portfolio screening score" icon="overview" />
+              <KpiCard title="High Risk" value={scenarioResult.high_risk_companies} trendLabel={`${scenarioResult.modelled_companies} companies modelled`} icon="anomaly" tone="rose" />
+            </section>
+            <div className="chart-wrap">
+              <h4>Largest annual exposure drivers</h4>
+              <ResponsiveContainer width="100%" height={340}>
+                <BarChart data={scenarioResult.rows.slice(0, 10)}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                  <XAxis dataKey="company" tick={{ fontSize: 11 }} angle={-18} textAnchor="end" height={70} />
+                  <YAxis />
+                  <Tooltip />
+                  <Legend />
+                  <Bar dataKey="transition_cost" stackId="cost" fill="#0f766e" name="Transition" />
+                  <Bar dataKey="energy_cost_impact" stackId="cost" fill="#2563eb" name="Energy" />
+                  <Bar dataKey="physical_risk_cost" stackId="cost" fill="#f97316" name="Physical" />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+            <DataTable
+              columns={[
+                { key: 'company', label: 'Company', sortable: true },
+                { key: 'sector', label: 'Sector', sortable: true },
+                { key: 'annual_exposure', label: 'Annual exposure', sortable: true, render: (row) => `$${Math.round(row.annual_exposure).toLocaleString()}` },
+                { key: 'cumulative_exposure', label: 'Cumulative', sortable: true, render: (row) => `$${Math.round(row.cumulative_exposure).toLocaleString()}` },
+                { key: 'risk_score', label: 'Risk score', sortable: true },
+                { key: 'risk_tier', label: 'Risk tier', sortable: true },
+              ]}
+              rows={scenarioResult.rows}
+              pageSize={8}
+            />
+            <ul className="scenario-methodology">{scenarioResult.methodology.map((item) => <li key={item}>{item}</li>)}</ul>
+          </div>
+        ) : <p className="review-history-empty">Run a scenario to calculate company and portfolio exposure.</p>}
+      </SectionCard>
 
       <section className="executive-kpi-grid">
         <KpiCard title="Topics Assessed" value={data.topics.length} trendLabel="materiality universe" icon="analytics" />
