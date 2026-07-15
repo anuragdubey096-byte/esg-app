@@ -2,6 +2,19 @@
 
 All notable GreenLedger changes are recorded here. Versions follow Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+
+- Post-v1.1.0 implementation roadmap with sequenced releases, acceptance criteria, ownership, and rollout gates.
+- GitHub Actions CI for repository validation, backend regression, frontend tests, and production frontend builds.
+- Automated release metadata and Vercel configuration validation.
+- Short-retention failure logs for backend and frontend CI jobs.
+
+### Changed
+
+- Backend self-tests now exit unsuccessfully when any regression check fails, allowing CI to block broken changes.
+
 ## [1.1.0] - 2026-07-15
 
 ### Added

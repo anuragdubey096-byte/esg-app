@@ -1,0 +1,132 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  repository:
+    name: Repository validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Validate release metadata and Vercel configuration
+        run: python scripts/validate_release.py
+
+      - name: Reject tracked frontend dependencies
+        shell: bash
+        run: |
+          if [[ -n "$(git ls-files client/node_modules)" ]]; then
+            echo "client/node_modules must not be tracked"
+            exit 1
+          fi
+
+  backend:
+    name: Backend regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      APP_ENV: test
+      DATABASE_URL: sqlite:///${{ runner.temp }}/greenledger-ci.sqlite
+      SEED_SAMPLE_DATA: 'true'
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: server/requirements.txt
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r server/requirements.txt
+
+      - name: Compile Python sources
+        run: python -m compileall -q server api
+
+      - name: Run backend self-test
+        shell: bash
+        run: |
+          set -o pipefail
+          python server/self_test.py 2>&1 | tee backend-self-test.log
+
+      - name: Upload backend failure log
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: backend-failure-${{ github.run_id }}
+          path: backend-self-test.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  frontend:
+    name: Frontend test and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: client
+        run: npm ci
+
+      - name: Run frontend tests
+        working-directory: client
+        shell: bash
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee frontend-test.log
+
+      - name: Build frontend
+        working-directory: client
+        shell: bash
+        run: |
+          set -o pipefail
+          npm run build 2>&1 | tee frontend-build.log
+
+      - name: Upload frontend failure logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: frontend-failure-${{ github.run_id }}
+          path: |
+            client/frontend-test.log
+            client/frontend-build.log
+          if-no-files-found: ignore
+          retention-days: 7

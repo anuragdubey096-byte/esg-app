@@ -619,3 +619,5 @@ if __name__ == '__main__':
 
     passed = sum(1 for _, ok, _ in results if ok)
     print(f'SUMMARY: {passed}/{len(results)} passed')
+    if passed != len(results):
+        raise SystemExit(1)

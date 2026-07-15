@@ -153,6 +153,8 @@ Current frontend regression coverage includes:
 - No secrets or generated dependencies are staged
 - Production deployment metadata matches the intended commit SHA
 
+The workflow in `.github/workflows/ci.yml` enforces repository validation, backend regression, frontend tests, and frontend build checks. `scripts/validate_release.py` verifies version consistency and the Vercel build/routing contract without external services.
+
 ## 9. Vercel deployment
 
 The configured Git workflow deploys pushes to `main` to production.
@@ -193,6 +195,7 @@ If the full backend cannot start, `api/index.py` exposes a degraded fallback hea
 
 ## 11. Known follow-up work
 
+- The sequenced roadmap, acceptance criteria, ownership model, and rollout gates are maintained in [Post-v1.1.0 Implementation Plan](IMPLEMENTATION_PLAN.md).
 - Add CI enforcement for backend tests, frontend tests, and frontend build.
 - Add focused automated websocket/collaboration tests.
 - Expand narrative persistence and lifecycle test coverage.

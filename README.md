@@ -2,6 +2,8 @@
 
 **Current release: v1.1.0**
 
+[![CI](https://github.com/anuragdubey096-byte/esg-app/actions/workflows/ci.yml/badge.svg)](https://github.com/anuragdubey096-byte/esg-app/actions/workflows/ci.yml)
+
 GreenLedger is a role-aware ESG data collection, review, analytics, and reporting platform. It gives portfolio managers, investors, and portfolio companies one workflow for collecting evidence-backed ESG data and turning it into decisions and reports.
 
 Production: [esg-app-two.vercel.app](https://esg-app-two.vercel.app/)
@@ -93,6 +95,8 @@ npm run build
 
 The v1.1.0 frontend suite covers role routing and company analytics reporting-year selection.
 
+GitHub Actions runs repository validation, the backend regression suite, frontend tests, and the production frontend build for pull requests and pushes to `main`.
+
 ## Deployment
 
 The repository is deployed as one Vercel project from its root. `vercel.json` installs and builds the client, serves `client/dist`, mounts the FastAPI wrapper from `api/index.py`, and preserves SPA routing.
@@ -104,6 +108,7 @@ Use [Vercel Production Checklist](VERCEL_PRODUCTION_CHECKLIST.md) before and aft
 - [Changelog](CHANGELOG.md)
 - [Product and User Guide](docs/PRODUCT_AND_USER_GUIDE.md)
 - [Technical and Operations Guide](docs/TECHNICAL_AND_OPERATIONS_GUIDE.md)
+- [Post-v1.1.0 Implementation Plan](docs/IMPLEMENTATION_PLAN.md)
 - [Restoration Checklist](RESTORATION_CHECKLIST.md)
 - [Vercel Production Checklist](VERCEL_PRODUCTION_CHECKLIST.md)
 
