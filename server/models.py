@@ -361,3 +361,19 @@ class MetricReviewComment(Base):
     reviewer_user_id = Column(Integer, ForeignKey('users.id'), nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class MaterialityTopic(Base):
+    __tablename__ = 'materiality_topics'
+
+    id = Column(Integer, primary_key=True, index=True)
+    topic = Column(String, nullable=False, unique=True, index=True)
+    pillar = Column(String, nullable=False)
+    impact_score = Column(Float, nullable=False)
+    financial_score = Column(Float, nullable=False)
+    stakeholder_score = Column(Float, nullable=False)
+    rationale = Column(Text, nullable=True)
+    owner = Column(String, nullable=False)
+    status = Column(String, nullable=False, default='assessed')
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)

@@ -17,6 +17,7 @@ const OverviewPage = lazy(() => import('./pages/OverviewPage'))
 const ReportsPage = lazy(() => import('./pages/ReportsPage'))
 const ReviewHubPage = lazy(() => import('./pages/ReviewHubPage'))
 const SubmissionsPage = lazy(() => import('./pages/SubmissionsPage'))
+const StrategyPage = lazy(() => import('./pages/StrategyPage'))
 
 function withRouteLoading(element) {
   return <Suspense fallback={<RouteLoadingState />}>{element}</Suspense>
@@ -39,6 +40,7 @@ export default function Dashboard({ user, onLogout }) {
     '/newsletter-ops': <NewsletterOpsPage />,
     '/anomaly-intel': <AnomalyIntelPage />,
     '/admin-settings': <AdminSettingsPage />,
+    '/strategy': <StrategyPage />,
   }
 
   return (

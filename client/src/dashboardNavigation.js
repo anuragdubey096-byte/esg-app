@@ -32,6 +32,14 @@ const NAV_ITEMS = [
     roles: ['manager', 'investor'],
   },
   {
+    to: '/strategy',
+    label: 'ESG Strategy',
+    icon: 'analytics',
+    group: 'Portfolio',
+    title: 'Materiality & Scenario Analysis',
+    roles: ['manager', 'investor'],
+  },
+  {
     to: '/alerts-risks',
     label: 'Alerts & Risks',
     icon: 'risks',

@@ -69,6 +69,7 @@ from models import (
     AuditEvent,
     Notification,
     MetricReviewComment,
+    MaterialityTopic,
 )
 from schemas import (
     ActionPlanCreateRequest,
@@ -84,6 +85,7 @@ from schemas import (
     CycleStatusUpdateRequest,
     MetricReviewCommentRequest,
     AssuranceDecisionRequest,
+    MaterialityTopicRequest,
     ForgotPasswordRequest,
     ForgotPasswordResponse,
     ResetPasswordRequest,
@@ -4810,6 +4812,86 @@ def framework_mapping_dashboard(
         'frameworks': framework_rows,
         'disclosures': disclosure_rows,
     }
+
+
+def _serialize_materiality_topic(item: MaterialityTopic) -> dict[str, Any]:
+    priority_score = round((item.impact_score * 0.45) + (item.financial_score * 0.4) + (item.stakeholder_score * 0.15), 2)
+    if item.impact_score >= 4 and item.financial_score >= 4:
+        quadrant = 'Material priority'
+    elif item.impact_score >= 3 or item.financial_score >= 3:
+        quadrant = 'Monitor closely'
+    else:
+        quadrant = 'Emerging'
+    return {
+        'id': item.id,
+        'topic': item.topic,
+        'pillar': item.pillar,
+        'impact_score': item.impact_score,
+        'financial_score': item.financial_score,
+        'stakeholder_score': item.stakeholder_score,
+        'priority_score': priority_score,
+        'quadrant': quadrant,
+        'rationale': item.rationale or '',
+        'owner': item.owner,
+        'status': item.status,
+        'updated_at': item.updated_at.isoformat() if item.updated_at else None,
+    }
+
+
+@app.get('/materiality/topics')
+def list_materiality_topics(
+    user: User = Depends(get_authenticated_user),
+    db: Session = Depends(get_db),
+):
+    if normalize_role(user.role) not in {'manager', 'investor'}:
+        raise HTTPException(status_code=403, detail='Materiality assessment is restricted to managers and investors')
+    rows = db.query(MaterialityTopic).order_by(MaterialityTopic.impact_score.desc(), MaterialityTopic.financial_score.desc()).all()
+    items = [_serialize_materiality_topic(item) for item in rows]
+    return {
+        'topics': items,
+        'priority_topics': sum(1 for item in items if item['quadrant'] == 'Material priority'),
+        'action_required': sum(1 for item in items if item['status'] == 'action required'),
+        'average_priority': round(sum(item['priority_score'] for item in items) / len(items), 2) if items else 0.0,
+    }
+
+
+@app.post('/materiality/topics')
+def create_materiality_topic(
+    payload: MaterialityTopicRequest,
+    manager: User = Depends(require_manager),
+    db: Session = Depends(get_db),
+):
+    topic_name = payload.topic.strip()
+    existing = db.query(MaterialityTopic).filter(func.lower(MaterialityTopic.topic) == topic_name.lower()).first()
+    if existing:
+        raise HTTPException(status_code=409, detail='This materiality topic already exists')
+    values = payload.model_dump()
+    values['topic'] = topic_name
+    item = MaterialityTopic(**values)
+    db.add(item)
+    log_audit_event(db, 'materiality_topic_created', manager, metadata={'topic': topic_name})
+    db.commit()
+    db.refresh(item)
+    return _serialize_materiality_topic(item)
+
+
+@app.patch('/materiality/topics/{topic_id}')
+def update_materiality_topic(
+    topic_id: int,
+    payload: MaterialityTopicRequest,
+    manager: User = Depends(require_manager),
+    db: Session = Depends(get_db),
+):
+    item = db.query(MaterialityTopic).filter(MaterialityTopic.id == topic_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail='Materiality topic not found')
+    for key, value in payload.model_dump().items():
+        setattr(item, key, value.strip() if isinstance(value, str) else value)
+    item.updated_at = datetime.utcnow()
+    log_audit_event(db, 'materiality_topic_updated', manager, metadata={'topic_id': item.id})
+    db.commit()
+    db.refresh(item)
+    return _serialize_materiality_topic(item)
 
 
 def _validate_cron_secret(secret: str | None, x_cron_secret: str | None, authorization: str | None) -> None:

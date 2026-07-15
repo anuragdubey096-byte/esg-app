@@ -95,6 +95,32 @@ def run_self_test():
         check('framework mapping blocks company role', framework_forbidden.status_code == 403, framework_forbidden.text)
 
         stamp = int(time.time())
+        materiality_create = client.post('/materiality/topics', json={
+            'topic': f'Climate transition {stamp}',
+            'pillar': 'Environmental',
+            'impact_score': 4.8,
+            'financial_score': 4.5,
+            'stakeholder_score': 4.2,
+            'rationale': 'Material transition exposure.',
+            'owner': 'Sustainability Committee',
+            'status': 'action required',
+        }, headers=manager_headers)
+        materiality_list = client.get('/materiality/topics', headers=investor_headers)
+        materiality_payload = materiality_list.json() if materiality_list.status_code == 200 else {}
+        check(
+            'materiality assessment creates and prioritises double-materiality topics',
+            materiality_create.status_code == 200
+            and materiality_create.json().get('quadrant') == 'Material priority'
+            and materiality_list.status_code == 200
+            and materiality_payload.get('priority_topics', 0) >= 1,
+            materiality_create.text,
+        )
+        materiality_forbidden = client.post('/materiality/topics', json={
+            'topic': f'Blocked topic {stamp}', 'pillar': 'Social', 'impact_score': 3,
+            'financial_score': 3, 'stakeholder_score': 3, 'owner': 'Investor',
+        }, headers=investor_headers)
+        check('investor cannot change materiality assessment', materiality_forbidden.status_code == 403, materiality_forbidden.text)
+
         existing_cycles_response = client.get('/cycles', headers=manager_headers)
         existing_cycle_years = {
             int(item.get('cycle_year')) for item in existing_cycles_response.json()

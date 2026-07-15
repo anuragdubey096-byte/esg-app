@@ -467,6 +467,17 @@ class AssuranceDecisionRequest(BaseModel):
     conclusion: str = Field(default='', max_length=4000)
 
 
+class MaterialityTopicRequest(BaseModel):
+    topic: str = Field(min_length=2, max_length=160)
+    pillar: Literal['Environmental', 'Social', 'Governance']
+    impact_score: float = Field(ge=1, le=5)
+    financial_score: float = Field(ge=1, le=5)
+    stakeholder_score: float = Field(ge=1, le=5)
+    rationale: str = Field(default='', max_length=4000)
+    owner: str = Field(min_length=2, max_length=160)
+    status: Literal['assessed', 'monitoring', 'action required'] = 'assessed'
+
+
 class SubmissionUnlockRequest(BaseModel):
     reason: str
     expiry_hours: int = Field(default=24, ge=1, le=720)
