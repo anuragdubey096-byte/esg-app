@@ -59,7 +59,7 @@ Do not begin v1.3.0 schema work until automated CI and repeatable database migra
 
 #### GL-100: GitHub Actions CI
 
-**Status:** In progress - workflow implemented locally; the first GitHub-hosted run and branch protection are pending.
+**Status:** In progress - workflow implemented and the first GitHub-hosted run passed; branch protection is pending.
 
 Implement workflows for pull requests and pushes to `main`:
 
