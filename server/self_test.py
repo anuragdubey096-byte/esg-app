@@ -65,6 +65,23 @@ def run_self_test():
         response = client.get('/analytics/portfolio')
         check('GET /analytics/portfolio', response.status_code == 200 and 'portfolio_esg_score' in response.json(), response.text)
 
+        data_quality = client.get('/analytics/data-quality', headers=manager_headers)
+        data_quality_payload = data_quality.json() if data_quality.status_code == 200 else {}
+        check(
+            'GET /analytics/data-quality manager dashboard',
+            data_quality.status_code == 200
+            and isinstance(data_quality_payload.get('rows'), list)
+            and 'quality_index' in data_quality_payload
+            and 'evidence_coverage' in data_quality_payload,
+            data_quality.text,
+        )
+        data_quality_forbidden = client.get('/analytics/data-quality', headers=role_headers['company'])
+        check(
+            'GET /analytics/data-quality blocks company role',
+            data_quality_forbidden.status_code == 403,
+            data_quality_forbidden.text,
+        )
+
         stamp = int(time.time())
         existing_cycles_response = client.get('/cycles', headers=manager_headers)
         existing_cycle_years = {

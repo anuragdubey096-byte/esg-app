@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import {
   Bar,
@@ -20,6 +20,7 @@ import ExecutivePageHeader from '../components/ExecutivePageHeader'
 import KpiCard from '../components/KpiCard'
 import SectionCard from '../components/SectionCard'
 import useDashboardData, { calculateESGPillarScores, getLatestSubmission, getSortedSubmissions, getSubmissionReportingYear, parseSubmissionPayload } from '../hooks/useDashboardData'
+import { API_BASE_URL } from '../lib/api'
 
 const analyticsTabs = ['Environmental', 'Social', 'Governance', 'Data Quality', 'Benchmarking']
 
@@ -57,6 +58,32 @@ export default function AnalyticsPage() {
   const [selectedSector, setSelectedSector] = useState('All')
   const [selectedCompany, setSelectedCompany] = useState('All')
   const [selectedCycle, setSelectedCycle] = useState('Latest')
+  const [qualityData, setQualityData] = useState(null)
+  const [qualityLoading, setQualityLoading] = useState(true)
+  const [qualityError, setQualityError] = useState('')
+
+  useEffect(() => {
+    const controller = new AbortController()
+    const query = selectedCycle === 'Latest' ? '' : `?cycle_year=${encodeURIComponent(selectedCycle)}`
+    setQualityLoading(true)
+    setQualityError('')
+    fetch(`${API_BASE_URL}/analytics/data-quality${query}`, { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({}))
+          throw new Error(payload.detail || 'Unable to load data-quality analytics.')
+        }
+        return response.json()
+      })
+      .then(setQualityData)
+      .catch((requestError) => {
+        if (requestError.name !== 'AbortError') setQualityError(requestError.message)
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setQualityLoading(false)
+      })
+    return () => controller.abort()
+  }, [selectedCycle])
 
   const sectorOptions = useMemo(() => (
     ['All', ...new Set(companies.map((company) => company.sector || 'Unassigned'))]
@@ -289,6 +316,48 @@ export default function AnalyticsPage() {
       avgActualReduction: Number(toAverage(benchmarkRows.reduce((sum, row) => sum + row.actualReduction, 0), benchmarkRows.length).toFixed(1)),
     }
   }, [scopedCompanies, selectedCycle])
+
+  const qualityScope = useMemo(() => {
+    const rows = (qualityData?.rows || []).filter((row) => {
+      const sectorMatch = selectedSector === 'All' || row.sector === selectedSector
+      const companyMatch = selectedCompany === 'All' || String(row.company_id) === selectedCompany
+      return sectorMatch && companyMatch
+    })
+    const reportingRows = rows.filter((row) => row.submission_id)
+    const average = (key) => reportingRows.length
+      ? reportingRows.reduce((sum, row) => sum + Number(row[key] || 0), 0) / reportingRows.length
+      : 0
+    const measured = rows.reduce((sum, row) => sum + Number(row.measured_values || 0), 0)
+    const estimated = rows.reduce((sum, row) => sum + Number(row.estimated_values || 0), 0)
+    const confidenceTotal = rows.reduce((sum, row) => sum + Number(row.confidence_values || 0), 0)
+    const severityNames = ['Critical', 'High', 'Medium', 'Low']
+    return {
+      rows,
+      reportingCompanies: reportingRows.length,
+      qualityIndex: average('quality_score'),
+      completeness: average('completeness'),
+      measuredConfidence: average('measured_confidence'),
+      evidenceCoverage: average('evidence_coverage'),
+      openFlags: rows.reduce((sum, row) => sum + Number(row.validation_flags || 0), 0),
+      atRiskCompanies: rows.filter((row) => row.priority === 'At risk').length,
+      confidenceMix: [
+        { name: 'Measured', value: measured, color: '#0f8f88' },
+        { name: 'Estimated', value: estimated, color: '#f59e0b' },
+        { name: 'Other / unavailable', value: Math.max(0, confidenceTotal - measured - estimated), color: '#94a3b8' },
+      ],
+      severityMix: severityNames.map((name) => ({
+        name,
+        value: rows.reduce((sum, row) => sum + Number(row.severity_counts?.[name] || 0), 0),
+        color: { Critical: '#991b1b', High: '#dc2626', Medium: '#f59e0b', Low: '#2563eb' }[name],
+      })),
+      issueCategories: [
+        { name: 'Missing required', value: rows.reduce((sum, row) => sum + Number(row.missing_required || 0), 0) },
+        { name: 'Estimated data', value: estimated },
+        { name: 'Validation flags', value: rows.reduce((sum, row) => sum + Number(row.validation_flags || 0), 0) },
+        { name: 'Missing evidence', value: rows.reduce((sum, row) => sum + Number(row.missing_evidence || 0), 0) },
+      ],
+    }
+  }, [qualityData, selectedCompany, selectedSector])
 
   const exportAnalyticsCsv = () => {
     const columns = ['company', 'sector', 'compositeScore', 'scoreChange', 'reductionTarget', 'actualReduction', 'dataIssues']
@@ -557,13 +626,25 @@ export default function AnalyticsPage() {
 
         {activeTab === 'Data Quality' ? (
           <section className="space-y-4">
-            <div className="two-col-grid">
+            {qualityLoading ? <p className="action-message">Calculating cycle-specific quality indicators...</p> : null}
+            {qualityError ? <p className="action-message" role="alert">{qualityError}</p> : null}
+
+            <section className="executive-kpi-grid" aria-label="Data quality indicators">
+              <KpiCard title="Quality Index" value={`${qualityScope.qualityIndex.toFixed(1)}/100`} trendLabel="weighted quality score" icon="analytics" />
+              <KpiCard title="Completeness" value={`${qualityScope.completeness.toFixed(1)}%`} trendLabel="required metrics reported" icon="submissions" />
+              <KpiCard title="Measured Confidence" value={`${qualityScope.measuredConfidence.toFixed(1)}%`} trendLabel="confidence-tagged values" icon="review" />
+              <KpiCard title="Evidence Coverage" value={`${qualityScope.evidenceCoverage.toFixed(1)}%`} trendLabel="required evidence attached" icon="reports" />
+              <KpiCard title="Open Validation Flags" value={qualityScope.openFlags.toLocaleString()} trendLabel="selected reporting scope" icon="risks" tone="amber" />
+              <KpiCard title="At-risk Companies" value={qualityScope.atRiskCompanies.toLocaleString()} trendLabel={`${qualityScope.reportingCompanies}/${qualityScope.rows.length} reporting`} icon="anomaly" tone="rose" />
+            </section>
+
+            <div className="three-col-grid">
               <div className="chart-wrap">
-                <h4>Measured versus estimated evidence</h4>
-                <ResponsiveContainer width="100%" height={300}>
+                <h4>Confidence classification</h4>
+                <ResponsiveContainer width="100%" height={280}>
                   <PieChart>
-                    <Pie data={analytics.confidenceMix} dataKey="value" nameKey="name" innerRadius={68} outerRadius={112}>
-                      {analytics.confidenceMix.map((entry) => (
+                    <Pie data={qualityScope.confidenceMix} dataKey="value" nameKey="name" innerRadius={58} outerRadius={96}>
+                      {qualityScope.confidenceMix.map((entry) => (
                         <Cell key={entry.name} fill={entry.color} />
                       ))}
                     </Pie>
@@ -574,32 +655,55 @@ export default function AnalyticsPage() {
               </div>
 
               <div className="chart-wrap">
-                <h4>Companies with the most data issues</h4>
-                <ResponsiveContainer width="100%" height={300}>
-                  <BarChart data={analytics.dataQualityRows.slice(0, 10)}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                    <XAxis dataKey="company" tick={{ fontSize: 11 }} angle={-18} textAnchor="end" height={70} />
-                    <YAxis allowDecimals={false} />
+                <h4>Validation severity</h4>
+                <ResponsiveContainer width="100%" height={280}>
+                  <PieChart>
+                    <Pie data={qualityScope.severityMix} dataKey="value" nameKey="name" innerRadius={58} outerRadius={96}>
+                      {qualityScope.severityMix.map((entry) => (
+                        <Cell key={entry.name} fill={entry.color} />
+                      ))}
+                    </Pie>
                     <Tooltip />
                     <Legend />
-                    <Bar dataKey="missingValues" stackId="issues" fill="#dc4c64" name="Missing" />
-                    <Bar dataKey="estimatedValues" stackId="issues" fill="#f59e0b" name="Estimated" />
-                    <Bar dataKey="validationFlags" stackId="issues" fill="#7c3aed" name="Validation flags" />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+
+              <div className="chart-wrap">
+                <h4>Issue composition</h4>
+                <ResponsiveContainer width="100%" height={280}>
+                  <BarChart data={qualityScope.issueCategories} layout="vertical" margin={{ left: 24 }}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                    <XAxis type="number" allowDecimals={false} />
+                    <YAxis dataKey="name" type="category" width={105} tick={{ fontSize: 11 }} />
+                    <Tooltip />
+                    <Bar dataKey="value" fill="#2563eb" name="Issues" radius={[0, 8, 8, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
+            </div>
+
+            <div className="analytics-insight-strip">
+              <div>
+                <span>Remediation priority</span>
+                <strong>{qualityScope.atRiskCompanies} companies require data-quality intervention</strong>
+              </div>
+              <p>The quality index weights completeness 40%, measured confidence 30%, validation health 20%, and required evidence coverage 10%.</p>
             </div>
 
             <DataTable
               columns={[
                 { key: 'company', label: 'Company', sortable: true },
                 { key: 'sector', label: 'Sector', sortable: true },
-                { key: 'missingValues', label: 'Missing', sortable: true },
-                { key: 'estimatedValues', label: 'Estimated', sortable: true },
-                { key: 'validationFlags', label: 'Validation flags', sortable: true },
-                { key: 'dataIssues', label: 'Total issues', sortable: true },
+                { key: 'quality_score', label: 'Quality index', sortable: true, render: (row) => `${row.quality_score.toFixed(1)}/100` },
+                { key: 'completeness', label: 'Complete', sortable: true, render: (row) => `${row.completeness.toFixed(1)}%` },
+                { key: 'measured_confidence', label: 'Measured', sortable: true, render: (row) => `${row.measured_confidence.toFixed(1)}%` },
+                { key: 'evidence_coverage', label: 'Evidence', sortable: true, render: (row) => `${row.evidence_coverage.toFixed(1)}%` },
+                { key: 'validation_flags', label: 'Flags', sortable: true },
+                { key: 'priority', label: 'Priority', sortable: true, render: (row) => <span className={`quality-priority quality-priority-${row.priority.toLowerCase().replace(/\s+/g, '-')}`}>{row.priority}</span> },
+                { key: 'top_issue', label: 'Primary issue' },
               ]}
-              rows={analytics.dataQualityRows}
+              rows={qualityScope.rows}
               pageSize={10}
               emptyMessage="No company data-quality records are available."
             />

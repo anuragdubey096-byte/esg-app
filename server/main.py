@@ -4308,6 +4308,192 @@ def require_manager_or_investor(role: str = Depends(get_user_role)):
         raise HTTPException(status_code=403, detail='Access is restricted to managers and investors')
 
 
+DATA_QUALITY_REQUIRED_FIELDS = [
+    'scope_1_emissions',
+    'scope_2_location_based',
+    'scope_3_emissions',
+    'total_ghg_emissions',
+    'total_energy_consumption',
+    'total_water_withdrawal',
+    'total_waste_generated',
+    'female_representation_percent',
+    'trifr',
+    'independent_board_members_percent',
+]
+
+
+def _data_quality_submission(company: Company, cycle_year: int | None) -> tuple[Submission | None, dict, int | None]:
+    candidates = []
+    for submission in company.submissions or []:
+        payload = parse_submission(submission)
+        year = get_submission_reporting_year(submission, payload)
+        if cycle_year is None or year == cycle_year:
+            candidates.append((submission, payload, year))
+    if not candidates:
+        return None, {}, cycle_year
+    return max(candidates, key=lambda item: ((item[2] or 0), item[0].id))
+
+
+def build_data_quality_dashboard(db: Session, cycle_year: int | None = None) -> dict[str, Any]:
+    companies = (
+        db.query(Company)
+        .options(selectinload(Company.submissions), selectinload(Company.validation_flags))
+        .order_by(Company.name.asc())
+        .all()
+    )
+    rows = []
+    confidence_mix = Counter({'Measured': 0, 'Estimated': 0, 'Not available': 0, 'Other': 0})
+    severity_mix = Counter({'Critical': 0, 'High': 0, 'Medium': 0, 'Low': 0})
+    issue_categories = Counter({'Missing required': 0, 'Estimated data': 0, 'Validation flags': 0, 'Missing evidence': 0})
+    evidence_by_submission: dict[int, list[tuple[str, str]]] = {}
+    evidence_rows = db.query(
+        SubmissionEvidence.submission_id,
+        SubmissionEvidence.metric_key,
+        SubmissionEvidence.status,
+    ).filter(SubmissionEvidence.submission_id.is_not(None)).all()
+    for submission_id, metric_key, status in evidence_rows:
+        evidence_by_submission.setdefault(int(submission_id), []).append((metric_key, status))
+
+    for company in companies:
+        submission, payload, reporting_year = _data_quality_submission(company, cycle_year)
+        if not submission:
+            rows.append({
+                'company_id': company.id,
+                'company': company.name,
+                'sector': company.sector or 'Unassigned',
+                'reporting_year': cycle_year,
+                'submission_id': None,
+                'quality_score': 0.0,
+                'completeness': 0.0,
+                'measured_confidence': 0.0,
+                'evidence_coverage': 0.0,
+                'validation_score': 0.0,
+                'missing_required': len(DATA_QUALITY_REQUIRED_FIELDS),
+                'estimated_values': 0,
+                'measured_values': 0,
+                'confidence_values': 0,
+                'validation_flags': 0,
+                'severity_counts': {'Critical': 0, 'High': 0, 'Medium': 0, 'Low': 0},
+                'missing_evidence': len(REQUIRED_EVIDENCE_METRICS),
+                'priority': 'At risk',
+                'top_issue': 'No submission for the selected cycle',
+            })
+            issue_categories['Missing required'] += len(DATA_QUALITY_REQUIRED_FIELDS)
+            issue_categories['Missing evidence'] += len(REQUIRED_EVIDENCE_METRICS)
+            continue
+
+        missing_fields = [field for field in DATA_QUALITY_REQUIRED_FIELDS if payload.get(field) in (None, '')]
+        completeness = ((len(DATA_QUALITY_REQUIRED_FIELDS) - len(missing_fields)) / len(DATA_QUALITY_REQUIRED_FIELDS)) * 100
+        confidence_values = [
+            str(value or '').strip().lower()
+            for key, value in payload.items()
+            if key.endswith('_confidence')
+        ]
+        for value in confidence_values:
+            if value == 'measured':
+                confidence_mix['Measured'] += 1
+            elif value == 'estimated':
+                confidence_mix['Estimated'] += 1
+            elif value in {'not available', 'n/a', 'na', ''}:
+                confidence_mix['Not available'] += 1
+            else:
+                confidence_mix['Other'] += 1
+        measured_count = sum(1 for value in confidence_values if value == 'measured')
+        estimated_count = sum(1 for value in confidence_values if value == 'estimated')
+        measured_confidence = (measured_count / len(confidence_values)) * 100 if confidence_values else 0.0
+
+        flags = [
+            flag for flag in company.validation_flags or []
+            if reporting_year is None or int(flag.reporting_year or 0) == int(reporting_year)
+        ]
+        severity_penalty = 0
+        company_severity = Counter({'Critical': 0, 'High': 0, 'Medium': 0, 'Low': 0})
+        for flag in flags:
+            severity = str(flag.severity or 'Low').strip().title()
+            if severity not in severity_mix:
+                severity = 'Low'
+            severity_mix[severity] += 1
+            company_severity[severity] += 1
+            severity_penalty += {'Critical': 35, 'High': 22, 'Medium': 12, 'Low': 5}[severity]
+        validation_score = clamp(100 - severity_penalty)
+
+        accepted_evidence_metrics = {
+            metric_key for metric_key, status in evidence_by_submission.get(submission.id, [])
+            if str(status or '').strip().lower() in {'uploaded', 'verified', 'accepted'}
+        }
+        missing_evidence = sorted(REQUIRED_EVIDENCE_METRICS - accepted_evidence_metrics)
+        evidence_coverage = (
+            ((len(REQUIRED_EVIDENCE_METRICS) - len(missing_evidence)) / len(REQUIRED_EVIDENCE_METRICS)) * 100
+            if REQUIRED_EVIDENCE_METRICS else 100.0
+        )
+        quality_score = clamp(
+            (0.40 * completeness)
+            + (0.30 * measured_confidence)
+            + (0.20 * validation_score)
+            + (0.10 * evidence_coverage)
+        )
+        priority = 'Good' if quality_score >= 85 else 'Watch' if quality_score >= 70 else 'At risk'
+        top_issue = (
+            flags[0].issue_description if flags
+            else f'{len(missing_fields)} required metrics missing' if missing_fields
+            else f'{estimated_count} estimated confidence values' if estimated_count
+            else 'Required evidence is missing' if missing_evidence
+            else 'No material data-quality issues'
+        )
+        rows.append({
+            'company_id': company.id,
+            'company': company.name,
+            'sector': company.sector or 'Unassigned',
+            'reporting_year': reporting_year,
+            'submission_id': submission.id,
+            'quality_score': round(quality_score, 1),
+            'completeness': round(completeness, 1),
+            'measured_confidence': round(measured_confidence, 1),
+            'evidence_coverage': round(evidence_coverage, 1),
+            'validation_score': round(validation_score, 1),
+            'missing_required': len(missing_fields),
+            'estimated_values': estimated_count,
+            'measured_values': measured_count,
+            'confidence_values': len(confidence_values),
+            'validation_flags': len(flags),
+            'severity_counts': dict(company_severity),
+            'missing_evidence': len(missing_evidence),
+            'priority': priority,
+            'top_issue': top_issue,
+        })
+        issue_categories['Missing required'] += len(missing_fields)
+        issue_categories['Estimated data'] += estimated_count
+        issue_categories['Validation flags'] += len(flags)
+        issue_categories['Missing evidence'] += len(missing_evidence)
+
+    reporting_rows = [row for row in rows if row['submission_id'] is not None]
+    divisor = max(len(reporting_rows), 1)
+    return {
+        'cycle_year': cycle_year,
+        'generated_at': _utc_now_iso(),
+        'total_companies': len(rows),
+        'reporting_companies': len(reporting_rows),
+        'quality_index': round(sum(row['quality_score'] for row in reporting_rows) / divisor, 1),
+        'completeness': round(sum(row['completeness'] for row in reporting_rows) / divisor, 1),
+        'measured_confidence': round(sum(row['measured_confidence'] for row in reporting_rows) / divisor, 1),
+        'evidence_coverage': round(sum(row['evidence_coverage'] for row in reporting_rows) / divisor, 1),
+        'open_flags': sum(row['validation_flags'] for row in rows),
+        'at_risk_companies': sum(1 for row in rows if row['priority'] == 'At risk'),
+        'confidence_mix': [{'name': key, 'value': value} for key, value in confidence_mix.items()],
+        'severity_mix': [{'name': key, 'value': value} for key, value in severity_mix.items()],
+        'issue_categories': [{'name': key, 'value': value} for key, value in issue_categories.items()],
+        'rows': sorted(rows, key=lambda row: (row['quality_score'], row['company'])),
+    }
+
+
+@app.get('/analytics/data-quality', dependencies=[Depends(require_manager_or_investor)])
+def data_quality_dashboard(
+    cycle_year: int | None = Query(default=None, ge=MIN_REPORTING_CYCLE_YEAR),
+    db: Session = Depends(get_db),
+):
+    return build_data_quality_dashboard(db, cycle_year=cycle_year)
+
+
 def _validate_cron_secret(secret: str | None, x_cron_secret: str | None, authorization: str | None) -> None:
     configured_secret = str(os.getenv('CRON_SECRET') or '').strip()
     if not configured_secret:
