@@ -1,6 +1,6 @@
 # ESG Caveman Mode Restoration Checklist
 
-Last updated: 2026-04-30
+Last updated: 2026-07-15 for v1.1.0
 
 ## Phase 1 - Core Platform and Access
 
@@ -115,7 +115,8 @@ Frontend wiring:
 - [x] Dedicated anomaly intelligence page wired (`/anomaly-intel`)
 - [x] Cron trigger UX parity (secret + dry-run controls in newsletter ops console)
 
-## Next Restoration Steps
+## Post-v1.1.0 Hardening
 
-1. Run full regression against `self_test_full_latest` contract to confirm edge-case behavior parity.
-2. Optional hardening: add automated tests for websocket/collaboration and narrative DB lifecycle.
+1. Add CI enforcement for the backend self-test, frontend tests, and frontend build.
+2. Add automated tests for websocket/collaboration and narrative database lifecycle.
+3. Add browser-level end-to-end coverage for the critical reporting workflow.

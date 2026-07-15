@@ -1,86 +1,110 @@
-# ESG Data Collection App
+# GreenLedger ESG Platform
 
-A simple starter project for an ESG data collection web app.
+**Current release: v1.1.0**
 
-- `client/` contains the React frontend.
-- `server/` contains the FastAPI backend.
-- The backend uses Postgres through `DATABASE_URL` in both local development and production.
+GreenLedger is a role-aware ESG data collection, review, analytics, and reporting platform. It gives portfolio managers, investors, and portfolio companies one workflow for collecting evidence-backed ESG data and turning it into decisions and reports.
 
-## Getting started
+Production: [esg-app-two.vercel.app](https://esg-app-two.vercel.app/)
 
-### Frontend
-1. Navigate to the client directory: `cd client`
-2. Run `npm install`.
-3. Run `npm run dev`.
+## What the platform does
+
+- Runs configurable annual ESG reporting cycles.
+- Collects company metrics, confidence labels, comments, and evidence.
+- Validates submissions and records manager review decisions.
+- Tracks corrections, action plans, ESG targets, and assurance.
+- Presents role-specific portfolio and company analytics.
+- Supports materiality, scenario analysis, anomalies, and external context.
+- Generates narratives, newsletters, CSV exports, and formal PDF reports.
+- Persists generated exports in private Vercel Blob storage in production.
+
+## User roles
+
+| Role | Primary purpose |
+| --- | --- |
+| Manager | Configure cycles, review submissions, validate data, manage portfolio actions, and generate reports. |
+| Investor | Monitor portfolio performance, analytics, LP insights, strategy, narratives, and reports. |
+| Company | Enter and submit ESG data, attach evidence, track company analytics, targets, and action plans. |
+
+See [Product and User Guide](docs/PRODUCT_AND_USER_GUIDE.md) for the complete role matrix and an explanation script suitable for a demonstration.
+
+## Technology
+
+- React 18 and Vite frontend
+- FastAPI and SQLAlchemy backend
+- Postgres for durable production data; SQLite fallback for local development
+- Vercel for frontend and Python function hosting
+- Private Vercel Blob for generated exports
+- OpenAI for configured AI narratives and agent features, with deterministic fallbacks where supported
+
+See [Technical and Operations Guide](docs/TECHNICAL_AND_OPERATIONS_GUIDE.md) for architecture, setup, testing, deployment, and troubleshooting.
+
+## Local setup
 
 ### Backend
-1. Navigate to the server directory: `cd server`
-2. Create and activate a virtual environment (optional but recommended).
-   - On Windows: `python -m venv venv` followed by `venv\Scripts\activate`
-   - On Mac/Linux: `python3 -m venv venv` followed by `source venv/bin/activate`
-3. Run `pip install -r requirements.txt`.
-4. Run `uvicorn main:app --reload`.
-
-Local development reads `DATABASE_URL` from [server/.env.local](C:/Users/hp/esg-app/server/.env.local), so the app connects to Neon by default.
-
-### Database Reset
-Run `python server/reset_db.py` from the project root to rebuild the local database with clean sample data.
-
-### Self-Test
-Run `python server/self_test.py` from the project root to verify:
-- sample logins
-- admin, investor, client, and portfolio dashboards
-- company creation
-- cycle creation
-- ESG submission storage
-- submission status updates
-
-### CSV Import
-Run `python server/import_csv.py <folder-with-csv-files>` from the project root.
-If your fixture CSVs are in `server/fixtures`, you can simply run `python server/import_csv.py` and it will use that folder automatically.
-
-Expected files:
-- `cycles.csv`
-- `review_actions.csv`
-- `validation_flags.csv`
-- `companies.csv`
-- `esg_submissions_previous_year.csv`
-- `esg_submissions_current_year.csv`
-
-Default fixture location:
-- `server/fixtures`
-
-If you are loading synthetic data into an existing database, run `python server/reset_db.py` so the new schema is created.
-
-The app starts with a simple login page that will later grow into the full ESG workflow.
-
-### Vercel Deployment
-This repo is Vercel-ready as a single project from the repository root.
-
-Root project env vars:
-- `DATABASE_URL`: Postgres connection string.
-- `BLOB_READ_WRITE_TOKEN`: Blob storage token for report and narrative exports.
-- `FRONTEND_ORIGIN`: your Vercel URL for CORS.
-- `ANTHROPIC_API_KEY`: required for Claude narrative generation.
-- `APP_ENV=production`: marks the deployment as production.
-- `SEED_SAMPLE_DATA=false`: prevents demo users and submissions from being inserted into a durable production database. If omitted, sample data is still available for local or ephemeral demo databases.
-
-Build settings:
-- Root `vercel.json` builds the React client from `client/` and serves it from `client/dist`.
-- The Python backend is exposed through the root `api/` directory.
-
-1. Set the Vercel project root directory to the repository root.
-2. Add the env vars above in the Vercel project settings.
-3. Deploy. The React app will be built from `client/`, and the FastAPI app will run from `api/index.py`.
-
-Alternative:
-- If you prefer separate deployments, you can still deploy `client/` as its own Vercel project and point it at a separately hosted backend using `BACKEND_URL`.
-
-### Legacy Data Migration
-If you already have older local data and want to move it into Postgres, run:
 
 ```bash
-python server/migrate_to_postgres.py --target "postgresql+psycopg2://..."
+cd server
+python -m venv .venv
+# Windows: .venv\Scripts\activate
+# macOS/Linux: source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn main:app --reload
 ```
 
-The script recreates the target schema and copies every ORM table in dependency order, preserving primary keys so relationships stay intact.
+The backend runs at `http://127.0.0.1:8000`.
+
+### Frontend
+
+In a second terminal:
+
+```bash
+cd client
+npm ci
+npm run dev
+```
+
+The frontend runs at `http://127.0.0.1:5173` and proxies `/api` requests to the local backend.
+
+## Environment variables
+
+| Variable | Purpose | Required in production |
+| --- | --- | --- |
+| `DATABASE_URL` | Durable Postgres connection string | Yes |
+| `BLOB_READ_WRITE_TOKEN` | Private Vercel Blob access for generated exports | Yes for durable exports |
+| `OPENAI_API_KEY` | AI narratives and agent features | Yes for AI output |
+| `OPENAI_MODEL` | Narrative model override; defaults to `gpt-4o-mini` | No |
+| `FRONTEND_ORIGIN` | Allowed production frontend origin | Recommended |
+| `APP_ENV=production` | Marks the runtime as production | Recommended |
+| `SEED_SAMPLE_DATA=false` | Prevents demo data seeding into a durable production database | Recommended |
+
+Never commit environment files or secret values.
+
+## Verification
+
+```bash
+# Backend regression suite, from repository root
+python server/self_test.py
+
+# Frontend tests and build
+cd client
+npm test
+npm run build
+```
+
+The v1.1.0 frontend suite covers role routing and company analytics reporting-year selection.
+
+## Deployment
+
+The repository is deployed as one Vercel project from its root. `vercel.json` installs and builds the client, serves `client/dist`, mounts the FastAPI wrapper from `api/index.py`, and preserves SPA routing.
+
+Use [Vercel Production Checklist](VERCEL_PRODUCTION_CHECKLIST.md) before and after a production release.
+
+## Release documentation
+
+- [Changelog](CHANGELOG.md)
+- [Product and User Guide](docs/PRODUCT_AND_USER_GUIDE.md)
+- [Technical and Operations Guide](docs/TECHNICAL_AND_OPERATIONS_GUIDE.md)
+- [Restoration Checklist](RESTORATION_CHECKLIST.md)
+- [Vercel Production Checklist](VERCEL_PRODUCTION_CHECKLIST.md)
+
+The canonical release number is stored in [`VERSION`](VERSION).

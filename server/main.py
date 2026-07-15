@@ -113,6 +113,7 @@ from schemas import (
 )
 from new_esg_module import router as new_esg_router
 from storage import persist_export, read_export, storage_health
+from version import APP_VERSION
 try:
     from openai import OpenAI
 except ImportError:  # pragma: no cover - optional dependency at runtime
@@ -184,7 +185,7 @@ NEWS_FEED_CACHE: dict[str, Any] = {
     'fallback_used': True,
 }
 
-app = FastAPI(title='ESG Data App')
+app = FastAPI(title='GreenLedger ESG API', version=APP_VERSION)
 app.include_router(new_esg_router, prefix="/api/v2")
 try:
     app.include_router(__import__('routers.agent', fromlist=['router']).router)
@@ -5915,6 +5916,7 @@ def _can_access_narrative_record(db: Session, record: NarrativeRecord, role: str
 def health():
     return {
         'status': 'ok',
+        'version': APP_VERSION,
         'ready': True,
         'environment': 'vercel' if os.getenv('VERCEL') else 'local',
         'timestamp': _utc_now_iso(),

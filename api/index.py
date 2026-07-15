@@ -12,7 +12,9 @@ SERVER_DIR = Path(__file__).resolve().parents[1] / 'server'
 if str(SERVER_DIR) not in sys.path:
     sys.path.insert(0, str(SERVER_DIR))
 
-app = FastAPI(title='ESG API Bootstrap')
+from version import APP_VERSION  # noqa: E402
+
+app = FastAPI(title='GreenLedger ESG API Bootstrap', version=APP_VERSION)
 
 
 def _fallback_narrative(audience: str, tone: str) -> dict:
@@ -61,7 +63,7 @@ try:
         main_startup_event()
     except Exception as startup_error:
         print(f'[startup] database bootstrap failed: {startup_error}', file=sys.stderr)
-    wrapper_app = FastAPI(title='ESG API Bootstrap')
+    wrapper_app = FastAPI(title='GreenLedger ESG API Bootstrap', version=APP_VERSION)
     # Support both `/api/*` (production frontend) and root paths (local tooling)
     # by mounting the backend app under both prefixes.
     wrapper_app.mount('/api', main_app)
@@ -70,13 +72,14 @@ try:
 except Exception:
     # Keep API alive with critical fallback endpoints even if full app bootstrap fails.
     BOOTSTRAP_ERROR = str(sys.exc_info()[1])
-    app = FastAPI(title='ESG API Fallback')
+    app = FastAPI(title='GreenLedger ESG API Fallback', version=APP_VERSION)
 
     @app.get('/api/healthz')
     @app.get('/healthz')
     def healthz():
         return {
             'status': 'degraded',
+            'version': APP_VERSION,
             'mode': 'fallback',
             'vercel': bool(os.getenv('VERCEL')),
             'bootstrap_error': BOOTSTRAP_ERROR,

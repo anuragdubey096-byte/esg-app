@@ -1,5 +1,7 @@
 # Vercel Production Checklist
 
+Applies to GreenLedger v1.1.0.
+
 Use this checklist before and during production deploys of the ESG app.
 
 ## 1. Required environment variables
@@ -11,8 +13,8 @@ Set these in the Vercel project settings:
   - Do not use SQLite on Vercel
 - `BLOB_READ_WRITE_TOKEN`
   - Required for report and narrative PDF exports
-- `ANTHROPIC_API_KEY`
-  - Required for AI ESG Narrative Summary generation
+- `OPENAI_API_KEY`
+  - Required for OpenAI-backed narratives and agent features
 - `FRONTEND_ORIGIN`
   - Exact public origin of the deployed app
   - Example: `https://your-app.vercel.app`
@@ -47,6 +49,8 @@ Only needed for split deployments or advanced setups:
 ## 5. Pre-deploy verification
 
 - Frontend build passes
+- Frontend tests pass
+- Backend self-test passes
 - Backend Python files compile
 - Narrative smoke test passes
 - Vercel config parses as valid JSON
@@ -56,6 +60,7 @@ Only needed for split deployments or advanced setups:
 Check these live after deployment:
 
 - Frontend home page loads
+- `/api/health` reports the intended release version and ready state
 - Login works for admin, LP, and company users
 - `/api` routes return JSON, not HTML
 - Review Hub narrative loads for approved submissions
@@ -67,7 +72,7 @@ Check these live after deployment:
 
 - Missing `DATABASE_URL`
 - Missing `BLOB_READ_WRITE_TOKEN`
-- Missing `ANTHROPIC_API_KEY`
+- Missing `OPENAI_API_KEY`
 - Wrong `FRONTEND_ORIGIN`
 - Accidentally deploying from `client/` when you meant to use the root project
 - Using SQLite in production
