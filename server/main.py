@@ -1825,29 +1825,42 @@ def import_submissions_csv(
     }
 
 
-@app.post('/companies', response_model=CompanyCreateResponse, dependencies=[Depends(require_manager)])
-def create_company(payload: CompanyCreateRequest, db: Session = Depends(get_db)):
-    existing_user = db.query(User).filter(User.email == payload.contact_email).first()
+@app.post('/companies', response_model=CompanyCreateResponse)
+def create_company(payload: CompanyCreateRequest, manager: User = Depends(require_manager), db: Session = Depends(get_db)):
+    normalized_email = payload.contact_email.strip().lower()
+    normalized_code = payload.code.strip().upper() if payload.code else None
+    existing_user = db.query(User).filter(func.lower(User.email) == normalized_email).first()
     if existing_user:
-        raise HTTPException(status_code=400, detail='A user with this contact email already exists')
+        raise HTTPException(status_code=409, detail='A user with this contact email already exists')
+    if db.query(Company).filter(func.lower(Company.name) == payload.name.strip().lower()).first():
+        raise HTTPException(status_code=409, detail='A company with this name already exists')
+    if normalized_code and db.query(Company).filter(func.lower(Company.code) == normalized_code.lower()).first():
+        raise HTTPException(status_code=409, detail='A company with this code already exists')
 
     portfolio_user = User(
-        name=payload.contact_name,
-        email=payload.contact_email,
+        name=payload.contact_name.strip(),
+        email=normalized_email,
         password=hash_password(payload.temporary_password),
         role=UserRole.COMPANY,
     )
     db.add(portfolio_user)
-    db.commit()
-    db.refresh(portfolio_user)
+    db.flush()
 
     company = Company(
-        name=payload.name,
-        sector=payload.sector,
+        code=normalized_code,
+        name=payload.name.strip(),
+        sector=payload.sector.strip(),
         user_id=portfolio_user.id,
+        geography=(payload.geography or '').strip() or None,
+        asset_class=(payload.asset_class or '').strip() or None,
         current_status=payload.current_status,
     )
     db.add(company)
+    db.flush()
+    log_audit_event(db, 'company_onboarded', manager, company_id=company.id, metadata={
+        'company_code': company.code, 'contact_email': portfolio_user.email,
+        'status': company.current_status,
+    })
     db.commit()
     db.refresh(company)
 
@@ -1855,6 +1868,10 @@ def create_company(payload: CompanyCreateRequest, db: Session = Depends(get_db))
         id=company.id,
         name=company.name,
         sector=company.sector,
+        code=company.code,
+        geography=company.geography,
+        asset_class=company.asset_class,
+        current_status=company.current_status or 'onboarding',
         portfolio_user_email=portfolio_user.email,
         portfolio_user_password=payload.temporary_password,
     )

@@ -230,13 +230,25 @@ def run_self_test():
         company_email = f'qa_{stamp}@example.com'
         company_name = f'QA Company {stamp}'
         create_company = client.post('/companies', json={
+            'code': f'QA-{stamp}',
             'name': company_name,
             'sector': 'Testing',
+            'geography': 'APAC',
+            'asset_class': 'Private Equity',
             'contact_name': 'QA User',
             'contact_email': company_email,
         }, headers=manager_headers)
         created_company = create_company.json() if create_company.status_code == 200 else {}
-        check('POST /companies manager', create_company.status_code == 200 and created_company.get('portfolio_user_email') == company_email, create_company.text)
+        check(
+            'POST /companies atomically onboards company and contributor',
+            create_company.status_code == 200
+            and created_company.get('portfolio_user_email') == company_email
+            and created_company.get('code') == f'QA-{stamp}'
+            and created_company.get('geography') == 'APAC'
+            and created_company.get('asset_class') == 'Private Equity'
+            and created_company.get('current_status') == 'onboarding',
+            create_company.text,
+        )
 
         response = client.post('/login', json={'email': company_email, 'password': 'password123'})
         new_company_user = response.json() if response.status_code == 200 else {}

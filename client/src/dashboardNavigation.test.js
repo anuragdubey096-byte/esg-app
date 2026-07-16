@@ -12,7 +12,7 @@ describe('dashboard role routing', () => {
     expect(pathsFor('manager')).toEqual([
       '/overview', '/review-hub', '/submissions', '/analytics', '/strategy',
       '/alerts-risks', '/action-plans', '/reports', '/newsletter-ops',
-      '/anomaly-intel', '/admin-settings',
+      '/anomaly-intel', '/portfolio-onboarding', '/admin-settings',
     ])
   })
 

@@ -3448,3 +3448,26 @@ p {
   border-radius: 0.75rem;
   background: #f8fafc;
 }
+
+.onboarding-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
+  align-items: end;
+}
+
+.onboarding-form-grid label {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.credential-callout {
+  display: grid;
+  gap: 0.35rem;
+  margin-top: 1rem;
+  padding: 1rem;
+  border: 1px solid #10b981;
+  border-radius: 0.75rem;
+  background: #ecfdf5;
+  color: #065f46;
+}

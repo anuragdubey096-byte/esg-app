@@ -88,6 +88,14 @@ const NAV_ITEMS = [
     roles: ['manager', 'investor', 'company'],
   },
   {
+    to: '/portfolio-onboarding',
+    label: 'Portfolio Setup',
+    icon: 'overview',
+    group: 'Administration',
+    title: 'Portfolio & Company Onboarding',
+    roles: ['manager'],
+  },
+  {
     to: '/admin-settings',
     label: 'Cycle Config',
     icon: 'settings',

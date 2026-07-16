@@ -399,18 +399,25 @@ class SubmissionStatusUpdateRequest(BaseModel):
 
 
 class CompanyCreateRequest(BaseModel):
-    name: str
-    sector: str
-    contact_name: str
-    contact_email: str
-    temporary_password: str = 'password123'
-    current_status: str = 'pre-acquisition'
+    code: Optional[str] = Field(default=None, max_length=40, pattern=r'^[A-Za-z0-9_-]+$')
+    name: str = Field(min_length=2, max_length=160)
+    sector: str = Field(min_length=2, max_length=120)
+    geography: Optional[str] = Field(default=None, max_length=120)
+    asset_class: Optional[str] = Field(default=None, max_length=120)
+    contact_name: str = Field(min_length=2, max_length=160)
+    contact_email: str = Field(min_length=5, max_length=320)
+    temporary_password: str = Field(default='password123', min_length=8, max_length=128)
+    current_status: Literal['pre-acquisition', 'onboarding', 'active'] = 'onboarding'
 
 
 class CompanyCreateResponse(BaseModel):
     id: int
     name: str
     sector: str
+    code: Optional[str] = None
+    geography: Optional[str] = None
+    asset_class: Optional[str] = None
+    current_status: str
     portfolio_user_email: str
     portfolio_user_password: str
 

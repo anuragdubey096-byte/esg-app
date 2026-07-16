@@ -38,6 +38,7 @@ The platform addresses five common problems:
 | Submissions | Portfolio management | Read-only portfolio view | Company entry and submission |
 | Analytics | Manager portfolio view | Investor portfolio view | Company historical view |
 | ESG Strategy | Yes | Yes | No |
+| Portfolio & Company Onboarding | Yes | No | No |
 | Alerts & Risks | Yes | No | No |
 | Action Plans | Yes | No | Yes |
 | Reports | Yes | Yes | Yes |
@@ -90,7 +91,9 @@ This behavior is covered by automated frontend tests to prevent historical views
 
 ## 6. Key outputs
 
-### ESG Strategy and holdings
+### Portfolio setup and company onboarding
+
+The manager-only Portfolio Setup page creates company data-collection accounts, portfolios, funds, and holdings. Company onboarding captures identity, sector, geography, asset class, lifecycle status, and a contributor login in one transaction. Credentials are shown after creation for controlled delivery to the contributor.
 
 The Strategy page does not infer investments from the company directory. A manager must first create a portfolio, create its funds, and connect companies as holdings with ownership percentage, effective date, and a positive NAV or invested amount in the fund base currency. Scenario analysis remains unavailable until this scope is complete.
 

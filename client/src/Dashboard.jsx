@@ -14,6 +14,7 @@ const InvestorOverviewPage = lazy(() => import('./pages/InvestorOverviewPage'))
 const LPInsightsPage = lazy(() => import('./pages/LPInsightsPage'))
 const NewsletterOpsPage = lazy(() => import('./pages/NewsletterOpsPage'))
 const OverviewPage = lazy(() => import('./pages/OverviewPage'))
+const PortfolioOnboardingPage = lazy(() => import('./pages/PortfolioOnboardingPage'))
 const ReportsPage = lazy(() => import('./pages/ReportsPage'))
 const ReviewHubPage = lazy(() => import('./pages/ReviewHubPage'))
 const SubmissionsPage = lazy(() => import('./pages/SubmissionsPage'))
@@ -42,6 +43,7 @@ export default function Dashboard({ user, onLogout }) {
     '/newsletter-ops': <NewsletterOpsPage />,
     '/anomaly-intel': <AnomalyIntelPage />,
     '/admin-settings': <AdminSettingsPage />,
+    '/portfolio-onboarding': <PortfolioOnboardingPage />,
     '/strategy': <StrategyPage />,
   }
 

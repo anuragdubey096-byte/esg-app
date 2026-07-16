@@ -361,6 +361,8 @@ Map existing roles to default permission sets for backward compatibility. Add AP
 
 Implemented controls include portfolio/fund/holding records, ownership percentages, invested amount and current NAV in base currency, effective dates, explicit aggregation methodology, ESG coverage reporting, and refusal to calculate exposure without valid holdings.
 
+Operational setup is isolated in a manager-only Portfolio & Company Onboarding page. The workflow atomically creates a company and contributor account, then allows the company to be assigned to funds as an effective-dated holding.
+
 #### GL-510: Company comparison and benchmarks
 
 - Compare selected companies, sectors, asset classes, and years.
