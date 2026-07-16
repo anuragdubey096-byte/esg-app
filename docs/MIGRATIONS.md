@@ -13,6 +13,8 @@ The technical lead owns migration review and execution. Before a production sche
 5. Run `alembic upgrade head` before deploying application code that requires the new schema.
 6. Confirm `alembic current` reports the expected revision and run application health checks.
 
+When direct database credentials are intentionally unavailable to the deployment operator, an authenticated manager may run `POST /api/admin/migrate-schema`. The endpoint executes `alembic upgrade head` against the application's configured database and returns the applied revision and hierarchy-table readiness. Use it only as a controlled deployment step, then verify the affected authenticated endpoint.
+
 Never run `alembic downgrade` in production without a tested backup and an explicit data-loss review. Prefer restoring the database and rolling back the application when a downgrade would discard or rewrite data.
 
 ## Existing production database baseline

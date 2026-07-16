@@ -43,6 +43,8 @@ from reportlab.platypus import (
     Table,
     TableStyle,
 )
+from alembic import command as alembic_command
+from alembic.config import Config as AlembicConfig
 
 from bootstrap import seed_sample_data
 from database import SessionLocal, engine
@@ -1385,6 +1387,9 @@ def startup_event():
 
 @app.post('/admin/migrate-schema', dependencies=[Depends(require_manager)])
 def migrate_schema(db: Session = Depends(get_db)):
+    config = AlembicConfig(str(BASE_DIR.parent / 'alembic.ini'))
+    alembic_command.upgrade(config, 'head')
+    db.expire_all()
     ensure_submission_cycle_column(db)
     ensure_review_action_audit_columns(db)
     qa_cleanup = cleanup_irrelevant_qa_cycles(db)
@@ -1394,6 +1399,10 @@ def migrate_schema(db: Session = Depends(get_db)):
         'review_submission_column': table_has_column(db, 'review_actions', 'submission_id'),
         'review_created_at_column': table_has_column(db, 'review_actions', 'created_at'),
         'qa_cycle_cleanup': qa_cleanup,
+        'alembic_revision': db.execute(text('SELECT version_num FROM alembic_version')).scalar_one_or_none(),
+        'portfolio_hierarchy_ready': all(
+            inspect(db.bind).has_table(name) for name in ('portfolios', 'funds', 'holdings')
+        ),
     }
 
 @app.post('/login', response_model=UserResponse)
