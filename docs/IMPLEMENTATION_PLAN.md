@@ -353,9 +353,13 @@ Map existing roles to default permission sets for backward compatibility. Add AP
 
 #### GL-500: Portfolio hierarchy
 
+**Status:** Core hierarchy and exposure controls implemented; subsidiary look-through remains a future extension.
+
 - Model funds, portfolios, investments, companies/subsidiaries, ownership percentages, and effective dates.
 - Aggregate metrics with explicit consolidation rules.
 - Prevent double counting and document boundary assumptions.
+
+Implemented controls include portfolio/fund/holding records, ownership percentages, invested amount and current NAV in base currency, effective dates, explicit aggregation methodology, ESG coverage reporting, and refusal to calculate exposure without valid holdings.
 
 #### GL-510: Company comparison and benchmarks
 

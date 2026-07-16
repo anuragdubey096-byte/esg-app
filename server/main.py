@@ -69,6 +69,9 @@ from models import (
     Notification,
     MetricReviewComment,
     MaterialityTopic,
+    Portfolio,
+    Fund,
+    Holding,
 )
 from schemas import (
     ActionPlanCreateRequest,
@@ -86,6 +89,9 @@ from schemas import (
     AssuranceDecisionRequest,
     MaterialityTopicRequest,
     ScenarioAnalysisRequest,
+    PortfolioCreateRequest,
+    FundCreateRequest,
+    HoldingCreateRequest,
     ForgotPasswordRequest,
     ForgotPasswordResponse,
     ResetPasswordRequest,
@@ -4881,6 +4887,130 @@ def framework_mapping_dashboard(
     }
 
 
+def _validate_effective_dates(effective_from: str, effective_to: str | None) -> None:
+    try:
+        start = datetime.strptime(effective_from, '%Y-%m-%d').date()
+        end = datetime.strptime(effective_to, '%Y-%m-%d').date() if effective_to else None
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail='Effective dates must be valid YYYY-MM-DD dates') from exc
+    if end and end < start:
+        raise HTTPException(status_code=422, detail='effective_to cannot be earlier than effective_from')
+
+
+def _serialize_holding(item: Holding, total_nav: float = 0) -> dict[str, Any]:
+    value = max(float(item.nav_value_base or item.invested_amount_base or 0), 0)
+    return {
+        'id': item.id, 'external_id': item.external_id, 'fund_id': item.fund_id,
+        'fund_name': item.fund.name, 'portfolio_id': item.fund.portfolio_id,
+        'portfolio_name': item.fund.portfolio.name, 'company_id': item.company_id,
+        'company_name': item.company.name, 'sector': item.company.sector,
+        'ownership_percent': item.ownership_percent,
+        'invested_amount_base': item.invested_amount_base, 'nav_value_base': item.nav_value_base,
+        'weight_percent': round((value / total_nav) * 100, 4) if total_nav else 0,
+        'currency': item.currency, 'effective_from': item.effective_from,
+        'effective_to': item.effective_to, 'status': item.status,
+    }
+
+
+@app.get('/portfolio-structure', dependencies=[Depends(require_manager_or_investor)])
+def get_portfolio_structure(portfolio_id: int | None = None, db: Session = Depends(get_db)):
+    portfolios = db.query(Portfolio).options(
+        selectinload(Portfolio.funds).selectinload(Fund.holdings).selectinload(Holding.company)
+    ).order_by(Portfolio.name.asc()).all()
+    if portfolio_id is not None:
+        portfolios = [item for item in portfolios if item.id == portfolio_id]
+    today = datetime.now(timezone.utc).date().isoformat()
+    active_holdings = [
+        holding for portfolio in portfolios for fund in portfolio.funds for holding in fund.holdings
+        if holding.status == 'active' and holding.effective_from <= today
+        and (not holding.effective_to or holding.effective_to >= today)
+    ]
+    total_nav = sum(max(float(item.nav_value_base or item.invested_amount_base or 0), 0) for item in active_holdings)
+    return {
+        'portfolios': [{
+            'id': portfolio.id, 'code': portfolio.code, 'name': portfolio.name,
+            'base_currency': portfolio.base_currency, 'description': portfolio.description or '',
+            'funds': [{'id': fund.id, 'code': fund.code, 'name': fund.name,
+                       'vintage_year': fund.vintage_year, 'base_currency': fund.base_currency}
+                      for fund in portfolio.funds],
+        } for portfolio in portfolios],
+        'holdings': [_serialize_holding(item, total_nav) for item in active_holdings],
+        'summary': {'portfolio_count': len(portfolios),
+                    'fund_count': sum(len(item.funds) for item in portfolios),
+                    'holding_count': len(active_holdings), 'total_nav_base': round(total_nav, 2),
+                    'ready_for_exposure': bool(active_holdings and total_nav > 0)},
+        'aggregation_policy': {
+            'financial_weight': 'Current NAV in portfolio base currency; invested amount is used only when NAV is unavailable.',
+            'operational_attribution': 'Company ESG activity is multiplied by the holding ownership percentage.',
+            'double_counting': 'Each holding is calculated separately; duplicate company holdings across funds remain visible.',
+        },
+    }
+
+
+@app.post('/portfolios')
+def create_portfolio(payload: PortfolioCreateRequest, manager: User = Depends(require_manager), db: Session = Depends(get_db)):
+    code = payload.code.upper()
+    if db.query(Portfolio).filter(func.lower(Portfolio.code) == code.lower()).first():
+        raise HTTPException(status_code=409, detail='Portfolio code already exists')
+    item = Portfolio(code=code, name=payload.name.strip(), base_currency=payload.base_currency.upper(), description=payload.description.strip())
+    db.add(item); db.commit(); db.refresh(item)
+    log_audit_event(db, 'portfolio_created', manager, metadata={'portfolio_id': item.id, 'code': item.code}); db.commit()
+    return {'id': item.id, 'code': item.code, 'name': item.name, 'base_currency': item.base_currency}
+
+
+@app.post('/funds')
+def create_fund(payload: FundCreateRequest, manager: User = Depends(require_manager), db: Session = Depends(get_db)):
+    if not db.query(Portfolio).filter(Portfolio.id == payload.portfolio_id).first():
+        raise HTTPException(status_code=404, detail='Portfolio not found')
+    if db.query(Fund).filter(Fund.portfolio_id == payload.portfolio_id, func.lower(Fund.code) == payload.code.lower()).first():
+        raise HTTPException(status_code=409, detail='Fund code already exists in this portfolio')
+    item = Fund(portfolio_id=payload.portfolio_id, code=payload.code.upper(), name=payload.name.strip(), vintage_year=payload.vintage_year, base_currency=payload.base_currency.upper())
+    db.add(item); db.commit(); db.refresh(item)
+    log_audit_event(db, 'fund_created', manager, metadata={'fund_id': item.id, 'portfolio_id': item.portfolio_id}); db.commit()
+    return {'id': item.id, 'portfolio_id': item.portfolio_id, 'code': item.code, 'name': item.name}
+
+
+@app.post('/holdings')
+def create_holding(payload: HoldingCreateRequest, manager: User = Depends(require_manager), db: Session = Depends(get_db)):
+    _validate_effective_dates(payload.effective_from, payload.effective_to)
+    fund = db.query(Fund).filter(Fund.id == payload.fund_id).first()
+    company = db.query(Company).filter(Company.id == payload.company_id).first()
+    if not fund or not company:
+        raise HTTPException(status_code=404, detail='Fund or company not found')
+    if payload.currency.upper() != fund.base_currency.upper():
+        raise HTTPException(status_code=422, detail='Holding values must be converted to the fund base currency before import')
+    if payload.nav_value_base <= 0 and payload.invested_amount_base <= 0:
+        raise HTTPException(status_code=422, detail='Provide a positive NAV or invested amount')
+    if db.query(Holding).filter(Holding.fund_id == payload.fund_id, Holding.external_id == payload.external_id).first():
+        raise HTTPException(status_code=409, detail='Holding external ID already exists in this fund')
+    item = Holding(**payload.model_dump(exclude={'currency'}), currency=payload.currency.upper())
+    db.add(item); db.commit(); db.refresh(item)
+    log_audit_event(db, 'holding_created', manager, company_id=item.company_id, metadata={'holding_id': item.id, 'fund_id': item.fund_id}); db.commit()
+    return _serialize_holding(db.query(Holding).options(selectinload(Holding.fund).selectinload(Fund.portfolio), selectinload(Holding.company)).filter(Holding.id == item.id).one())
+
+
+@app.put('/holdings/{holding_id}')
+def update_holding(holding_id: int, payload: HoldingCreateRequest, manager: User = Depends(require_manager), db: Session = Depends(get_db)):
+    _validate_effective_dates(payload.effective_from, payload.effective_to)
+    item = db.query(Holding).filter(Holding.id == holding_id).first()
+    fund = db.query(Fund).filter(Fund.id == payload.fund_id).first()
+    company = db.query(Company).filter(Company.id == payload.company_id).first()
+    if not item or not fund or not company:
+        raise HTTPException(status_code=404, detail='Holding, fund, or company not found')
+    if payload.currency.upper() != fund.base_currency.upper():
+        raise HTTPException(status_code=422, detail='Holding values must be converted to the fund base currency before import')
+    if payload.nav_value_base <= 0 and payload.invested_amount_base <= 0:
+        raise HTTPException(status_code=422, detail='Provide a positive NAV or invested amount')
+    duplicate = db.query(Holding).filter(Holding.fund_id == payload.fund_id, Holding.external_id == payload.external_id, Holding.id != holding_id).first()
+    if duplicate:
+        raise HTTPException(status_code=409, detail='Holding external ID already exists in this fund')
+    for key, value in payload.model_dump().items():
+        setattr(item, key, value.upper() if key == 'currency' else value)
+    item.updated_at = datetime.utcnow(); db.commit()
+    log_audit_event(db, 'holding_updated', manager, company_id=item.company_id, metadata={'holding_id': item.id, 'status': item.status}); db.commit()
+    return _serialize_holding(db.query(Holding).options(selectinload(Holding.fund).selectinload(Fund.portfolio), selectinload(Holding.company)).filter(Holding.id == item.id).one())
+
+
 def _serialize_materiality_topic(item: MaterialityTopic) -> dict[str, Any]:
     priority_score = round((item.impact_score * 0.45) + (item.financial_score * 0.4) + (item.stakeholder_score * 0.15), 2)
     if item.impact_score >= 4 and item.financial_score >= 4:
@@ -4966,13 +5096,32 @@ def run_scenario_analysis(
     payload: ScenarioAnalysisRequest,
     db: Session = Depends(get_db),
 ):
-    companies = db.query(Company).options(selectinload(Company.submissions)).order_by(Company.name.asc()).all()
+    today = datetime.now(timezone.utc).date().isoformat()
+    holdings_query = db.query(Holding).options(
+        selectinload(Holding.company).selectinload(Company.submissions),
+        selectinload(Holding.fund).selectinload(Fund.portfolio),
+    ).filter(Holding.status == 'active', Holding.effective_from <= today,
+             or_(Holding.effective_to.is_(None), Holding.effective_to >= today))
+    if payload.portfolio_id is not None:
+        holdings_query = holdings_query.join(Fund).filter(Fund.portfolio_id == payload.portfolio_id)
+    holdings = holdings_query.order_by(Holding.id.asc()).all()
+    portfolio_ids = {item.fund.portfolio_id for item in holdings}
+    if payload.portfolio_id is None and len(portfolio_ids) > 1:
+        raise HTTPException(status_code=422, detail='Select a portfolio before running exposure analysis')
+    if not holdings:
+        raise HTTPException(status_code=422, detail='No active holdings are configured. Add portfolio, fund, holding, ownership and value data before running exposure analysis.')
+    total_nav = sum(max(float(item.nav_value_base or item.invested_amount_base or 0), 0) for item in holdings)
+    if total_nav <= 0:
+        raise HTTPException(status_code=422, detail='Active holdings require positive NAV or invested values')
     rows = []
     years_to_horizon = max(payload.horizon_year - datetime.now(timezone.utc).year, 1)
     pathway_pressure = max(payload.temperature_pathway - 1.5, 0) / 3
-    for company in companies:
+    missing_esg = []
+    for holding in holdings:
+        company = holding.company
         submission, values, reporting_year = _data_quality_submission(company, None)
         if not submission:
+            missing_esg.append(company.name)
             continue
         emissions = max(_safe_float(values.get('total_ghg_emissions')) or (
             (_safe_float(values.get('scope_1_emissions')) or 0)
@@ -4982,9 +5131,11 @@ def run_scenario_analysis(
         energy = max(_safe_float(values.get('total_energy_consumption')) or 0, 0)
         water = max(_safe_float(values.get('total_water_withdrawal')) or 0, 0)
         waste = max(_safe_float(values.get('total_waste_generated')) or 0, 0)
-        transition_cost = emissions * payload.carbon_price
-        energy_cost = energy * 100 * (payload.energy_cost_change_percent / 100)
-        physical_cost = ((water * 0.05) + (waste * 25)) * payload.physical_risk_multiplier * (1 + pathway_pressure)
+        ownership_factor = float(holding.ownership_percent) / 100
+        holding_value = max(float(holding.nav_value_base or holding.invested_amount_base or 0), 0)
+        transition_cost = emissions * payload.carbon_price * ownership_factor
+        energy_cost = energy * 100 * (payload.energy_cost_change_percent / 100) * ownership_factor
+        physical_cost = ((water * 0.05) + (waste * 25)) * payload.physical_risk_multiplier * (1 + pathway_pressure) * ownership_factor
         annual_exposure = max(transition_cost + energy_cost + physical_cost, 0)
         cumulative_exposure = annual_exposure * years_to_horizon
         risk_score = min(100, round(
@@ -4997,6 +5148,12 @@ def run_scenario_analysis(
         rows.append({
             'company_id': company.id,
             'company': company.name,
+            'holding_id': holding.id,
+            'fund': holding.fund.name,
+            'ownership_percent': holding.ownership_percent,
+            'holding_value_base': round(holding_value, 2),
+            'portfolio_weight_percent': round((holding_value / total_nav) * 100, 4),
+            'base_currency': holding.fund.base_currency,
             'sector': company.sector or 'Unassigned',
             'reporting_year': reporting_year,
             'emissions_tco2e': round(emissions, 2),
@@ -5015,12 +5172,17 @@ def run_scenario_analysis(
         'annual_exposure': round(total_annual, 2),
         'cumulative_exposure': round(sum(row['cumulative_exposure'] for row in rows), 2),
         'high_risk_companies': sum(1 for row in rows if row['risk_tier'] == 'High'),
-        'average_risk_score': round(sum(row['risk_score'] for row in rows) / len(rows), 1) if rows else 0.0,
+        'average_risk_score': round(sum(row['risk_score'] * row['holding_value_base'] for row in rows) / max(sum(row['holding_value_base'] for row in rows), 1), 1) if rows else 0.0,
+        'holding_count': len(holdings),
+        'esg_coverage_percent': round((len(rows) / len(holdings)) * 100, 2),
+        'missing_esg_companies': sorted(set(missing_esg)),
+        'total_nav_base': round(total_nav, 2),
         'rows': sorted(rows, key=lambda row: row['annual_exposure'], reverse=True),
         'methodology': [
-            'Transition exposure applies the selected carbon price to reported Scope 1, 2 and 3 emissions.',
-            'Energy exposure applies the selected cost change to reported energy using a transparent base-cost proxy.',
-            'Physical exposure is a screening proxy based on reported water and waste, adjusted by the physical-risk multiplier.',
+            'Transition exposure applies the selected carbon price to reported Scope 1, 2 and 3 emissions and attributes results by ownership percentage.',
+            'Energy exposure applies the selected cost change to reported energy using a transparent base-cost proxy and ownership attribution.',
+            'Physical exposure is a screening proxy based on reported water and waste, adjusted by physical-risk and ownership multipliers.',
+            'Portfolio weights use current NAV in base currency, falling back to invested amount when NAV is unavailable.',
             'Results are decision-support estimates, not forecasts or valuations.',
         ],
     }

@@ -35,6 +35,12 @@ The root Vercel project builds `client/` and serves `client/dist`. Requests unde
 | `vercel.json` | Build output and routing configuration |
 | `VERSION` | Canonical human-readable release version |
 
+### Portfolio aggregation contract
+
+`portfolios` own `funds`; funds own effective-dated `holdings`; holdings connect to existing company ESG submissions. Holding values must already be converted into the fund base currency. Current NAV determines financial weight, with invested amount as the documented fallback. Operational scenario costs are multiplied by ownership percentage. The API rejects scenario execution when there are no active valued holdings and reports ESG submission coverage separately.
+
+The additive Alembic revision `20260716_03` creates this hierarchy without converting the existing company directory into holdings. This is deliberate: historical/demo companies must not become financial exposure without an explicit manager decision.
+
 ## 3. Application versioning
 
 GreenLedger uses Semantic Versioning:

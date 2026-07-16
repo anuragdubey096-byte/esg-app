@@ -53,6 +53,64 @@ class Company(Base):
     validation_flags = relationship('ValidationFlag', back_populates='company')
     submission_unlocks = relationship('SubmissionUnlock', back_populates='company')
     reminder_logs = relationship('ReminderLog', back_populates='company')
+    holdings = relationship('Holding', back_populates='company')
+
+
+class Portfolio(Base):
+    __tablename__ = 'portfolios'
+
+    id = Column(Integer, primary_key=True, index=True)
+    code = Column(String, nullable=False, unique=True, index=True)
+    name = Column(String, nullable=False)
+    base_currency = Column(String, nullable=False, default='USD')
+    description = Column(Text, nullable=True)
+    active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    funds = relationship('Fund', back_populates='portfolio', cascade='all, delete-orphan')
+
+
+class Fund(Base):
+    __tablename__ = 'funds'
+    __table_args__ = (UniqueConstraint('portfolio_id', 'code', name='uq_fund_portfolio_code'),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    portfolio_id = Column(Integer, ForeignKey('portfolios.id'), nullable=False, index=True)
+    code = Column(String, nullable=False)
+    name = Column(String, nullable=False)
+    vintage_year = Column(Integer, nullable=True)
+    base_currency = Column(String, nullable=False, default='USD')
+    active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    portfolio = relationship('Portfolio', back_populates='funds')
+    holdings = relationship('Holding', back_populates='fund', cascade='all, delete-orphan')
+
+
+class Holding(Base):
+    __tablename__ = 'holdings'
+    __table_args__ = (
+        UniqueConstraint('fund_id', 'external_id', name='uq_holding_fund_external_id'),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    fund_id = Column(Integer, ForeignKey('funds.id'), nullable=False, index=True)
+    company_id = Column(Integer, ForeignKey('companies.id'), nullable=False, index=True)
+    external_id = Column(String, nullable=False)
+    ownership_percent = Column(Float, nullable=False)
+    invested_amount_base = Column(Float, nullable=False, default=0)
+    nav_value_base = Column(Float, nullable=False, default=0)
+    currency = Column(String, nullable=False, default='USD')
+    effective_from = Column(String, nullable=False)
+    effective_to = Column(String, nullable=True)
+    status = Column(String, nullable=False, default='active')
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    fund = relationship('Fund', back_populates='holdings')
+    company = relationship('Company', back_populates='holdings')
 
 
 # submissions — stores ESG reports for each company with a status.

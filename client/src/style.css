@@ -3417,3 +3417,34 @@ p {
     width: 100%;
   }
 }
+.portfolio-readiness {
+  display: flex;
+  gap: 0.5rem;
+  flex-direction: column;
+  margin-bottom: 1rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid #f59e0b;
+  border-radius: 0.75rem;
+  background: #fffbeb;
+  color: #92400e;
+}
+
+.portfolio-readiness.ready {
+  border-color: #10b981;
+  background: #ecfdf5;
+  color: #065f46;
+}
+
+.portfolio-setup-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 1rem;
+  align-items: start;
+}
+
+.portfolio-setup-grid form {
+  padding: 1rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.75rem;
+  background: #f8fafc;
+}

@@ -485,6 +485,35 @@ class ScenarioAnalysisRequest(BaseModel):
     energy_cost_change_percent: float = Field(default=20, ge=-50, le=300)
     physical_risk_multiplier: float = Field(default=1.2, ge=0, le=5)
     horizon_year: int = Field(default=2030, ge=2026, le=2100)
+    portfolio_id: Optional[int] = None
+
+
+class PortfolioCreateRequest(BaseModel):
+    code: str = Field(min_length=2, max_length=40, pattern=r'^[A-Za-z0-9_-]+$')
+    name: str = Field(min_length=2, max_length=160)
+    base_currency: str = Field(default='USD', min_length=3, max_length=3, pattern=r'^[A-Za-z]{3}$')
+    description: str = Field(default='', max_length=2000)
+
+
+class FundCreateRequest(BaseModel):
+    portfolio_id: int = Field(gt=0)
+    code: str = Field(min_length=2, max_length=40, pattern=r'^[A-Za-z0-9_-]+$')
+    name: str = Field(min_length=2, max_length=160)
+    vintage_year: Optional[int] = Field(default=None, ge=1900, le=2100)
+    base_currency: str = Field(default='USD', min_length=3, max_length=3, pattern=r'^[A-Za-z]{3}$')
+
+
+class HoldingCreateRequest(BaseModel):
+    fund_id: int = Field(gt=0)
+    company_id: int = Field(gt=0)
+    external_id: str = Field(min_length=1, max_length=120)
+    ownership_percent: float = Field(gt=0, le=100)
+    invested_amount_base: float = Field(default=0, ge=0)
+    nav_value_base: float = Field(default=0, ge=0)
+    currency: str = Field(default='USD', min_length=3, max_length=3, pattern=r'^[A-Za-z]{3}$')
+    effective_from: str = Field(min_length=10, max_length=10, pattern=r'^\d{4}-\d{2}-\d{2}$')
+    effective_to: Optional[str] = Field(default=None, min_length=10, max_length=10, pattern=r'^\d{4}-\d{2}-\d{2}$')
+    status: Literal['active', 'exited'] = 'active'
 
 
 class SubmissionUnlockRequest(BaseModel):

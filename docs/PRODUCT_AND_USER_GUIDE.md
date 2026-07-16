@@ -90,6 +90,12 @@ This behavior is covered by automated frontend tests to prevent historical views
 
 ## 6. Key outputs
 
+### ESG Strategy and holdings
+
+The Strategy page does not infer investments from the company directory. A manager must first create a portfolio, create its funds, and connect companies as holdings with ownership percentage, effective date, and a positive NAV or invested amount in the fund base currency. Scenario analysis remains unavailable until this scope is complete.
+
+Operational climate impacts are attributed using ownership percentage. Portfolio risk averages use current NAV, falling back to invested amount only when NAV is unavailable. Missing company ESG submissions are shown as a coverage gap and are not silently treated as zero. Scenario results are screening estimates rather than valuations or forecasts.
+
 - Portfolio ESG score and E/S/G breakdowns
 - Reporting coverage and submission funnel
 - Emissions and resource-use trends

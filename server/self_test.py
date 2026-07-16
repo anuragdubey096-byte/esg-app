@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from main import app
 from database import SessionLocal
-from models import Submission
+from models import Company, Submission
 
 
 def run_self_test():
@@ -123,6 +123,37 @@ def run_self_test():
         }, headers=investor_headers)
         check('investor cannot change materiality assessment', materiality_forbidden.status_code == 403, materiality_forbidden.text)
 
+        missing_holding_scenario = client.post('/analytics/scenario-analysis', json={
+            'scenario_name': 'No holdings', 'horizon_year': datetime.now(timezone.utc).year + 5,
+        }, headers=investor_headers)
+        check('scenario analysis refuses company-only demo aggregation', missing_holding_scenario.status_code == 422, missing_holding_scenario.text)
+
+        with SessionLocal() as db:
+            scenario_company = db.query(Company).join(Submission).first()
+            scenario_company_id = scenario_company.id if scenario_company else 0
+        portfolio_response = client.post('/portfolios', json={
+            'code': f'QA{stamp}', 'name': f'QA Portfolio {stamp}', 'base_currency': 'USD',
+        }, headers=manager_headers)
+        portfolio_id = portfolio_response.json().get('id', 0) if portfolio_response.status_code == 200 else 0
+        fund_response = client.post('/funds', json={
+            'portfolio_id': portfolio_id, 'code': f'F{stamp}', 'name': 'QA Fund',
+            'vintage_year': datetime.now(timezone.utc).year, 'base_currency': 'USD',
+        }, headers=manager_headers)
+        fund_id = fund_response.json().get('id', 0) if fund_response.status_code == 200 else 0
+        holding_response = client.post('/holdings', json={
+            'fund_id': fund_id, 'company_id': scenario_company_id, 'external_id': f'H{stamp}',
+            'ownership_percent': 40, 'invested_amount_base': 750000, 'nav_value_base': 1000000,
+            'currency': 'USD', 'effective_from': '2026-01-01', 'status': 'active',
+        }, headers=manager_headers)
+        structure_response = client.get(f'/portfolio-structure?portfolio_id={portfolio_id}', headers=investor_headers)
+        check(
+            'portfolio hierarchy records valued ownership-attributed holdings',
+            portfolio_response.status_code == 200 and fund_response.status_code == 200
+            and holding_response.status_code == 200 and structure_response.status_code == 200
+            and structure_response.json().get('summary', {}).get('ready_for_exposure') is True,
+            holding_response.text,
+        )
+
         scenario_response = client.post('/analytics/scenario-analysis', json={
             'scenario_name': 'QA orderly transition',
             'temperature_pathway': 1.5,
@@ -130,6 +161,7 @@ def run_self_test():
             'energy_cost_change_percent': 20,
             'physical_risk_multiplier': 1.2,
             'horizon_year': datetime.now(timezone.utc).year + 5,
+            'portfolio_id': portfolio_id,
         }, headers=investor_headers)
         scenario_payload = scenario_response.json() if scenario_response.status_code == 200 else {}
         check(
@@ -137,7 +169,9 @@ def run_self_test():
             scenario_response.status_code == 200
             and isinstance(scenario_payload.get('rows'), list)
             and scenario_payload.get('annual_exposure', -1) >= 0
-            and len(scenario_payload.get('methodology', [])) >= 4,
+            and scenario_payload.get('holding_count') == 1
+            and scenario_payload.get('rows', [{}])[0].get('ownership_percent') == 40
+            and len(scenario_payload.get('methodology', [])) >= 5,
             scenario_response.text,
         )
         scenario_forbidden = client.post('/analytics/scenario-analysis', json={

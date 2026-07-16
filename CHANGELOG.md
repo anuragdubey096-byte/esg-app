@@ -15,12 +15,15 @@ All notable GreenLedger changes are recorded here. Versions follow Semantic Vers
 - Alembic schema baseline, additive migration verification, and migration operations guidance.
 - Release-aware structured runtime logs, database-backed readiness checks, alert policy, incident response, and recovery runbooks.
 - A non-production backup/restore drill with integrity and data-marker verification.
+- Explicit portfolio, fund, and holding records with ownership, base-currency values, and effective dates.
+- Manager setup controls and investor-readable portfolio structure on the ESG Strategy page.
 
 ### Changed
 
 - Backend self-tests now exit unsuccessfully when any regression check fails, allowing CI to block broken changes.
 - Updated React Router, FastAPI/Starlette, Vite, Vitest, PostCSS, and the Vite React plugin to remediate all audited dependency findings.
 - Production startup no longer relies on implicit SQLAlchemy table creation; disposable tests and local development retain safe bootstrap behavior.
+- Climate scenarios now require active valued holdings, attribute operating impacts by ownership, and NAV-weight portfolio risk instead of treating every company as an equal holding.
 
 ### Fixed
 
