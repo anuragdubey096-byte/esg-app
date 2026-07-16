@@ -1388,6 +1388,11 @@ def startup_event():
 @app.post('/admin/migrate-schema', dependencies=[Depends(require_manager)])
 def migrate_schema(db: Session = Depends(get_db)):
     config = AlembicConfig(str(BASE_DIR.parent / 'alembic.ini'))
+    schema = inspect(db.bind)
+    legacy_baseline_stamped = False
+    if schema.has_table('users') and not schema.has_table('alembic_version'):
+        alembic_command.stamp(config, '20260715_01')
+        legacy_baseline_stamped = True
     alembic_command.upgrade(config, 'head')
     db.expire_all()
     ensure_submission_cycle_column(db)
@@ -1400,6 +1405,7 @@ def migrate_schema(db: Session = Depends(get_db)):
         'review_created_at_column': table_has_column(db, 'review_actions', 'created_at'),
         'qa_cycle_cleanup': qa_cleanup,
         'alembic_revision': db.execute(text('SELECT version_num FROM alembic_version')).scalar_one_or_none(),
+        'legacy_baseline_stamped': legacy_baseline_stamped,
         'portfolio_hierarchy_ready': all(
             inspect(db.bind).has_table(name) for name in ('portfolios', 'funds', 'holdings')
         ),
