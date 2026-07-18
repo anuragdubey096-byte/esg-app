@@ -51,6 +51,9 @@ export default function PortfolioOnboardingPage() {
   const [fundForm, setFundForm] = useState(emptyFund)
   const [holdingForm, setHoldingForm] = useState(emptyHolding)
   const [credentials, setCredentials] = useState(null)
+  const [portfolioCsv, setPortfolioCsv] = useState(null)
+  const [importPreview, setImportPreview] = useState(null)
+  const [importing, setImporting] = useState(false)
   const [message, setMessage] = useState('')
   const [loading, setLoading] = useState(true)
 
@@ -116,6 +119,34 @@ export default function PortfolioOnboardingPage() {
     } catch (error) { setMessage(error.message) }
   }
 
+  const submitPortfolioCsv = async (mode) => {
+    if (!portfolioCsv) { setMessage('Choose an editable portfolio CSV first.'); return }
+    setImporting(true); setMessage('')
+    try {
+      const formData = new FormData()
+      formData.append('file', portfolioCsv)
+      formData.append('mode', mode)
+      const response = await fetch(`${API_BASE_URL}/admin/import/portfolio-csv`, {
+        method: 'POST',
+        headers: { 'x-user-role': user?.role || '', 'x-user-email': user?.email || '' },
+        body: formData,
+      })
+      const body = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        const detail = typeof body.detail === 'string' ? body.detail : body.detail?.message
+        throw new Error(detail || 'Unable to import the portfolio CSV.')
+      }
+      setImportPreview(body)
+      if (mode === 'commit') {
+        setMessage(`Portfolio CSV committed: ${body.summary.holdings_created} holdings created and ${body.summary.holdings_updated} updated.`)
+        await loadData()
+      } else {
+        setMessage(body.summary.blocked_rows ? 'Preview found blocked rows. Correct the CSV before committing.' : 'Preview passed. The CSV is ready to commit.')
+      }
+    } catch (error) { setMessage(error.message) }
+    finally { setImporting(false) }
+  }
+
   const funds = structure.portfolios.flatMap((portfolio) => portfolio.funds.map((fund) => ({ ...fund, portfolio_name: portfolio.name })))
 
   return <div className="page-grid">
@@ -148,6 +179,33 @@ export default function PortfolioOnboardingPage() {
         <form className="target-form" onSubmit={submitPortfolio}><h4>Portfolio</h4><label><span>Code</span><input required value={portfolioForm.code} onChange={(event) => setPortfolioForm({ ...portfolioForm, code: event.target.value })} /></label><label><span>Name</span><input required value={portfolioForm.name} onChange={(event) => setPortfolioForm({ ...portfolioForm, name: event.target.value })} /></label><label><span>Base currency</span><input required maxLength="3" value={portfolioForm.base_currency} onChange={(event) => setPortfolioForm({ ...portfolioForm, base_currency: event.target.value.toUpperCase() })} /></label><button className="button secondary" type="submit">Create portfolio</button></form>
         <form className="target-form" onSubmit={submitFund}><h4>Fund</h4><label><span>Portfolio</span><select required value={fundForm.portfolio_id} onChange={(event) => setFundForm({ ...fundForm, portfolio_id: event.target.value })}><option value="">Select</option>{structure.portfolios.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label><span>Code</span><input required value={fundForm.code} onChange={(event) => setFundForm({ ...fundForm, code: event.target.value })} /></label><label><span>Name</span><input required value={fundForm.name} onChange={(event) => setFundForm({ ...fundForm, name: event.target.value })} /></label><label><span>Vintage year</span><input type="number" value={fundForm.vintage_year} onChange={(event) => setFundForm({ ...fundForm, vintage_year: event.target.value })} /></label><button className="button secondary" type="submit">Create fund</button></form>
         <form className="target-form" onSubmit={submitHolding}><h4>Holding</h4><label><span>Fund</span><select required value={holdingForm.fund_id} onChange={(event) => { const fund = funds.find((item) => item.id === Number(event.target.value)); setHoldingForm({ ...holdingForm, fund_id: event.target.value, currency: fund?.base_currency || 'USD' }) }}><option value="">Select</option>{funds.map((fund) => <option key={fund.id} value={fund.id}>{fund.portfolio_name} / {fund.name}</option>)}</select></label><label><span>Company</span><select required value={holdingForm.company_id} onChange={(event) => setHoldingForm({ ...holdingForm, company_id: event.target.value })}><option value="">Select</option>{companies.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label><span>Holding ID</span><input required value={holdingForm.external_id} onChange={(event) => setHoldingForm({ ...holdingForm, external_id: event.target.value })} /></label><label><span>Ownership %</span><input required type="number" min="0.0001" max="100" step="0.0001" value={holdingForm.ownership_percent} onChange={(event) => setHoldingForm({ ...holdingForm, ownership_percent: event.target.value })} /></label><label><span>Invested amount</span><input type="number" min="0" step="0.01" value={holdingForm.invested_amount_base} onChange={(event) => setHoldingForm({ ...holdingForm, invested_amount_base: event.target.value })} /></label><label><span>Current NAV</span><input type="number" min="0" step="0.01" value={holdingForm.nav_value_base} onChange={(event) => setHoldingForm({ ...holdingForm, nav_value_base: event.target.value })} /></label><label><span>Effective from</span><input required type="date" value={holdingForm.effective_from} onChange={(event) => setHoldingForm({ ...holdingForm, effective_from: event.target.value })} /></label><button className="button primary" type="submit">Link holding</button></form>
+      </div>
+    </SectionCard>
+
+    <SectionCard title="Editable portfolio CSV" subtitle="Preview and import portfolio data without hardcoding ownership or valuation values">
+      <div className="portfolio-setup-grid">
+        <div className="target-form portfolio-import-card">
+          <h4>Demo template</h4>
+          <p>Contains synthetic, editable records for C001–C020. It is demonstration data, not actual financial exposure.</p>
+          <a className="button secondary" href="/demo-portfolio.csv" download>Download demo CSV</a>
+        </div>
+        <div className="target-form portfolio-import-card">
+          <h4>Validate and import</h4>
+          <label><span>Portfolio CSV</span><input type="file" accept=".csv,text/csv" onChange={(event) => { setPortfolioCsv(event.target.files?.[0] || null); setImportPreview(null) }} /></label>
+          <div className="button-row">
+            <button className="button secondary" type="button" disabled={!portfolioCsv || importing} onClick={() => submitPortfolioCsv('preview')}>Preview CSV</button>
+            <button className="button primary" type="button" disabled={!portfolioCsv || importing || !importPreview || importPreview.summary.blocked_rows > 0} onClick={() => submitPortfolioCsv('commit')}>Commit CSV</button>
+          </div>
+        </div>
+        <div className="target-form portfolio-import-card" aria-live="polite">
+          <h4>Import status</h4>
+          {importPreview ? <>
+            <span>Total rows: {importPreview.summary.total_rows}</span>
+            <span>Ready: {importPreview.summary.ready_rows}</span>
+            <span>Blocked: {importPreview.summary.blocked_rows}</span>
+            {importPreview.errors.slice(0, 5).map((item) => <small key={`${item.row_number}-${item.holding_external_id}`}>Row {item.row_number}: {item.errors.join('; ')}</small>)}
+          </> : <span>Preview a CSV to see validation results.</span>}
+        </div>
       </div>
     </SectionCard>
 

@@ -3442,11 +3442,22 @@ p {
   align-items: start;
 }
 
-.portfolio-setup-grid form {
+.portfolio-setup-grid form,
+.portfolio-import-card {
   padding: 1rem;
   border: 1px solid #e2e8f0;
   border-radius: 0.75rem;
   background: #f8fafc;
+}
+
+.portfolio-import-card {
+  grid-template-columns: 1fr;
+}
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
 }
 
 .onboarding-form-grid {

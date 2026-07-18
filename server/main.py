@@ -1877,6 +1877,73 @@ def create_company(payload: CompanyCreateRequest, manager: User = Depends(requir
     )
 
 
+def _company_deletion_dependencies(db: Session, company_id: int) -> dict[str, int]:
+    return {
+        'holdings': db.query(Holding).filter(Holding.company_id == company_id).count(),
+        'submissions': db.query(Submission).filter(Submission.company_id == company_id).count(),
+        'submission_drafts': db.query(SubmissionDraft).filter(SubmissionDraft.company_id == company_id).count(),
+        'evidence_files': db.query(SubmissionEvidence).filter(SubmissionEvidence.company_id == company_id).count(),
+        'action_plans': db.query(ActionPlan).filter(ActionPlan.company_id == company_id).count(),
+        'esg_targets': db.query(ESGTarget).filter(ESGTarget.company_id == company_id).count(),
+        'review_actions': db.query(ReviewAction).filter(ReviewAction.company_id == company_id).count(),
+        'validation_flags': db.query(ValidationFlag).filter(ValidationFlag.company_id == company_id).count(),
+        'submission_unlocks': db.query(SubmissionUnlock).filter(SubmissionUnlock.company_id == company_id).count(),
+        'reminder_logs': db.query(ReminderLog).filter(ReminderLog.company_id == company_id).count(),
+    }
+
+
+@app.get('/admin/companies/{company_id}/deletion-check', dependencies=[Depends(require_manager)])
+def company_deletion_check(company_id: int, db: Session = Depends(get_db)):
+    company = db.query(Company).filter(Company.id == company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail='Company not found')
+    dependencies = _company_deletion_dependencies(db, company.id)
+    return {
+        'id': company.id,
+        'code': company.code,
+        'name': company.name,
+        'dependencies': dependencies,
+        'safe_to_delete': not any(dependencies.values()),
+    }
+
+
+@app.delete('/admin/companies/{company_id}', dependencies=[Depends(require_manager)])
+def delete_empty_company(
+    company_id: int,
+    confirm_name: str = Query(min_length=2, max_length=160),
+    manager: User = Depends(require_manager),
+    db: Session = Depends(get_db),
+):
+    company = db.query(Company).filter(Company.id == company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail='Company not found')
+    if confirm_name.strip() != company.name:
+        raise HTTPException(status_code=409, detail='Company name confirmation does not match')
+    dependencies = _company_deletion_dependencies(db, company.id)
+    blocking = {key: value for key, value in dependencies.items() if value}
+    if blocking:
+        raise HTTPException(status_code=409, detail={
+            'message': 'Company contains portfolio or ESG records and cannot be deleted with the empty-company cleanup.',
+            'dependencies': blocking,
+        })
+
+    company_snapshot = {'id': company.id, 'code': company.code, 'name': company.name, 'owner_user_id': company.user_id}
+    db.query(AuditEvent).filter(AuditEvent.company_id == company.id).update(
+        {AuditEvent.company_id: None}, synchronize_session=False,
+    )
+    db.query(Notification).filter(Notification.company_id == company.id).update(
+        {Notification.company_id: None}, synchronize_session=False,
+    )
+    db.query(NarrativeRecord).filter(NarrativeRecord.company_id == company.id).update(
+        {NarrativeRecord.company_id: None}, synchronize_session=False,
+    )
+    db.delete(company)
+    db.flush()
+    log_audit_event(db, 'empty_company_deleted', manager, metadata=company_snapshot)
+    db.commit()
+    return {'status': 'deleted', **company_snapshot}
+
+
 @app.post('/cycles', response_model=CycleInfo)
 def create_cycle(payload: CycleCreateRequest, manager: User = Depends(require_manager), db: Session = Depends(get_db)):
     max_cycle_year = datetime.now(timezone.utc).year + MAX_REPORTING_CYCLE_FUTURE_YEARS
@@ -4941,6 +5008,290 @@ def _serialize_holding(item: Holding, total_nav: float = 0) -> dict[str, Any]:
         'weight_percent': round((value / total_nav) * 100, 4) if total_nav else 0,
         'currency': item.currency, 'effective_from': item.effective_from,
         'effective_to': item.effective_to, 'status': item.status,
+    }
+
+
+PORTFOLIO_CSV_COLUMNS = (
+    'portfolio_code', 'portfolio_name', 'portfolio_base_currency', 'portfolio_description',
+    'fund_code', 'fund_name', 'fund_vintage_year', 'fund_base_currency',
+    'holding_external_id', 'company_code', 'ownership_percent', 'invested_amount_base',
+    'nav_value_base', 'currency', 'effective_from', 'effective_to', 'status',
+)
+
+
+def _parse_portfolio_csv_number(value: str, label: str, row_errors: list[str], *, positive: bool = False) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        row_errors.append(f'{label} must be numeric')
+        return None
+    if parsed < 0 or (positive and parsed <= 0):
+        row_errors.append(f'{label} must be {"positive" if positive else "zero or greater"}')
+    return parsed
+
+
+def _parse_portfolio_csv_rows(content: bytes, db: Session) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    try:
+        decoded = content.decode('utf-8-sig')
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status_code=422, detail='Portfolio CSV must use UTF-8 encoding') from exc
+    reader = csv.DictReader(io.StringIO(decoded))
+    headers = tuple(reader.fieldnames or ())
+    missing_columns = [column for column in PORTFOLIO_CSV_COLUMNS if column not in headers]
+    if missing_columns:
+        raise HTTPException(status_code=422, detail=f'Missing portfolio CSV columns: {", ".join(missing_columns)}')
+
+    companies_by_code = {
+        str(company.code or '').strip().upper(): company
+        for company in db.query(Company).all()
+        if str(company.code or '').strip()
+    }
+    portfolios_by_code = {
+        str(portfolio.code).strip().upper(): portfolio for portfolio in db.query(Portfolio).all()
+    }
+    funds_by_key = {
+        (str(fund.portfolio.code).strip().upper(), str(fund.code).strip().upper()): fund
+        for fund in db.query(Fund).options(selectinload(Fund.portfolio)).all()
+    }
+    seen_portfolios: dict[str, tuple[str, str]] = {}
+    seen_funds: dict[tuple[str, str], tuple[str, str, int | None]] = {}
+    seen_holdings: set[tuple[str, str, str]] = set()
+    parsed_rows: list[dict[str, Any]] = []
+    all_errors: list[dict[str, Any]] = []
+
+    for row_number, source_row in enumerate(reader, start=2):
+        row = {column: str(source_row.get(column) or '').strip() for column in PORTFOLIO_CSV_COLUMNS}
+        row_errors: list[str] = []
+        required = (
+            'portfolio_code', 'portfolio_name', 'portfolio_base_currency', 'fund_code', 'fund_name',
+            'fund_base_currency', 'holding_external_id', 'company_code', 'ownership_percent',
+            'invested_amount_base', 'nav_value_base', 'currency', 'effective_from', 'status',
+        )
+        for column in required:
+            if not row[column]:
+                row_errors.append(f'{column} is required')
+
+        portfolio_code = row['portfolio_code'].upper()
+        fund_code = row['fund_code'].upper()
+        company_code = row['company_code'].upper()
+        portfolio_currency = row['portfolio_base_currency'].upper()
+        fund_currency = row['fund_base_currency'].upper()
+        holding_currency = row['currency'].upper()
+        status = row['status'].lower()
+        if portfolio_code and not re.fullmatch(r'[A-Z0-9_-]{2,40}', portfolio_code):
+            row_errors.append('portfolio_code must use 2-40 letters, numbers, underscores, or hyphens')
+        if fund_code and not re.fullmatch(r'[A-Z0-9_-]{2,40}', fund_code):
+            row_errors.append('fund_code must use 2-40 letters, numbers, underscores, or hyphens')
+        if len(row['portfolio_name']) > 160:
+            row_errors.append('portfolio_name cannot exceed 160 characters')
+        if len(row['fund_name']) > 160:
+            row_errors.append('fund_name cannot exceed 160 characters')
+        if len(row['holding_external_id']) > 120:
+            row_errors.append('holding_external_id cannot exceed 120 characters')
+        if len(row['portfolio_description']) > 2000:
+            row_errors.append('portfolio_description cannot exceed 2000 characters')
+        for label, currency in (
+            ('portfolio_base_currency', portfolio_currency),
+            ('fund_base_currency', fund_currency),
+            ('currency', holding_currency),
+        ):
+            if currency and not re.fullmatch(r'[A-Z]{3}', currency):
+                row_errors.append(f'{label} must be a three-letter ISO currency code')
+        if portfolio_currency and (fund_currency != portfolio_currency or holding_currency != portfolio_currency):
+            row_errors.append('Portfolio, fund, and holding currencies must match; no currency conversion is performed')
+        if status not in {'active', 'exited'}:
+            row_errors.append('status must be active or exited')
+
+        ownership = _parse_portfolio_csv_number(row['ownership_percent'], 'ownership_percent', row_errors, positive=True)
+        if ownership is not None and ownership > 100:
+            row_errors.append('ownership_percent cannot exceed 100')
+        invested = _parse_portfolio_csv_number(row['invested_amount_base'], 'invested_amount_base', row_errors)
+        nav = _parse_portfolio_csv_number(row['nav_value_base'], 'nav_value_base', row_errors)
+        if invested is not None and nav is not None and invested <= 0 and nav <= 0:
+            row_errors.append('Provide a positive NAV or invested amount')
+
+        vintage_year: int | None = None
+        if row['fund_vintage_year']:
+            try:
+                vintage_year = int(row['fund_vintage_year'])
+                if vintage_year < 1900 or vintage_year > 2100:
+                    row_errors.append('fund_vintage_year must be between 1900 and 2100')
+            except ValueError:
+                row_errors.append('fund_vintage_year must be a whole year')
+        try:
+            _validate_effective_dates(row['effective_from'], row['effective_to'] or None)
+        except HTTPException as exc:
+            row_errors.append(str(exc.detail))
+
+        company = companies_by_code.get(company_code)
+        if company is None:
+            row_errors.append(f'company_code {company_code or "NOT_PROVIDED"} does not match an onboarded company')
+
+        portfolio_signature = (row['portfolio_name'], portfolio_currency)
+        if portfolio_code in seen_portfolios and seen_portfolios[portfolio_code] != portfolio_signature:
+            row_errors.append('Portfolio name or currency conflicts with another row')
+        else:
+            seen_portfolios[portfolio_code] = portfolio_signature
+        fund_key = (portfolio_code, fund_code)
+        fund_signature = (row['fund_name'], fund_currency, vintage_year)
+        if fund_key in seen_funds and seen_funds[fund_key] != fund_signature:
+            row_errors.append('Fund name, currency, or vintage conflicts with another row')
+        else:
+            seen_funds[fund_key] = fund_signature
+        holding_key = (portfolio_code, fund_code, row['holding_external_id'])
+        if holding_key in seen_holdings:
+            row_errors.append('Duplicate holding_external_id within the same fund')
+        seen_holdings.add(holding_key)
+
+        existing_portfolio = portfolios_by_code.get(portfolio_code)
+        if existing_portfolio and existing_portfolio.base_currency.upper() != portfolio_currency:
+            row_errors.append('Existing portfolio base currency does not match the CSV')
+        existing_fund = funds_by_key.get(fund_key)
+        if existing_fund and existing_fund.base_currency.upper() != fund_currency:
+            row_errors.append('Existing fund base currency does not match the CSV')
+
+        parsed = {
+            **row,
+            'row_number': row_number,
+            'portfolio_code': portfolio_code,
+            'portfolio_base_currency': portfolio_currency,
+            'fund_code': fund_code,
+            'fund_base_currency': fund_currency,
+            'company_code': company_code,
+            'company_id': company.id if company else None,
+            'ownership_percent': ownership,
+            'invested_amount_base': invested,
+            'nav_value_base': nav,
+            'currency': holding_currency,
+            'fund_vintage_year': vintage_year,
+            'effective_to': row['effective_to'] or None,
+            'status': status,
+            'validation_status': 'BLOCKED' if row_errors else 'READY',
+            'validation_errors': row_errors,
+        }
+        parsed_rows.append(parsed)
+        if row_errors:
+            all_errors.append({'row_number': row_number, 'holding_external_id': row['holding_external_id'], 'errors': row_errors})
+    if not parsed_rows:
+        raise HTTPException(status_code=422, detail='Portfolio CSV contains no data rows')
+    return parsed_rows, all_errors
+
+
+@app.post('/admin/import/portfolio-csv')
+async def import_portfolio_csv(
+    file: UploadFile = File(...),
+    mode: str = Form(default='preview'),
+    manager: User = Depends(require_manager),
+    db: Session = Depends(get_db),
+):
+    normalized_mode = mode.strip().lower()
+    if normalized_mode not in {'preview', 'commit'}:
+        raise HTTPException(status_code=422, detail='mode must be preview or commit')
+    if not str(file.filename or '').lower().endswith('.csv'):
+        raise HTTPException(status_code=422, detail='Upload a .csv portfolio file')
+    content = await file.read()
+    if len(content) > 2_000_000:
+        raise HTTPException(status_code=413, detail='Portfolio CSV cannot exceed 2 MB')
+    rows, errors = _parse_portfolio_csv_rows(content, db)
+    if normalized_mode == 'commit' and errors:
+        raise HTTPException(status_code=422, detail={
+            'message': 'Portfolio CSV contains blocked rows. Correct the file and preview it again.',
+            'errors': errors,
+        })
+
+    summary = {
+        'total_rows': len(rows),
+        'ready_rows': len(rows) - len(errors),
+        'blocked_rows': len(errors),
+        'portfolios_created': 0,
+        'portfolios_updated': 0,
+        'funds_created': 0,
+        'funds_updated': 0,
+        'holdings_created': 0,
+        'holdings_updated': 0,
+    }
+    if normalized_mode == 'commit':
+        portfolio_cache: dict[str, Portfolio] = {}
+        fund_cache: dict[tuple[str, str], Fund] = {}
+        for row in rows:
+            portfolio = portfolio_cache.get(row['portfolio_code']) or db.query(Portfolio).filter(
+                func.lower(Portfolio.code) == row['portfolio_code'].lower()
+            ).first()
+            if portfolio is None:
+                portfolio = Portfolio(
+                    code=row['portfolio_code'],
+                    name=row['portfolio_name'],
+                    base_currency=row['portfolio_base_currency'],
+                    description=row['portfolio_description'],
+                )
+                db.add(portfolio)
+                db.flush()
+                summary['portfolios_created'] += 1
+            elif row['portfolio_code'] not in portfolio_cache:
+                portfolio.name = row['portfolio_name']
+                portfolio.description = row['portfolio_description']
+                portfolio.updated_at = datetime.utcnow()
+                summary['portfolios_updated'] += 1
+            portfolio_cache[row['portfolio_code']] = portfolio
+
+            fund_key = (row['portfolio_code'], row['fund_code'])
+            fund = fund_cache.get(fund_key) or db.query(Fund).filter(
+                Fund.portfolio_id == portfolio.id,
+                func.lower(Fund.code) == row['fund_code'].lower(),
+            ).first()
+            if fund is None:
+                fund = Fund(
+                    portfolio_id=portfolio.id,
+                    code=row['fund_code'],
+                    name=row['fund_name'],
+                    vintage_year=row['fund_vintage_year'],
+                    base_currency=row['fund_base_currency'],
+                )
+                db.add(fund)
+                db.flush()
+                summary['funds_created'] += 1
+            elif fund_key not in fund_cache:
+                fund.name = row['fund_name']
+                fund.vintage_year = row['fund_vintage_year']
+                fund.updated_at = datetime.utcnow()
+                summary['funds_updated'] += 1
+            fund_cache[fund_key] = fund
+
+            holding = db.query(Holding).filter(
+                Holding.fund_id == fund.id,
+                Holding.external_id == row['holding_external_id'],
+            ).first()
+            values = {
+                'company_id': row['company_id'],
+                'ownership_percent': row['ownership_percent'],
+                'invested_amount_base': row['invested_amount_base'],
+                'nav_value_base': row['nav_value_base'],
+                'currency': row['currency'],
+                'effective_from': row['effective_from'],
+                'effective_to': row['effective_to'],
+                'status': row['status'],
+            }
+            if holding is None:
+                db.add(Holding(fund_id=fund.id, external_id=row['holding_external_id'], **values))
+                summary['holdings_created'] += 1
+            else:
+                for key, value in values.items():
+                    setattr(holding, key, value)
+                holding.updated_at = datetime.utcnow()
+                summary['holdings_updated'] += 1
+
+        log_audit_event(db, 'portfolio_csv_import_committed', manager, metadata={
+            'filename': Path(file.filename or 'portfolio.csv').name,
+            **summary,
+        })
+        db.commit()
+
+    return {
+        'mode': normalized_mode,
+        'file_name': Path(file.filename or 'portfolio.csv').name,
+        'summary': summary,
+        'errors': errors,
+        'rows': rows,
     }
 
 

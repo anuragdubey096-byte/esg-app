@@ -17,6 +17,8 @@ All notable GreenLedger changes are recorded here. Versions follow Semantic Vers
 - A non-production backup/restore drill with integrity and data-marker verification.
 - Explicit portfolio, fund, and holding records with ownership, base-currency values, and effective dates.
 - A dedicated Portfolio & Company Onboarding workspace for company contributor accounts, portfolio/fund setup, and holding assignment.
+- An editable CSV portfolio workflow with preview validation, repeatable upserts, and a synthetic 20-company demonstration template.
+- Guarded manager operations for checking and deleting empty company records without removing companies that have ESG or holding data.
 
 ### Changed
 
