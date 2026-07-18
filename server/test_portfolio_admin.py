@@ -2,7 +2,7 @@ import csv
 from pathlib import Path
 
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -24,6 +24,11 @@ def build_test_context():
     Base.metadata.create_all(engine)
     session_factory = sessionmaker(bind=engine, autoflush=False, autocommit=False)
     db = session_factory()
+    db.execute(text(
+        'CREATE TABLE onboarding_states ('
+        'id INTEGER PRIMARY KEY, company_id INTEGER NOT NULL, '
+        'FOREIGN KEY(company_id) REFERENCES companies(id))'
+    ))
     manager = User(name='Test Manager', email='manager-test@example.com', password='test', role=UserRole.MANAGER)
     owner = User(name='Portfolio Owner', email='owner-test@example.com', password='test', role=UserRole.COMPANY)
     db.add_all([manager, owner])
@@ -104,17 +109,23 @@ def test_empty_company_deletion_refuses_company_with_esg_data():
         protected_company = Company(name='Protected Company', sector='Energy', user_id=owner.id)
         db.add_all([empty_company, protected_company])
         db.flush()
+        db.execute(
+            text('INSERT INTO onboarding_states (company_id) VALUES (:company_id)'),
+            {'company_id': empty_company.id},
+        )
         db.add(Submission(company_id=protected_company.id, esg_data='{}', status='submitted'))
         db.commit()
 
         check = client.get(f'/admin/companies/{empty_company.id}/deletion-check')
         assert check.status_code == 200
         assert check.json()['safe_to_delete'] is True
+        assert check.json()['cleanup_dependencies']['onboarding_states'] == 1
         deleted = client.delete(
             f'/admin/companies/{empty_company.id}',
             params={'confirm_name': empty_company.name},
         )
         assert deleted.status_code == 200
+        assert deleted.json()['cleanup_dependencies']['onboarding_states'] == 1
         assert db.query(Company).filter(Company.id == empty_company.id).first() is None
 
         refused = client.delete(

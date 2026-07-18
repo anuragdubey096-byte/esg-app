@@ -24,7 +24,8 @@ from xml.etree import ElementTree
 
 from fastapi import Depends, FastAPI, HTTPException, UploadFile, File, Form, Header, Cookie, Query, Body, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import MetaData, Table, delete as sqlalchemy_delete, func, inspect, or_, text
+from sqlalchemy import MetaData, Table as SQLTable, delete as sqlalchemy_delete, func, inspect, or_, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 from pydantic import ValidationError
 from reportlab.lib import colors
@@ -885,7 +886,7 @@ def cleanup_irrelevant_qa_cycles(db: Session) -> dict[str, Any]:
     for table_name, column_values in legacy_dependencies:
         if not database_inspector.has_table(table_name):
             continue
-        legacy_table = Table(table_name, MetaData(), autoload_with=db.bind)
+        legacy_table = SQLTable(table_name, MetaData(), autoload_with=db.bind)
         conditions = [
             legacy_table.c[column_name].in_(values)
             for column_name, values in column_values.items()
@@ -1877,19 +1878,44 @@ def create_company(payload: CompanyCreateRequest, manager: User = Depends(requir
     )
 
 
-def _company_deletion_dependencies(db: Session, company_id: int) -> dict[str, int]:
-    return {
-        'holdings': db.query(Holding).filter(Holding.company_id == company_id).count(),
-        'submissions': db.query(Submission).filter(Submission.company_id == company_id).count(),
-        'submission_drafts': db.query(SubmissionDraft).filter(SubmissionDraft.company_id == company_id).count(),
-        'evidence_files': db.query(SubmissionEvidence).filter(SubmissionEvidence.company_id == company_id).count(),
-        'action_plans': db.query(ActionPlan).filter(ActionPlan.company_id == company_id).count(),
-        'esg_targets': db.query(ESGTarget).filter(ESGTarget.company_id == company_id).count(),
-        'review_actions': db.query(ReviewAction).filter(ReviewAction.company_id == company_id).count(),
-        'validation_flags': db.query(ValidationFlag).filter(ValidationFlag.company_id == company_id).count(),
-        'submission_unlocks': db.query(SubmissionUnlock).filter(SubmissionUnlock.company_id == company_id).count(),
-        'reminder_logs': db.query(ReminderLog).filter(ReminderLog.company_id == company_id).count(),
-    }
+COMPANY_REFERENCE_CLEANUP_TABLES = {
+    'audit_events', 'notifications', 'narrative_records', 'onboarding_states',
+}
+
+
+def _company_reference_counts(db: Session, company_id: int) -> dict[str, int]:
+    database_inspector = inspect(db.bind)
+    references: dict[str, int] = {}
+    for table_name in database_inspector.get_table_names():
+        company_columns: set[str] = set()
+        for foreign_key in database_inspector.get_foreign_keys(table_name):
+            if foreign_key.get('referred_table') != 'companies':
+                continue
+            constrained = foreign_key.get('constrained_columns') or []
+            referred = foreign_key.get('referred_columns') or []
+            company_columns.update(
+                source for source, target in zip(constrained, referred)
+                if target == 'id'
+            )
+        if not company_columns:
+            continue
+        legacy_table = SQLTable(table_name, MetaData(), autoload_with=db.bind)
+        conditions = [legacy_table.c[column] == company_id for column in company_columns if column in legacy_table.c]
+        if not conditions:
+            continue
+        count = int(db.execute(
+            select(func.count()).select_from(legacy_table).where(or_(*conditions))
+        ).scalar_one())
+        if count:
+            references[table_name] = count
+    return references
+
+
+def _company_deletion_state(db: Session, company_id: int) -> tuple[dict[str, int], dict[str, int]]:
+    references = _company_reference_counts(db, company_id)
+    blocking = {key: value for key, value in references.items() if key not in COMPANY_REFERENCE_CLEANUP_TABLES}
+    cleanup = {key: value for key, value in references.items() if key in COMPANY_REFERENCE_CLEANUP_TABLES}
+    return blocking, cleanup
 
 
 @app.get('/admin/companies/{company_id}/deletion-check', dependencies=[Depends(require_manager)])
@@ -1897,12 +1923,13 @@ def company_deletion_check(company_id: int, db: Session = Depends(get_db)):
     company = db.query(Company).filter(Company.id == company_id).first()
     if not company:
         raise HTTPException(status_code=404, detail='Company not found')
-    dependencies = _company_deletion_dependencies(db, company.id)
+    dependencies, cleanup_dependencies = _company_deletion_state(db, company.id)
     return {
         'id': company.id,
         'code': company.code,
         'name': company.name,
         'dependencies': dependencies,
+        'cleanup_dependencies': cleanup_dependencies,
         'safe_to_delete': not any(dependencies.values()),
     }
 
@@ -1919,8 +1946,7 @@ def delete_empty_company(
         raise HTTPException(status_code=404, detail='Company not found')
     if confirm_name.strip() != company.name:
         raise HTTPException(status_code=409, detail='Company name confirmation does not match')
-    dependencies = _company_deletion_dependencies(db, company.id)
-    blocking = {key: value for key, value in dependencies.items() if value}
+    blocking, cleanup_dependencies = _company_deletion_state(db, company.id)
     if blocking:
         raise HTTPException(status_code=409, detail={
             'message': 'Company contains portfolio or ESG records and cannot be deleted with the empty-company cleanup.',
@@ -1937,11 +1963,24 @@ def delete_empty_company(
     db.query(NarrativeRecord).filter(NarrativeRecord.company_id == company.id).update(
         {NarrativeRecord.company_id: None}, synchronize_session=False,
     )
-    db.delete(company)
-    db.flush()
-    log_audit_event(db, 'empty_company_deleted', manager, metadata=company_snapshot)
-    db.commit()
-    return {'status': 'deleted', **company_snapshot}
+    if cleanup_dependencies.get('onboarding_states'):
+        onboarding_table = SQLTable('onboarding_states', MetaData(), autoload_with=db.bind)
+        db.execute(sqlalchemy_delete(onboarding_table).where(onboarding_table.c.company_id == company.id))
+    try:
+        db.delete(company)
+        db.flush()
+        log_audit_event(db, 'empty_company_deleted', manager, metadata={
+            **company_snapshot,
+            'cleanup_dependencies': cleanup_dependencies,
+        })
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail='Company dependencies changed during deletion. Run the deletion check again.',
+        ) from exc
+    return {'status': 'deleted', 'cleanup_dependencies': cleanup_dependencies, **company_snapshot}
 
 
 @app.post('/cycles', response_model=CycleInfo)
