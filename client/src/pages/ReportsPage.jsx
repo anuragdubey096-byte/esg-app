@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
+import ExecutivePageHeader from '../components/ExecutivePageHeader'
 import SectionCard from '../components/SectionCard'
 import useDashboardData from '../hooks/useDashboardData'
 import { API_BASE_URL } from '../lib/api'
@@ -78,6 +79,16 @@ export default function ReportsPage() {
 
   return (
     <div className="page-grid">
+      <ExecutivePageHeader
+        eyebrow="Reporting"
+        title="Reports"
+        description="Generate framework-aligned exports and LP reporting feeds from approved portfolio ESG data."
+        meta={[
+          { label: 'Framework', value: framework },
+          { label: 'Format', value: format.toUpperCase() },
+        ]}
+      />
+
       <SectionCard title="Reports" subtitle="Generate aligned reporting exports for LPs and internal committees">
         {user?.role !== 'manager' ? (
           <div className="space-y-3">

@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import DataTable from '../components/DataTable'
+import ExecutivePageHeader from '../components/ExecutivePageHeader'
 import SectionCard from '../components/SectionCard'
 import StatusBadge from '../components/StatusBadge'
 import useDashboardData from '../hooks/useDashboardData'
@@ -43,6 +44,16 @@ export default function AlertsRisksPage() {
 
   return (
     <div className="page-grid">
+      <ExecutivePageHeader
+        eyebrow="Risk operations"
+        title="Alerts & Risks"
+        description="Prioritize active validation flags and compliance issues across the portfolio."
+        meta={[
+          { label: 'High severity', value: alertCards[0]?.value || 0 },
+          { label: 'Active issues', value: riskIssueRows.length },
+        ]}
+      />
+
       <section className="alert-card-grid">
         {alertCards.map((card) => (
           <article key={card.title} className={`alert-card ${card.severity}`}>

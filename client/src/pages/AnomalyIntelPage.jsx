@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import SectionCard from '../components/SectionCard'
 import DataTable from '../components/DataTable'
+import ExecutivePageHeader from '../components/ExecutivePageHeader'
 import { API_BASE_URL } from '../lib/api'
 
 const BACKEND_URL = API_BASE_URL
@@ -191,6 +192,16 @@ export default function AnomalyIntelPage() {
 
   return (
     <div className="page-grid">
+      <ExecutivePageHeader
+        eyebrow="Data quality"
+        title="Anomaly Intelligence"
+        description="Detect cross-portfolio outliers, validation anomalies, and company-specific data quality issues."
+        meta={[
+          { label: 'Active issues', value: rows.length },
+          { label: 'Flag types', value: flagTypeCards.length },
+        ]}
+      />
+
       <section className="alert-card-grid">
         {summaryCards.map((card) => (
           <article key={card.title} className={`alert-card ${card.severity}`}>

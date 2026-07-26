@@ -150,7 +150,16 @@ export default function PortfolioOnboardingPage() {
   const funds = structure.portfolios.flatMap((portfolio) => portfolio.funds.map((fund) => ({ ...fund, portfolio_name: portfolio.name })))
 
   return <div className="page-grid">
-    <ExecutivePageHeader eyebrow="Portfolio administration" title="Portfolio & company onboarding" description="Create the investment hierarchy, onboard company contributors, and establish the ownership and valuation scope used by ESG analytics." />
+    <ExecutivePageHeader
+      eyebrow="Portfolio administration"
+      title="Portfolio & company onboarding"
+      description="Create the investment hierarchy, onboard company contributors, and establish the ownership and valuation scope used by ESG analytics."
+      meta={[
+        { label: 'Companies', value: companies.length },
+        { label: 'Holdings', value: structure.summary.holding_count || 0 },
+        { label: 'Exposure status', value: structure.summary.ready_for_exposure ? 'Ready' : 'Setup required' },
+      ]}
+    />
     <section className="executive-kpi-grid" aria-label="Portfolio onboarding status">
       <KpiCard title="Companies" value={companies.length} trendLabel="ESG data-collection entities" icon="overview" />
       <KpiCard title="Portfolios" value={structure.summary.portfolio_count || 0} trendLabel="investment scopes" icon="analytics" />
@@ -186,7 +195,7 @@ export default function PortfolioOnboardingPage() {
       <div className="portfolio-setup-grid">
         <div className="target-form portfolio-import-card">
           <h4>Demo template</h4>
-          <p>Contains synthetic, editable records for C001–C020. It is demonstration data, not actual financial exposure.</p>
+          <p>Contains synthetic, editable records for C001-C020. It is demonstration data, not actual financial exposure.</p>
           <a className="button secondary" href="/demo-portfolio.csv" download>Download demo CSV</a>
         </div>
         <div className="target-form portfolio-import-card">
@@ -210,7 +219,7 @@ export default function PortfolioOnboardingPage() {
     </SectionCard>
 
     {message ? <p className="action-message" role="status">{message}</p> : null}
-    <SectionCard title="Active holdings register" subtitle="Current ownership, valuation, and portfolio weight"><DataTable columns={holdingColumns} rows={structure.holdings} pageSize={10} emptyMessage={loading ? 'Loading holdings…' : 'No active holdings configured.'} /></SectionCard>
-    <SectionCard title="Onboarded companies" subtitle="Companies available for ESG data collection and holding assignment"><DataTable columns={companyColumns} rows={companies} pageSize={10} emptyMessage={loading ? 'Loading companies…' : 'No companies onboarded.'} /></SectionCard>
+    <SectionCard title="Active holdings register" subtitle="Current ownership, valuation, and portfolio weight"><DataTable columns={holdingColumns} rows={structure.holdings} pageSize={10} emptyMessage={loading ? 'Loading holdings...' : 'No active holdings configured.'} /></SectionCard>
+    <SectionCard title="Onboarded companies" subtitle="Companies available for ESG data collection and holding assignment"><DataTable columns={companyColumns} rows={companies} pageSize={10} emptyMessage={loading ? 'Loading companies...' : 'No companies onboarded.'} /></SectionCard>
   </div>
 }

@@ -3445,13 +3445,29 @@ p {
 .portfolio-setup-grid form,
 .portfolio-import-card {
   padding: 1rem;
-  border: 1px solid #e2e8f0;
-  border-radius: 0.75rem;
-  background: #f8fafc;
+  border: 1px solid #d6e4f0;
+  border-radius: 14px;
+  background: linear-gradient(145deg, #ffffff, #f7fbff);
 }
 
+.portfolio-setup-grid .target-form,
 .portfolio-import-card {
   grid-template-columns: 1fr;
+}
+
+.portfolio-setup-grid h4,
+.portfolio-import-card h4 {
+  color: var(--ink-strong);
+  font-size: 0.95rem;
+  letter-spacing: -0.01em;
+}
+
+.portfolio-import-card p,
+.portfolio-import-card span,
+.portfolio-import-card small {
+  color: var(--ink-muted);
+  font-size: 0.78rem;
+  line-height: 1.5;
 }
 
 .button-row {
@@ -3481,4 +3497,293 @@ p {
   border-radius: 0.75rem;
   background: #ecfdf5;
   color: #065f46;
+}
+
+/* Cross-page consistency layer */
+.page-container {
+  max-width: 1560px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.page-grid {
+  align-content: start;
+}
+
+.page-grid > .section-card,
+.page-grid > .alert-card-grid,
+.page-grid > .kpi-grid,
+.page-grid > .executive-kpi-grid,
+.page-grid > .two-col-grid,
+.page-grid > .three-col-grid {
+  width: 100%;
+}
+
+.section-card {
+  min-width: 0;
+}
+
+.section-card-header h3 {
+  color: var(--ink-strong);
+  font-size: 1rem;
+  line-height: 1.25;
+  letter-spacing: -0.012em;
+}
+
+.section-card-header > div:first-child {
+  min-width: 0;
+}
+
+.section-card-header > div:last-child {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
+.button,
+.table-action,
+.framework-button,
+.tab-button,
+.pagination-controls button,
+.data-card-sort button,
+.submission-save-state button,
+.submission-validation-summary button,
+.submission-step-actions button {
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  border-radius: 10px;
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease, background 160ms ease, color 160ms ease;
+}
+
+.button.primary,
+.button:not(.secondary):not(.warning):not(.good):not(.ghost) {
+  background: linear-gradient(130deg, var(--brand-primary), var(--brand-secondary));
+  color: #fff;
+  box-shadow: 0 10px 20px rgba(15, 118, 110, 0.18);
+}
+
+.button.secondary,
+.button.ghost,
+.table-action,
+.pagination-controls button,
+.data-card-sort button {
+  border: 1px solid #c9d8e8;
+  background: #fff;
+  color: #174f78;
+  box-shadow: none;
+}
+
+.button:hover:not(:disabled),
+.table-action:hover:not(:disabled),
+.framework-button:hover:not(:disabled),
+.tab-button:hover:not(:disabled),
+.pagination-controls button:hover:not(:disabled),
+.data-card-sort button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 20px rgba(15, 23, 42, 0.1);
+}
+
+.button:disabled,
+.table-action:disabled,
+.framework-button:disabled,
+.tab-button:disabled,
+.pagination-controls button:disabled,
+.data-card-sort button:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+  transform: none;
+  box-shadow: none;
+}
+
+.page-container :where(input, select, textarea) {
+  min-height: 40px;
+  border: 1px solid #cbd8e6;
+  border-radius: 10px;
+  background: #fff;
+  color: var(--ink-strong);
+  font: inherit;
+  font-size: 0.82rem;
+}
+
+.page-container :where(input, select) {
+  padding: 0.55rem 0.68rem;
+}
+
+.page-container textarea {
+  min-height: 96px;
+  padding: 0.65rem 0.72rem;
+  resize: vertical;
+}
+
+.page-container :where(input, select, textarea):focus-visible,
+.button:focus-visible,
+.table-action:focus-visible,
+.framework-button:focus-visible,
+.tab-button:focus-visible,
+.pagination-controls button:focus-visible,
+.data-card-sort button:focus-visible {
+  outline: 3px solid rgba(15, 118, 110, 0.16);
+  outline-offset: 2px;
+  border-color: #7ca6de;
+}
+
+.filter-bar,
+.report-form,
+.action-row {
+  border-color: #d6e4f0;
+  background: linear-gradient(145deg, #f8fbff, #f3f8fc);
+}
+
+.filter-bar label,
+.report-form label,
+.action-row label,
+.onboarding-form-grid label,
+.target-form label {
+  min-width: 0;
+  color: #526b80;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: end;
+  padding: 0.75rem;
+  border: 1px solid #d6e4f0;
+  border-radius: 12px;
+}
+
+.action-row label {
+  display: grid;
+  flex: 1 1 180px;
+  gap: 0.35rem;
+}
+
+.action-message {
+  padding: 0.72rem 0.85rem;
+  border: 1px solid #d7e4ee;
+  border-radius: 11px;
+  background: #f8fbff;
+  line-height: 1.45;
+}
+
+.alert-card {
+  position: relative;
+  overflow: hidden;
+  min-height: 112px;
+  display: grid;
+  align-content: space-between;
+  border-color: #d5e3ef;
+  background: linear-gradient(155deg, #fff, #f6fafc);
+  box-shadow: 0 12px 26px rgba(15, 23, 42, 0.055);
+}
+
+.alert-card::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto;
+  height: 3px;
+  background: #2563eb;
+}
+
+.alert-card.warning::before { background: #d97706; }
+.alert-card.critical::before { background: #dc2626; }
+.alert-card.info::before { background: #2563eb; }
+
+.alert-card p {
+  color: #526b80;
+  font-weight: 800;
+}
+
+.alert-card strong {
+  color: var(--ink-strong);
+  letter-spacing: -0.035em;
+}
+
+.framework-row,
+.tab-row {
+  gap: 0.45rem;
+  padding: 0.38rem;
+  border: 1px solid #d7e4ee;
+  border-radius: 14px;
+  background: #f7fbfd;
+}
+
+.framework-button,
+.tab-button {
+  border: 0;
+  background: transparent;
+  color: #526b80;
+}
+
+.framework-button.active,
+.tab-button.active {
+  background: #0d3342;
+  color: #f8fafc;
+  box-shadow: 0 7px 16px rgba(13, 51, 66, 0.18);
+}
+
+.table-shell {
+  border-radius: 14px;
+  border-color: #d7e4ee;
+  background: #fff;
+}
+
+.data-table th,
+.data-table td {
+  vertical-align: middle;
+}
+
+.data-table thead th {
+  color: #526b80;
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.data-table tbody td {
+  color: #27445c;
+  font-size: 0.8rem;
+}
+
+.status-badge {
+  min-width: max-content;
+}
+
+.report-form {
+  align-items: end;
+}
+
+.report-form .button {
+  width: 100%;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .button,
+  .table-action,
+  .framework-button,
+  .tab-button,
+  .pagination-controls button,
+  .data-card-sort button {
+    transition: none;
+  }
+
+  .button:hover:not(:disabled),
+  .table-action:hover:not(:disabled),
+  .framework-button:hover:not(:disabled),
+  .tab-button:hover:not(:disabled),
+  .pagination-controls button:hover:not(:disabled),
+  .data-card-sort button:hover:not(:disabled) {
+    transform: none;
+  }
 }

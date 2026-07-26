@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import DataTable from '../components/DataTable'
+import ExecutivePageHeader from '../components/ExecutivePageHeader'
 import SectionCard from '../components/SectionCard'
 import StatusBadge from '../components/StatusBadge'
 import useDashboardData from '../hooks/useDashboardData'
@@ -171,6 +172,16 @@ export default function AdminSettingsPage() {
 
   return (
     <div className="page-grid">
+      <ExecutivePageHeader
+        eyebrow="Administration"
+        title="Cycle Configuration"
+        description="Manage reporting cycles, controlled imports, user visibility, and governance operations."
+        meta={[
+          { label: 'Active tab', value: activeTab },
+          { label: 'Cycles', value: cycles.length },
+        ]}
+      />
+
       <SectionCard
         title="Admin Settings"
         subtitle="Manage secure reporting cycles, imports, access, and data governance controls"

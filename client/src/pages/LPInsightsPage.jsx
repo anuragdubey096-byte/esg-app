@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import SectionCard from '../components/SectionCard'
 import DataTable from '../components/DataTable'
+import ExecutivePageHeader from '../components/ExecutivePageHeader'
 import KpiCard from '../components/KpiCard'
 import { API_BASE_URL } from '../lib/api'
 import useExternalContextFeed from '../hooks/useExternalContextFeed'
@@ -92,6 +93,16 @@ export default function LPInsightsPage() {
 
   return (
     <div className="page-grid">
+      <ExecutivePageHeader
+        eyebrow="Investor reporting"
+        title="LP Insights"
+        description="Translate portfolio ESG performance into LP-ready metrics, impact narrative, reports, and external context."
+        meta={[
+          { label: 'Active cycle', value: completion.active_cycle_year || reports?.active_cycle_year || 'N/A' },
+          { label: 'Feed mode', value: liveFeed.meta.fallback_used ? 'Fallback' : 'Live' },
+        ]}
+      />
+
       <section className="kpi-grid">
         <KpiCard title="Completion %" value={`${Number(completion.completion_percent || 0).toFixed(1)}%`} />
         <KpiCard title="Approved Companies" value={`${completion.companies_with_approved_submission || 0}`} />

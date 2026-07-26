@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import SectionCard from '../components/SectionCard'
 import DataTable from '../components/DataTable'
+import ExecutivePageHeader from '../components/ExecutivePageHeader'
 import { API_BASE_URL } from '../lib/api'
 
 const BACKEND_URL = API_BASE_URL
@@ -70,6 +71,16 @@ export default function NewsletterOpsPage() {
 
   return (
     <div className="page-grid">
+      <ExecutivePageHeader
+        eyebrow="Distribution"
+        title="Newsletter Operations"
+        description="Generate, preview, export, and dry-run ESG newsletter content from the same reporting context."
+        meta={[
+          { label: 'Audience', value: audience },
+          { label: 'Tone', value: tone },
+        ]}
+      />
+
       <SectionCard title="Newsletter Operations" subtitle="Phase 6 compatibility routes for generate/export/send">
         <div className="action-row">
           <label>
