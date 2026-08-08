@@ -91,13 +91,13 @@ export default function ReportsPage() {
 
       <SectionCard title="Reports" subtitle="Generate aligned reporting exports for LPs and internal committees">
         {user?.role !== 'manager' ? (
-          <div className="space-y-3">
+          <div className="stacked-section compact">
             <p className="action-message">Direct CSV/PDF export is manager-only. LP reports feed is available below.</p>
             <button className="button" type="button" onClick={loadLpReports} disabled={loading}>
               {loading ? 'Loading...' : 'Load LP Reports Feed'}
             </button>
             {lpFeed ? (
-              <div className="text-sm text-slate-700">
+              <div className="summary-box">
                 <p><strong>Available reports:</strong> {(lpFeed.available_reports || []).join(', ') || 'None'}</p>
                 <p><strong>Active cycle year:</strong> {lpFeed.active_cycle_year || 'N/A'}</p>
                 <p>{lpFeed.message || ''}</p>
@@ -119,21 +119,21 @@ export default function ReportsPage() {
         </div>
 
         {user?.role === 'manager' ? (
-          <div className="grid gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-3">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Formal report</p>
-              <p className="mt-1 text-sm font-semibold text-slate-900">Company, cycle and ESG pillars</p>
-              <p className="mt-1 text-xs text-slate-600">Environmental, Social and Governance metrics with internal scores.</p>
+          <div className="report-capability-grid">
+            <div className="summary-box">
+              <p className="eyebrow">Formal report</p>
+              <strong>Company, cycle and ESG pillars</strong>
+              <p>Environmental, Social and Governance metrics with internal scores.</p>
             </div>
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Supporting record</p>
-              <p className="mt-1 text-sm font-semibold text-slate-900">Evidence and audit history</p>
-              <p className="mt-1 text-xs text-slate-600">Evidence coverage, validation findings, review activity and methodology.</p>
+            <div className="summary-box">
+              <p className="eyebrow">Supporting record</p>
+              <strong>Evidence and audit history</strong>
+              <p>Evidence coverage, validation findings, review activity and methodology.</p>
             </div>
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Later phase</p>
-              <p className="mt-1 text-sm font-semibold text-slate-900">Scheduled generation</p>
-              <p className="mt-1 text-xs text-slate-600">Planned, but intentionally not active until delivery and retention controls are defined.</p>
+            <div className="summary-box muted">
+              <p className="eyebrow">Later phase</p>
+              <strong>Scheduled generation</strong>
+              <p>Planned, but intentionally not active until delivery and retention controls are defined.</p>
             </div>
           </div>
         ) : null}

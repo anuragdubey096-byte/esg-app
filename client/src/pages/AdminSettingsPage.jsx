@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import DataTable from '../components/DataTable'
 import ExecutivePageHeader from '../components/ExecutivePageHeader'
+import KpiCard from '../components/KpiCard'
 import SectionCard from '../components/SectionCard'
 import StatusBadge from '../components/StatusBadge'
 import useDashboardData from '../hooks/useDashboardData'
@@ -157,12 +158,12 @@ export default function AdminSettingsPage() {
           key: 'actions',
           label: 'Actions',
           render: (row) => (
-            <div className="flex flex-wrap items-center gap-3">
-              <button type="button" className="text-xs text-green-700 font-bold uppercase" onClick={() => updateCycleStatus(row.id, 'active')}>Activate</button>
-              <button type="button" className="text-xs text-red-700 font-bold uppercase" onClick={() => updateCycleStatus(row.id, 'closed')}>Close</button>
-              <button type="button" className="text-xs text-blue-700 font-bold uppercase" onClick={() => updateCycleStatus(row.id, 'draft')}>Reopen</button>
-              <button type="button" className="text-xs text-amber-700 font-bold uppercase" onClick={() => updateCycleStatus(row.id, 'archived')}>Archive</button>
-              <button type="button" className="text-xs text-slate-700 font-bold uppercase" onClick={() => deleteCycle(row)}>Delete</button>
+            <div className="table-action-row">
+              <button type="button" className="table-action" onClick={() => updateCycleStatus(row.id, 'active')}>Activate</button>
+              <button type="button" className="table-action" onClick={() => updateCycleStatus(row.id, 'closed')}>Close</button>
+              <button type="button" className="table-action" onClick={() => updateCycleStatus(row.id, 'draft')}>Reopen</button>
+              <button type="button" className="table-action" onClick={() => updateCycleStatus(row.id, 'archived')}>Archive</button>
+              <button type="button" className="table-action danger" onClick={() => deleteCycle(row)}>Delete</button>
             </div>
           ),
         },
@@ -208,7 +209,7 @@ export default function AdminSettingsPage() {
         ) : null}
 
         {activeTab === 'Safe CSV Import' ? (
-          <div className="space-y-4">
+          <div className="stacked-section">
             <div className="filter-bar">
               <label><span>CSV file</span><input type="file" accept=".csv,text/csv" onChange={(event) => { setImportFile(event.target.files?.[0] || null); setImportResult(null) }} /></label>
               <label><span>Reporting cycle</span><select value={importCycleId} onChange={(event) => { setImportCycleId(event.target.value); setImportResult(null) }}><option value="">Latest valid cycle</option>{cycles.map((cycle) => <option key={cycle.id} value={cycle.id}>FY{cycle.cycle_year}</option>)}</select></label>
@@ -218,10 +219,10 @@ export default function AdminSettingsPage() {
             {importResult ? (
               <>
                 <div className="executive-kpi-grid">
-                  <div><strong>{importResult.summary.total}</strong><span>Total rows</span></div>
-                  <div><strong>{importResult.summary.accepted}</strong><span>Accepted</span></div>
-                  <div><strong>{importResult.summary.rejected}</strong><span>Rejected</span></div>
-                  <div><strong>{importResult.summary.corrected}</strong><span>Normalized</span></div>
+                  <KpiCard title="Total Rows" value={importResult.summary.total} trendLabel="CSV rows reviewed" icon="reports" />
+                  <KpiCard title="Accepted" value={importResult.summary.accepted} trendLabel="ready for import" icon="actions" tone="teal" />
+                  <KpiCard title="Rejected" value={importResult.summary.rejected} trendLabel="blocked by validation" icon="risks" tone="rose" />
+                  <KpiCard title="Normalized" value={importResult.summary.corrected} trendLabel="auto-corrected fields" icon="analytics" tone="amber" />
                 </div>
                 <SectionCard title="Column mapping preview" subtitle="Unmapped columns are ignored; mapped fields are validated before import.">
                   <DataTable rows={importResult.columns.map((item, index) => ({ id: index + 1, ...item }))} columns={[{ key: 'source', label: 'CSV column' }, { key: 'target', label: 'Mapped ESG field' }, { key: 'status', label: 'Status' }]} pageSize={12} />

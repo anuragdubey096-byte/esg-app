@@ -3226,6 +3226,7 @@ p {
   .three-col-grid,
   .alert-card-grid,
   .summary-grid,
+  .report-capability-grid,
   .report-form,
   .filter-bar {
     grid-template-columns: 1fr;
@@ -3539,6 +3540,49 @@ p {
   flex-wrap: wrap;
   gap: 0.5rem;
   justify-content: flex-end;
+}
+
+.stacked-section {
+  display: grid;
+  gap: 1rem;
+}
+
+.stacked-section.compact {
+  gap: 0.75rem;
+}
+
+.report-capability-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.report-capability-grid .summary-box {
+  display: grid;
+  align-content: start;
+  gap: 0.35rem;
+}
+
+.report-capability-grid .summary-box strong {
+  color: var(--ink-strong);
+  font-size: 0.92rem;
+  line-height: 1.35;
+}
+
+.summary-box.muted {
+  opacity: 0.82;
+}
+
+.table-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  align-items: center;
+}
+
+.table-action.danger {
+  border-color: #fecaca;
+  color: #b91c1c;
 }
 
 .button,
